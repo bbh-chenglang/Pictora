@@ -90,6 +90,70 @@ async def test_compatible_provider_returns_normalized_analysis_response() -> Non
     assert result == AnalyzeResponse(provider="compatible", model="vision-model", text="A red boat.")
 
 
+def _analysis_provider_with_failure(error: Exception) -> OpenAIProvider:
+    class FailingCompletions:
+        async def create(self, **kwargs):
+            raise error
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FailingCompletions()))
+    return OpenAIProvider(
+        api_key=SecretStr("analysis-secret"),
+        base_url="https://api.example/v1",
+        model="vision-model",
+        client=client,
+    )
+
+
+@pytest.mark.asyncio
+async def test_analyze_maps_sdk_authentication_error() -> None:
+    error = openai.AuthenticationError(
+        "analysis auth failure",
+        response=httpx.Response(
+            401,
+            request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
+        ),
+        body=None,
+    )
+
+    with pytest.raises(ProviderAuthError):
+        await _analysis_provider_with_failure(error).analyze_image(
+            "vision-model", "What is here?", b"abc", "image/png"
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_maps_sdk_timeout_error() -> None:
+    error = openai.APITimeoutError(
+        request=httpx.Request("POST", "https://api.example/v1/chat/completions")
+    )
+
+    with pytest.raises(ProviderTimeoutError):
+        await _analysis_provider_with_failure(error).analyze_image(
+            "vision-model", "What is here?", b"abc", "image/png"
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_maps_sdk_request_error() -> None:
+    error = openai.APIConnectionError(
+        message="analysis request failure",
+        request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
+    )
+
+    with pytest.raises(ProviderRequestError):
+        await _analysis_provider_with_failure(error).analyze_image(
+            "vision-model", "What is here?", b"abc", "image/png"
+        )
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_translate_programming_errors() -> None:
+    with pytest.raises(ValueError, match="invalid analysis setup"):
+        await _analysis_provider_with_failure(ValueError("invalid analysis setup")).analyze_image(
+            "vision-model", "What is here?", b"abc", "image/png"
+        )
+
+
 @pytest.mark.asyncio
 async def test_provider_errors_do_not_expose_key() -> None:
     class FailingImages:
