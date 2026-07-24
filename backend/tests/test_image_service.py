@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 from pydantic import SecretStr
 
 from app.providers.compatible_provider import CompatibleProvider
-from app.providers.base import ProviderAuthError, ProviderRequestError
+from app.providers.base import ProviderAuthError, ProviderRequestError, ProviderTimeoutError
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.analyze import AnalyzeResponse
 
@@ -13,7 +15,7 @@ class FakeImages:
     def __init__(self) -> None:
         self.request = None
 
-    def generate(self, **kwargs):
+    async def generate(self, **kwargs):
         self.request = kwargs
         return SimpleNamespace(
             data=[
@@ -30,7 +32,7 @@ class FakeCompletions:
     def __init__(self) -> None:
         self.request = None
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.request = kwargs
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="A red boat."))]
@@ -88,15 +90,18 @@ async def test_compatible_provider_returns_normalized_analysis_response() -> Non
     assert result == AnalyzeResponse(provider="compatible", model="vision-model", text="A red boat.")
 
 
-class AuthenticationError(Exception):
-    pass
-
-
 @pytest.mark.asyncio
 async def test_provider_errors_do_not_expose_key() -> None:
     class FailingImages:
-        def generate(self, **kwargs):
-            raise AuthenticationError("do-not-leak")
+        async def generate(self, **kwargs):
+            raise openai.AuthenticationError(
+                "do-not-leak",
+                response=httpx.Response(
+                    401,
+                    request=httpx.Request("POST", "https://api.example/v1/images/generations"),
+                ),
+                body=None,
+            )
 
     client = SimpleNamespace(images=FailingImages())
     provider = OpenAIProvider(
@@ -117,8 +122,11 @@ async def test_provider_errors_do_not_expose_key() -> None:
 @pytest.mark.asyncio
 async def test_provider_maps_unknown_sdk_failure_to_request_error() -> None:
     class FailingImages:
-        def generate(self, **kwargs):
-            raise RuntimeError("raw sdk payload with secret")
+        async def generate(self, **kwargs):
+            raise openai.APIConnectionError(
+                message="raw sdk payload with secret",
+                request=httpx.Request("POST", "https://api.example/v1/images/generations"),
+            )
 
     provider = OpenAIProvider(
         api_key=SecretStr("secret"),
@@ -131,3 +139,63 @@ async def test_provider_maps_unknown_sdk_failure_to_request_error() -> None:
         await provider.generate_image(SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai"))
 
     assert "raw sdk payload" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_maps_sdk_timeout_to_timeout_error() -> None:
+    class FailingImages:
+        async def generate(self, **kwargs):
+            raise openai.APITimeoutError(
+                request=httpx.Request("POST", "https://api.example/v1/images/generations")
+            )
+
+    provider = OpenAIProvider(
+        api_key=SecretStr("secret"),
+        base_url="https://api.example/v1",
+        model="gpt-image-1",
+        client=SimpleNamespace(images=FailingImages()),
+    )
+
+    with pytest.raises(ProviderTimeoutError):
+        await provider.generate_image(
+            SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+        )
+
+
+@pytest.mark.asyncio
+async def test_programming_errors_are_not_translated() -> None:
+    class FailingImages:
+        async def generate(self, **kwargs):
+            raise ValueError("invalid fake SDK setup")
+
+    provider = OpenAIProvider(
+        api_key=SecretStr("secret"),
+        base_url="https://api.example/v1",
+        model="gpt-image-1",
+        client=SimpleNamespace(images=FailingImages()),
+    )
+
+    with pytest.raises(ValueError, match="invalid fake SDK setup"):
+        await provider.generate_image(
+            SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+        )
+
+
+@pytest.mark.asyncio
+async def test_injected_falsy_client_is_preserved() -> None:
+    class FalsyClient(FakeClient):
+        def __bool__(self) -> bool:
+            return False
+
+    client = FalsyClient()
+    provider = OpenAIProvider(
+        api_key=SecretStr("secret"),
+        base_url="https://api.example/v1",
+        model="gpt-image-1",
+        client=client,
+    )
+
+    assert provider.client is client
+    await provider.generate_image(
+        SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+    )

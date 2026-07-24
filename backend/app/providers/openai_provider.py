@@ -1,13 +1,18 @@
 from typing import Any
 
-from openai import OpenAI
+from openai import (
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    PermissionDeniedError,
+)
 from pydantic import SecretStr
 
 from app.schemas.analyze import AnalyzeResponse
 from app.providers.base import (
     ImageProvider,
     ProviderAuthError,
-    ProviderError,
     ProviderRequestError,
     ProviderTimeoutError,
     image_data_url,
@@ -30,17 +35,23 @@ class OpenAIProvider(ImageProvider):
     ) -> None:
         secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self.model = model
-        self.client = client or OpenAI(api_key=secret, base_url=base_url)
+        self.client = (
+            client if client is not None else AsyncOpenAI(api_key=secret, base_url=base_url)
+        )
 
     async def generate_image(self, request: GenerateRequest) -> GenerateResponse:
         arguments: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
         if request.detail in {"low", "high"}:
             arguments["quality"] = request.detail
         try:
-            response = self.client.images.generate(**arguments)
-            images = normalize_image_results(response)
-        except Exception as error:
-            raise self._translate_error(error) from None
+            response = await self.client.images.generate(**arguments)
+        except (AuthenticationError, PermissionDeniedError):
+            raise ProviderAuthError() from None
+        except APITimeoutError:
+            raise ProviderTimeoutError() from None
+        except APIError:
+            raise ProviderRequestError() from None
+        images = normalize_image_results(response)
         return GenerateResponse(provider=self.provider_id, model=request.model, images=images)
 
     async def analyze_image(
@@ -62,20 +73,11 @@ class OpenAIProvider(ImageProvider):
             ],
         }
         try:
-            response = self.client.chat.completions.create(**arguments)
-            return AnalyzeResponse(
-                provider=self.provider_id,
-                model=model,
-                text=normalize_text(response),
-            )
-        except Exception as error:
-            raise self._translate_error(error) from None
-
-    @staticmethod
-    def _translate_error(error: Exception) -> ProviderError:
-        name = type(error).__name__.lower()
-        if "auth" in name or "permission" in name:
-            return ProviderAuthError()
-        if "timeout" in name:
-            return ProviderTimeoutError()
-        return ProviderRequestError()
+            response = await self.client.chat.completions.create(**arguments)
+        except (AuthenticationError, PermissionDeniedError):
+            raise ProviderAuthError() from None
+        except APITimeoutError:
+            raise ProviderTimeoutError() from None
+        except APIError:
+            raise ProviderRequestError() from None
+        return AnalyzeResponse(provider=self.provider_id, model=model, text=normalize_text(response))

@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
+import app.dependencies as dependencies
 from app.providers.base import ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
 from app.providers.custom_provider import CustomProvider
@@ -59,3 +60,29 @@ async def test_custom_provider_fails_explicitly() -> None:
         await provider.analyze_image("x", "describe", b"bytes", "image/png")
 
     assert error.value.code == "provider_not_implemented"
+
+
+def test_registry_dependency_reuses_clients_until_cache_is_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key=SecretStr("openai-secret"),
+        custom_api_key=SecretStr(""),
+    )
+    monkeypatch.setattr(dependencies, "get_settings", lambda: settings)
+    dependencies.clear_dependency_caches()
+
+    try:
+        first = dependencies.get_provider_registry()
+        second = dependencies.get_provider_registry()
+
+        assert first is second
+        assert first.resolve("openai").client is second.resolve("openai").client
+
+        dependencies.clear_dependency_caches()
+        third = dependencies.get_provider_registry()
+        assert third is not first
+        assert third.resolve("openai").client is not first.resolve("openai").client
+    finally:
+        dependencies.clear_dependency_caches()
