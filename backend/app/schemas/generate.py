@@ -10,6 +10,8 @@ class GenerateRequest(BaseModel):
     model: str
     prompt: str = Field(min_length=1, max_length=4000)
     detail: Literal["low", "high", "original", "auto"] = "auto"
+    prompts: list[str] | None = Field(default=None, max_length=8)
+    count: int = Field(default=1, ge=1, le=4)
 
 
 class GenerateResponse(BaseModel):

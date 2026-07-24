@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -9,6 +10,9 @@ from app.providers.compatible_provider import CompatibleProvider
 from app.providers.base import ProviderAuthError, ProviderRequestError, ProviderTimeoutError
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.analyze import AnalyzeResponse
+from app.schemas.common import ImageResult
+from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.services.image_service import ImageService
 
 
 class FakeImages:
@@ -263,3 +267,59 @@ async def test_injected_falsy_client_is_preserved() -> None:
     await provider.generate_image(
         SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
     )
+
+
+@pytest.mark.asyncio
+async def test_image_service_generates_prompt_batches_concurrently_with_timings() -> None:
+    class ConcurrentProvider:
+        active = 0
+        max_active = 0
+        calls = []
+
+        async def generate_image(self, request):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.calls.append(request.prompt)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return GenerateResponse(
+                provider="fake",
+                model=request.model,
+                images=[ImageResult(url=f"https://example.com/{request.prompt}.png")],
+            )
+
+    provider = ConcurrentProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    result = await service.generate(
+        GenerateRequest(
+            provider="fake",
+            model="image-model",
+            prompt="first",
+            prompts=["first", "second"],
+            count=2,
+        )
+    )
+
+    assert len(result.images) == 4
+    assert provider.calls == ["first", "first", "second", "second"]
+    assert provider.max_active == 4
+    assert all(image.generation_time_ms >= 1 for image in result.images)
+
+
+@pytest.mark.asyncio
+async def test_image_service_infers_explicit_chinese_image_count() -> None:
+    class CountProvider:
+        async def generate_image(self, request):
+            return GenerateResponse(
+                provider="fake",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/image.png")],
+            )
+
+    provider = CountProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    result = await service.generate(
+        GenerateRequest(provider="fake", model="image-model", prompt="帮我生成两张图片")
+    )
+
+    assert len(result.images) == 2

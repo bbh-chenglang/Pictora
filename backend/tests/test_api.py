@@ -89,6 +89,7 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
                 "model": "gpt-image-2",
                 "prompt": "帮我生成一个苹果的图片",
                 "detail": "auto",
+                "count": 2,
             },
         )
 
@@ -96,6 +97,7 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
     assert service.generate_calls[-1].provider == "openai"
     assert service.generate_calls[-1].model == "gpt-image-2"
     assert service.generate_calls[-1].prompt == "帮我生成一个苹果的图片"
+    assert service.generate_calls[-1].count == 2
 
 
 def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
