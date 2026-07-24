@@ -80,6 +80,24 @@ def test_generate_returns_service_response(service: FakeImageService) -> None:
     assert service.generate_calls[0].prompt == "draw a boat"
 
 
+def test_generate_apple_image_prompt(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "provider": "openai",
+                "model": "gpt-image-2",
+                "prompt": "帮我生成一个苹果的图片",
+                "detail": "auto",
+            },
+        )
+
+    assert response.status_code == 200
+    assert service.generate_calls[-1].provider == "openai"
+    assert service.generate_calls[-1].model == "gpt-image-2"
+    assert service.generate_calls[-1].prompt == "帮我生成一个苹果的图片"
+
+
 def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
