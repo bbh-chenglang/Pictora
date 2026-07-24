@@ -24,7 +24,7 @@ let generationStartedAt = 0;
 let generationController: AbortController | null = null;
 
 const selectedProvider = computed(() => providers.value.find((item) => item.id === provider.value));
-const canGenerate = computed(() => Boolean(prompt.value.trim() || batchPrompts.value.trim()) && !busy.value);
+const canGenerate = computed(() => Boolean(provider.value && model.value) && !busy.value);
 const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
 const API_BASE = "http://localhost:8002";
 
