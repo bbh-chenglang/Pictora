@@ -32,6 +32,7 @@ def test_registry_uses_custom_key_for_compatible_provider_without_exposing_it() 
         _env_file=None,
         openai_api_key=SecretStr(""),
         custom_api_key=SecretStr("custom-secret"),
+        custom_provider_name="我的图像服务",
         custom_base_url="http://localhost:11434/v1",
         custom_model="local-image-model",
     )
@@ -41,6 +42,7 @@ def test_registry_uses_custom_key_for_compatible_provider_without_exposing_it() 
     provider = registry.resolve("compatible")
     assert isinstance(provider, CompatibleProvider)
     assert provider.model == "local-image-model"
+    assert provider.label == "我的图像服务"
     assert [item.models for item in registry.list_models()] == [["local-image-model"]]
     assert "custom-secret" not in repr(registry.list_models())
 

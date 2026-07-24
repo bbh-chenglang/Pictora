@@ -30,6 +30,7 @@ class ProviderRegistry:
                 settings.custom_api_key,
                 settings.custom_base_url,
                 settings.custom_model,
+                settings.custom_provider_name,
             )
         return cls(providers)
 
