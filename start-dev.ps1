@@ -17,12 +17,12 @@ $backend = Start-Process `
 
 $frontend = Start-Process `
     -FilePath $node `
-    -ArgumentList @($npmCli, "run", "dev", "--", "--host", "localhost", "--port", "5174") `
+    -ArgumentList @($npmCli, "run", "dev", "--", "--host", "localhost", "--port", "5175", "--strictPort") `
     -WorkingDirectory (Join-Path $projectRoot "frontend") `
     -PassThru
 
 Write-Host "GenImage 开发服务已启动：" -ForegroundColor Green
-Write-Host "前端: http://localhost:5174/"
+Write-Host "前端: http://localhost:5175/"
 Write-Host "后端: http://localhost:8002/"
 Write-Host "按 Ctrl+C 停止前后端服务。"
 
