@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Download, ImagePlus, LoaderCircle, Sparkles, Upload, X } from "lucide-vue-next";
+import { Download, ImagePlus, LoaderCircle, Save, Settings2, Sparkles, Upload, X } from "lucide-vue-next";
 
 type Provider = { id: string; label: string; models: string[] };
 type ImageResult = { url?: string | null; base64_data?: string | null; revised_prompt?: string | null; generation_time_ms?: number | null };
@@ -18,6 +18,10 @@ const generated = ref<ImageResult[]>([]);
 const analysis = ref("");
 const busy = ref<"generate" | "analyze" | "">("");
 const error = ref("");
+const providerName = ref("");
+const baseUrl = ref("");
+const apiKey = ref("");
+const savingSettings = ref(false);
 const generationElapsedMs = ref(0);
 let generationTimer: number | undefined;
 let generationStartedAt = 0;
@@ -38,6 +42,14 @@ function readableError(data: any, fallback: string) {
   return messages[data?.error?.code] ?? data?.error?.message ?? fallback;
 }
 
+async function loadRuntimeSettings() {
+  const response = await fetch(`${API_BASE}/api/settings`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(readableError(data, "无法加载运行时配置"));
+  providerName.value = data.provider_name ?? "";
+  baseUrl.value = data.base_url ?? "";
+}
+
 async function loadProviders() {
   const response = await fetch(`${API_BASE}/api/providers`);
   const data = await response.json();
@@ -48,6 +60,28 @@ async function loadProviders() {
 
 function selectProvider() {
   model.value = selectedProvider.value?.models[0] ?? "";
+}
+
+async function applyRuntimeSettings() {
+  savingSettings.value = true;
+  error.value = "";
+  try {
+    const response = await fetch(`${API_BASE}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider_name: providerName.value.trim(), model: model.value.trim(), base_url: baseUrl.value.trim(), api_key: apiKey.value.trim() || null }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(readableError(data, "配置应用失败"));
+    providerName.value = data.provider_name;
+    baseUrl.value = data.base_url;
+    apiKey.value = "";
+    await loadProviders();
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "配置应用失败";
+  } finally {
+    savingSettings.value = false;
+  }
 }
 
 function setFile(file?: File) {
@@ -65,7 +99,7 @@ function clearFile() {
 
 function formatDuration(milliseconds?: number | null) {
   if (milliseconds == null) return "计时不可用";
-  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} 秒`;
+  return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(2)} 秒`;
 }
 
 function startGenerationTimer() {
@@ -138,7 +172,7 @@ function imageSource(item: ImageResult) {
   return item.url || (item.base64_data ? `data:image/png;base64,${item.base64_data}` : "");
 }
 
-onMounted(() => loadProviders().catch(() => { error.value = "无法加载服务商，请先启动后端"; }));
+onMounted(() => Promise.all([loadProviders(), loadRuntimeSettings()]).catch(() => { error.value = "无法加载服务商，请先启动后端"; }));
 onUnmounted(stopGenerationTimer);
 </script>
 
@@ -150,6 +184,7 @@ onUnmounted(stopGenerationTimer);
         <div class="eyebrow">创作 / 观察</div><h1>创造一些<br /><em>值得观看的东西。</em></h1>
         <label>提供商<select v-model="provider" @change="selectProvider"><option v-if="!providers.length" value="">尚未配置服务商</option><option v-for="item in providers" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
         <label>模型<select v-model="model"><option v-for="item in selectedProvider?.models ?? []" :key="item" :value="item">{{ item }}</option></select></label>
+        <details class="runtime-settings"><summary><Settings2 :size="15" />运行时配置</summary><div class="settings-fields"><label>提供商名称<input v-model="providerName" placeholder="例如：北海AI" /></label><label>模型 ID<input v-model="model" placeholder="例如：gpt-image-1.5" /></label><label>Base URL<input v-model="baseUrl" placeholder="https://example.com/v1" /></label><label>API Key<input v-model="apiKey" type="password" autocomplete="off" placeholder="留空则保持当前 Key" /></label><button type="button" class="settings-action" :disabled="savingSettings" @click="applyRuntimeSettings"><LoaderCircle v-if="savingSettings" class="spin" :size="15" /><Save v-else :size="15" />{{ savingSettings ? "应用中..." : "应用配置" }}</button><small>API Key 仅在后端内存中使用，不会回显。</small></div></details>
         <label>提示词<textarea v-model="prompt" placeholder="描述一个场景、一种质感，或一个不可能存在的物体..."></textarea></label>
         <label>批量提示词（每行一条，可选）<textarea v-model="batchPrompts" class="batch-input" placeholder="每行输入一条提示词，可一次并发生成多组图片"></textarea></label>
         <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>
