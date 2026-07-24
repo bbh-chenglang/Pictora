@@ -5,6 +5,7 @@ frontend/dist/
 .playwright-cli/
 backend-8001.*
 backend/.env
+backend/.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
