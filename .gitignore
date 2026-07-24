@@ -1,4 +1,9 @@
 .superpowers/
+frontend/node_modules/
+frontend/dist/
+.local-logs/
+.playwright-cli/
+backend-8001.*
 backend/.env
 __pycache__/
 *.py[cod]
