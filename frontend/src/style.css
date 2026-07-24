@@ -3,8 +3,8 @@
 
 /* Keep the full control flow visible while preserving the studio's hard-edged rhythm. */
 .topbar{padding-inline:clamp(18px,3vw,44px)}
-.studio-grid{grid-template-columns:minmax(300px,340px) 1fr;max-width:1400px}
-.control-panel{padding:28px clamp(18px,2.5vw,34px)}
+.studio-grid{grid-template-columns:minmax(300px,340px) 1fr;max-width:1600px;width:100%}
+.control-panel{padding:28px clamp(16px,2vw,26px)}
 .control-panel h1{margin-bottom:22px}
 label{margin-top:11px}
 textarea{height:84px}
@@ -12,7 +12,7 @@ textarea{height:84px}
 .upload-zone{margin-top:12px}
 .upload-zone label{padding:11px}
 .action-row{margin-top:16px}
-.result-panel{padding:28px clamp(18px,3vw,48px)}
+.result-panel{padding:28px clamp(16px,2.5vw,36px)}
 .image-grid{margin-top:18px}
 .image-card{border:0;background:transparent;overflow:visible}
 .image-frame{position:relative;aspect-ratio:1;border:2px solid #191817;background:#e8e0d2;overflow:hidden}
