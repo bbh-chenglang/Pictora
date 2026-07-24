@@ -2,6 +2,7 @@ import base64
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
 from app.schemas.generate import GenerateRequest, GenerateResponse
 
@@ -12,7 +13,7 @@ class ImageProvider(Protocol):
 
     async def analyze_image(
         self, model: str, prompt: str, image_bytes: bytes, content_type: str
-    ) -> str:
+    ) -> AnalyzeResponse:
         ...
 
 

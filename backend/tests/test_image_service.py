@@ -3,8 +3,10 @@ from types import SimpleNamespace
 import pytest
 from pydantic import SecretStr
 
+from app.providers.compatible_provider import CompatibleProvider
 from app.providers.base import ProviderAuthError, ProviderRequestError
 from app.providers.openai_provider import OpenAIProvider
+from app.schemas.analyze import AnalyzeResponse
 
 
 class FakeImages:
@@ -54,12 +56,15 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
     generated = await provider.generate_image(
         SimpleNamespace(provider="openai", model="gpt-image-1", prompt="draw", detail="high")
     )
-    text = await provider.analyze_image("vision-model", "What is here?", b"abc", "image/png")
+    analysis = await provider.analyze_image("vision-model", "What is here?", b"abc", "image/png")
 
     assert generated.images[0].url == "https://cdn.example/image.png"
     assert generated.images[0].revised_prompt == "A revised prompt"
     assert generated.provider == "openai"
-    assert text == "A red boat."
+    assert isinstance(analysis, AnalyzeResponse)
+    assert analysis.provider == "openai"
+    assert analysis.model == "vision-model"
+    assert analysis.text == "A red boat."
     assert client.images.request == {
         "model": "gpt-image-1",
         "prompt": "draw",
@@ -67,6 +72,20 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
     }
     image_url = client.chat.completions.request["messages"][0]["content"][1]["image_url"]["url"]
     assert image_url == "data:image/png;base64,YWJj"
+
+
+@pytest.mark.asyncio
+async def test_compatible_provider_returns_normalized_analysis_response() -> None:
+    provider = CompatibleProvider(
+        api_key=SecretStr("compatible-secret"),
+        base_url="http://localhost:11434/v1",
+        model="vision-model",
+        client=FakeClient(),
+    )
+
+    result = await provider.analyze_image("vision-model", "What is here?", b"abc", "image/png")
+
+    assert result == AnalyzeResponse(provider="compatible", model="vision-model", text="A red boat.")
 
 
 class AuthenticationError(Exception):

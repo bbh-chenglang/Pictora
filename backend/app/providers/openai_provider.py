@@ -3,6 +3,7 @@ from typing import Any
 from openai import OpenAI
 from pydantic import SecretStr
 
+from app.schemas.analyze import AnalyzeResponse
 from app.providers.base import (
     ImageProvider,
     ProviderAuthError,
@@ -44,7 +45,7 @@ class OpenAIProvider(ImageProvider):
 
     async def analyze_image(
         self, model: str, prompt: str, image_bytes: bytes, content_type: str
-    ) -> str:
+    ) -> AnalyzeResponse:
         arguments = {
             "model": model,
             "messages": [
@@ -62,7 +63,11 @@ class OpenAIProvider(ImageProvider):
         }
         try:
             response = self.client.chat.completions.create(**arguments)
-            return normalize_text(response)
+            return AnalyzeResponse(
+                provider=self.provider_id,
+                model=model,
+                text=normalize_text(response),
+            )
         except Exception as error:
             raise self._translate_error(error) from None
 
