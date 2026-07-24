@@ -21,6 +21,7 @@ const error = ref("");
 const generationElapsedMs = ref(0);
 let generationTimer: number | undefined;
 let generationStartedAt = 0;
+let generationController: AbortController | null = null;
 
 const selectedProvider = computed(() => providers.value.find((item) => item.id === provider.value));
 const canGenerate = computed(() => Boolean(prompt.value.trim() || batchPrompts.value.trim()) && !busy.value);
@@ -83,16 +84,29 @@ function stopGenerationTimer() {
 }
 
 async function generateImage() {
+  if (busy.value === "generate") return;
   busy.value = "generate"; error.value = ""; analysis.value = ""; generated.value = []; startGenerationTimer();
   const prompts = batchPrompts.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  const controller = new AbortController();
+  generationController = controller;
   try {
     const requestPrompt = prompt.value.trim() || prompts[0] || "请生成一张图片";
-    const response = await fetch(`${API_BASE}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: provider.value, model: model.value, prompt: requestPrompt, prompts: prompts.length ? prompts : null, count: imageCount.value, detail: detail.value }) });
+    const response = await fetch(`${API_BASE}/api/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ provider: provider.value, model: model.value, prompt: requestPrompt, prompts: prompts.length ? prompts : null, count: imageCount.value, detail: detail.value }) });
     const data = await response.json();
     if (!response.ok) throw new Error(readableError(data, "生成失败"));
     generated.value = data.images ?? [];
-  } catch (exception) { error.value = exception instanceof Error ? exception.message : "生成失败"; }
-  finally { stopGenerationTimer(); busy.value = ""; }
+  } catch (exception) {
+    if (!(exception instanceof DOMException && exception.name === "AbortError")) {
+      error.value = exception instanceof Error ? exception.message : "生成失败";
+    }
+  } finally {
+    if (generationController === controller) generationController = null;
+    stopGenerationTimer(); busy.value = "";
+  }
+}
+
+function cancelGeneration() {
+  generationController?.abort();
 }
 
 async function analyzeImage() {
@@ -131,7 +145,7 @@ onUnmounted(stopGenerationTimer);
         <label>每条生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
         <div class="upload-zone" @dragover.prevent @drop.prevent="setFile(($event as DragEvent).dataTransfer?.files[0])"><input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="setFile(($event.target as HTMLInputElement).files?.[0])" /><label for="image-input"><Upload :size="18" /><span>{{ imageFile ? imageFile.name : "拖入参考图片" }}</span><small>支持 PNG、JPG、WEBP 或 GIF</small></label></div>
         <div v-if="previewUrl" class="file-chip"><img :src="previewUrl" alt="Reference preview" /><span>{{ imageFile?.name }}</span><button aria-label="Remove image" @click="clearFile"><X :size="15" /></button></div>
-        <div class="action-row"><button class="primary-action" :disabled="!canGenerate" @click="generateImage"><LoaderCircle v-if="busy === 'generate'" class="spin" :size="17" /><Sparkles v-else :size="17" />生成图片</button><button class="secondary-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" /><ImagePlus v-else :size="17" />分析图片</button></div>
+        <div class="action-row"><button class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'generate' ? false : !canGenerate" @click="busy === 'generate' ? cancelGeneration() : generateImage"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === 'generate' ? '取消生成' : '生成图片' }}</button><button class="secondary-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" /><ImagePlus v-else :size="17" />分析图片</button></div>
         <p v-if="error" class="error-message">{{ error }}</p>
       </aside>
       <section class="result-panel"><div class="result-heading"><div><div class="eyebrow">作品墙</div><h2>你的视觉研究</h2></div><span v-if="busy === 'generate'" class="working">并发生成中 {{ formatDuration(generationElapsedMs) }}</span><span v-else-if="busy" class="working">处理中...</span></div>
