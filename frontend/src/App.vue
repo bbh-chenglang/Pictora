@@ -24,7 +24,6 @@ let generationStartedAt = 0;
 let generationController: AbortController | null = null;
 
 const selectedProvider = computed(() => providers.value.find((item) => item.id === provider.value));
-const canGenerate = computed(() => Boolean(provider.value && model.value) && !busy.value);
 const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
 const API_BASE = "http://localhost:8002";
 
@@ -85,6 +84,10 @@ function stopGenerationTimer() {
 
 async function generateImage() {
   if (busy.value === "generate") return;
+  if (!provider.value || !model.value) {
+    error.value = "服务商或模型尚未加载，请刷新页面后重试";
+    return;
+  }
   busy.value = "generate"; error.value = ""; analysis.value = ""; generated.value = []; startGenerationTimer();
   const prompts = batchPrompts.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
   const controller = new AbortController();
@@ -107,6 +110,14 @@ async function generateImage() {
 
 function cancelGeneration() {
   generationController?.abort();
+}
+
+function handleGenerateClick() {
+  if (busy.value === "generate") {
+    cancelGeneration();
+  } else {
+    void generateImage();
+  }
 }
 
 async function analyzeImage() {
@@ -145,7 +156,7 @@ onUnmounted(stopGenerationTimer);
         <label>每条生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
         <div class="upload-zone" @dragover.prevent @drop.prevent="setFile(($event as DragEvent).dataTransfer?.files[0])"><input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="setFile(($event.target as HTMLInputElement).files?.[0])" /><label for="image-input"><Upload :size="18" /><span>{{ imageFile ? imageFile.name : "拖入参考图片" }}</span><small>支持 PNG、JPG、WEBP 或 GIF</small></label></div>
         <div v-if="previewUrl" class="file-chip"><img :src="previewUrl" alt="Reference preview" /><span>{{ imageFile?.name }}</span><button aria-label="Remove image" @click="clearFile"><X :size="15" /></button></div>
-        <div class="action-row"><button class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'generate' ? false : !canGenerate" @click="busy === 'generate' ? cancelGeneration() : generateImage"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === 'generate' ? '取消生成' : '生成图片' }}</button><button class="secondary-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" /><ImagePlus v-else :size="17" />分析图片</button></div>
+        <div class="action-row"><button type="button" class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === 'generate' ? '取消生成' : '生成图片' }}</button><button type="button" class="secondary-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" /><ImagePlus v-else :size="17" />分析图片</button></div>
         <p v-if="error" class="error-message">{{ error }}</p>
       </aside>
       <section class="result-panel"><div class="result-heading"><div><div class="eyebrow">作品墙</div><h2>你的视觉研究</h2></div><span v-if="busy === 'generate'" class="working">并发生成中 {{ formatDuration(generationElapsedMs) }}</span><span v-else-if="busy" class="working">处理中...</span></div>
