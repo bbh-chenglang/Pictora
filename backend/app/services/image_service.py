@@ -22,7 +22,7 @@ class ImageService:
             request.count, *(self._prompt_count(prompt) for prompt in prompts)
         )
         try:
-            async with asyncio.timeout(count * 60):
+            async with asyncio.timeout(count * 180):
                 jobs = [
                     self._generate_one(provider, request, prompt)
                     for prompt in prompts

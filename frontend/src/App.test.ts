@@ -148,6 +148,34 @@ describe("GenImage workspace", () => {
     expect(JSON.parse(String(generateRequest?.[1]?.body)).size).toBe("1024x1024");
   });
 
+  it("shows the HTTP status when generation returns an empty error response", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/generate")) {
+        return Promise.resolve(new Response(null, { status: 504 }));
+      }
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({
+          providers: [{ id: "compatible", label: "北海AI", models: [] }],
+        });
+      }
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ model: "gpt-image-2", api_key_configured: true });
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("竖版海报");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".error-message").text()).toBe("生成失败（HTTP 504）");
+  });
+
   it("opens and closes history in a right-side drawer", async () => {
     const wrapper = mount(App);
     await flushPromises();

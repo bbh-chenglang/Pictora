@@ -316,7 +316,7 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
 
 
 @pytest.mark.asyncio
-async def test_image_service_allows_one_minute_per_generated_image(
+async def test_image_service_allows_three_minutes_per_generated_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timeout_values: list[int] = []
@@ -352,7 +352,7 @@ async def test_image_service_allows_one_minute_per_generated_image(
         )
     )
 
-    assert timeout_values == [180]
+    assert timeout_values == [540]
 
 
 @pytest.mark.asyncio

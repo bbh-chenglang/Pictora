@@ -112,6 +112,16 @@ function readableError(data: any, fallback: string) {
   return messages[data?.error?.code] ?? data?.error?.message ?? fallback;
 }
 
+async function parseJsonResponse(response: Response): Promise<any | null> {
+  const text = await response.text();
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function resourceUrl(path: string) {
   return /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`;
 }
@@ -297,8 +307,11 @@ async function generateImage() {
         size: size.value,
       }),
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(readableError(data, "生成失败"));
+    const data = await parseJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(readableError(data, `生成失败（HTTP ${response.status}）`));
+    }
+    if (!data) throw new Error("服务返回了无效响应");
     generated.value = data.images ?? [];
     await loadHistory();
   } catch (exception) {
