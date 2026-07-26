@@ -47,7 +47,6 @@ type HistoryDetail = HistorySummary & {
 
 const providers = ref<Provider[]>([]);
 const provider = ref("compatible");
-const providerName = ref("北海AI");
 const model = ref("");
 const prompt = ref("");
 const batchPrompts = ref("");
@@ -67,13 +66,11 @@ const history = ref<HistorySummary[]>([]);
 const historyError = ref("");
 const activeHistoryId = ref<number | null>(null);
 const generationElapsedMs = ref(0);
+const lightboxUrl = ref("");
 let generationTimer: number | undefined;
 let generationStartedAt = 0;
 let generationController: AbortController | null = null;
 
-const selectedProvider = computed(() =>
-  providers.value.find((item) => item.id === provider.value),
-);
 const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -97,7 +94,6 @@ async function loadRuntimeSettings() {
   const response = await fetch(`${API_BASE}/api/settings`);
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载运行时配置"));
-  providerName.value = data.provider_name ?? "北海AI";
   model.value = data.model ?? "";
   baseUrl.value = data.base_url ?? "https://sub.beibeihai.xyz/v1";
   apiKeyConfigured.value = Boolean(data.api_key_configured);
@@ -196,9 +192,7 @@ function clearFile() {
 
 function formatDuration(milliseconds?: number | null) {
   if (milliseconds == null) return "计时不可用";
-  return milliseconds < 1000
-    ? `${milliseconds} ms`
-    : `${(milliseconds / 1000).toFixed(2)} 秒`;
+  return `${(milliseconds / 1000).toFixed(2)} 秒`;
 }
 
 function formatHistoryTime(value: string) {
@@ -314,7 +308,21 @@ function imageSource(item: ImageResult) {
     (item.base64_data ? `data:image/png;base64,${item.base64_data}` : "");
 }
 
+function openLightbox(item: ImageResult) {
+  const source = imageSource(item);
+  if (source) lightboxUrl.value = source;
+}
+
+function closeLightbox() {
+  lightboxUrl.value = "";
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") closeLightbox();
+}
+
 onMounted(async () => {
+  window.addEventListener("keydown", handleGlobalKeydown);
   try {
     await Promise.all([loadRuntimeSettings(), loadProviders(), loadHistory()]);
   } catch {
@@ -322,6 +330,7 @@ onMounted(async () => {
   }
 });
 onUnmounted(() => {
+  window.removeEventListener("keydown", handleGlobalKeydown);
   stopGenerationTimer();
   if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
 });
@@ -342,26 +351,29 @@ onUnmounted(() => {
     <div class="studio-grid">
       <aside class="control-panel">
         <div class="panel-title">
-          <div><span>生成设置</span><h1>图像参数</h1></div>
+          <div><span>生成设置</span><h1>工作台设置</h1></div>
           <strong>{{ imageCount }} 张</strong>
-        </div>
-
-        <label>提供商<input :value="providerName" readonly /></label>
-        <label>模型名称<input v-model="model" placeholder="例如：gpt-image-1.5" /></label>
-        <div class="parameter-grid">
-          <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>
-          <label>生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
         </div>
 
         <section class="connection-section">
           <div class="section-label"><span>接口配置</span><small>{{ apiKeyConfigured ? "已保存" : "未配置" }}</small></div>
           <label>API Key<input v-model="apiKey" type="password" autocomplete="off" :placeholder="apiKeyConfigured ? '留空则保持当前 Key' : '输入 API Key'" /></label>
           <label>Base URL<input :value="baseUrl" readonly /></label>
-          <button type="button" class="settings-action" :disabled="savingSettings || !model.trim()" @click="applyRuntimeSettings">
-            <LoaderCircle v-if="savingSettings" class="spin" :size="15" />
-            <Save v-else :size="15" />{{ savingSettings ? "保存中..." : "保存配置" }}
-          </button>
         </section>
+
+        <section class="image-parameter-section">
+          <div class="section-label"><span>图片参数</span></div>
+          <label>模型名称<input v-model="model" placeholder="例如：gpt-image-1.5" /></label>
+          <div class="parameter-grid">
+            <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>
+            <label>生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
+          </div>
+        </section>
+
+        <button type="button" class="settings-action" :disabled="savingSettings || !model.trim()" @click="applyRuntimeSettings">
+          <LoaderCircle v-if="savingSettings" class="spin" :size="15" />
+          <Save v-else :size="15" />{{ savingSettings ? "保存中..." : "保存配置" }}
+        </button>
 
         <section class="history-section">
           <div class="section-label"><span>历史记录</span><small>{{ history.length }}</small></div>
@@ -388,7 +400,9 @@ onUnmounted(() => {
           <div v-if="generated.length" class="image-grid">
             <article v-for="(item, index) in generated" :key="index" class="image-card">
               <div class="image-frame">
-                <img v-if="imageSource(item)" :src="imageSource(item)" :alt="`生成图片 ${index + 1}`" />
+                <button v-if="imageSource(item)" type="button" class="image-preview-trigger" :aria-label="`全屏查看生成图片 ${index + 1}`" @click="openLightbox(item)">
+                  <img :src="imageSource(item)" :alt="`生成图片 ${index + 1}`" />
+                </button>
                 <div v-else class="missing-image">图片数据不可用</div>
                 <a v-if="imageSource(item)" class="download" :href="imageSource(item)" download="genimage-result.png" aria-label="下载图片"><Download :size="16" /></a>
               </div>
@@ -419,6 +433,11 @@ onUnmounted(() => {
           <p v-if="error" class="error-message">{{ error }}</p>
         </section>
       </section>
+    </div>
+
+    <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" aria-label="生成图片全屏预览" @click.self="closeLightbox">
+      <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>
+      <img :src="lightboxUrl" alt="生成图片全屏预览" />
     </div>
   </main>
 </template>
