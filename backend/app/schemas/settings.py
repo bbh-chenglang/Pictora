@@ -1,10 +1,10 @@
-from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 
 class RuntimeProviderSettings(BaseModel):
-    provider_name: str = Field(min_length=1, max_length=80)
+    model_config = ConfigDict(extra="forbid")
+
     model: str = Field(min_length=1, max_length=120)
-    base_url: AnyHttpUrl
     api_key: str | None = Field(default=None, min_length=1, max_length=500)
 
 

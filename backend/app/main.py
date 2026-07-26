@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,8 +9,21 @@ from app.api.generate import router as generate_router
 from app.api.providers import router as providers_router
 from app.api.settings import router as settings_router
 from app.providers.base import ProviderError
+from app.config import Settings
+from app.database import initialize_database
 
-app = FastAPI(title="GenImage API")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    defaults = Settings()
+    await initialize_database(
+        default_model=defaults.custom_model,
+        default_api_key=defaults.custom_api_key.get_secret_value(),
+    )
+    yield
+
+
+app = FastAPI(title="GenImage API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

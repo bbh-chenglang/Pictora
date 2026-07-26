@@ -1,9 +1,12 @@
+import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_image_service
+from app.database import initialize_database
+from app.dependencies import get_image_service, get_settings_repository
 from app.main import app
 from app.providers.base import (
     ProviderAuthError,
@@ -14,6 +17,7 @@ from app.providers.base import (
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult, ProviderModel
 from app.schemas.generate import GenerateResponse
+from app.repositories.settings_repository import SettingsRepository
 
 
 class FakeImageService:
@@ -49,6 +53,19 @@ def service():
     app.dependency_overrides[get_image_service] = lambda: fake
     yield fake
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def settings_repository(tmp_path: Path) -> SettingsRepository:
+    database_path = tmp_path / "settings-api.db"
+    asyncio.run(
+        initialize_database(
+            database_path,
+            default_model="gpt-image-1.5",
+            default_api_key="",
+        )
+    )
+    return SettingsRepository(database_path)
 
 
 def test_list_providers_returns_safe_models(service: FakeImageService) -> None:
@@ -180,3 +197,47 @@ def test_provider_errors_use_strict_error_response(
     assert response.status_code == status_code
     assert response.json() == {"error": {"code": code, "message": error.message}}
     assert set(response.json()) == {"error"}
+
+
+def test_settings_api_updates_only_model_and_optional_key(
+    settings_repository: SettingsRepository,
+) -> None:
+    app.dependency_overrides[get_settings_repository] = lambda: settings_repository
+    try:
+        with TestClient(app) as client:
+            response = client.put(
+                "/api/settings",
+                json={"model": "custom-image-model", "api_key": "private-key"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "provider_name": "北海AI",
+        "model": "custom-image-model",
+        "base_url": "https://sub.beibeihai.xyz/v1",
+        "provider_id": "compatible",
+        "api_key_configured": True,
+    }
+    assert "private-key" not in response.text
+
+
+def test_settings_api_rejects_mutating_fixed_fields(
+    settings_repository: SettingsRepository,
+) -> None:
+    app.dependency_overrides[get_settings_repository] = lambda: settings_repository
+    try:
+        with TestClient(app) as client:
+            response = client.put(
+                "/api/settings",
+                json={
+                    "model": "custom-image-model",
+                    "provider_name": "other",
+                    "base_url": "https://other.example/v1",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422

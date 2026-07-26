@@ -9,6 +9,7 @@ from app.providers.base import ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
 from app.providers.custom_provider import CustomProvider
 from app.providers.registry import ProviderRegistry
+from app.repositories.settings_repository import StoredProviderSettings
 
 
 def test_registry_registers_only_providers_with_non_empty_keys() -> None:
@@ -47,6 +48,24 @@ def test_registry_uses_custom_key_for_compatible_provider_without_exposing_it() 
     assert "custom-secret" not in repr(registry.list_models())
 
 
+def test_registry_builds_fixed_compatible_provider_from_stored_settings() -> None:
+    registry = ProviderRegistry.from_stored_settings(
+        StoredProviderSettings(
+            provider_name="北海AI",
+            base_url="https://sub.beibeihai.xyz/v1",
+            model="custom-image-model",
+            api_key="stored-secret",
+        )
+    )
+
+    provider = registry.resolve("compatible")
+
+    assert provider.label == "北海AI"
+    assert provider.model == "custom-image-model"
+    assert [item.id for item in registry.list_models()] == ["compatible"]
+    assert "stored-secret" not in repr(registry.list_models())
+
+
 @pytest.mark.asyncio
 async def test_custom_provider_fails_explicitly() -> None:
     provider = CustomProvider()
@@ -64,27 +83,32 @@ async def test_custom_provider_fails_explicitly() -> None:
     assert error.value.code == "provider_not_implemented"
 
 
-def test_registry_dependency_reuses_clients_until_cache_is_cleared(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = Settings(
-        _env_file=None,
-        openai_api_key=SecretStr("openai-secret"),
-        custom_api_key=SecretStr(""),
+@pytest.mark.asyncio
+async def test_registry_dependency_reuses_clients_until_cache_is_cleared() -> None:
+    settings = StoredProviderSettings(
+        provider_name="北海AI",
+        base_url="https://sub.beibeihai.xyz/v1",
+        model="custom-image-model",
+        api_key="stored-secret",
     )
-    monkeypatch.setattr(dependencies, "get_settings", lambda: settings)
+
+    class Repository:
+        async def get(self):
+            return settings
+
+    repository = Repository()
     dependencies.clear_dependency_caches()
 
     try:
-        first = dependencies.get_provider_registry()
-        second = dependencies.get_provider_registry()
+        first = await dependencies.get_provider_registry(repository)
+        second = await dependencies.get_provider_registry(repository)
 
         assert first is second
-        assert first.resolve("openai").client is second.resolve("openai").client
+        assert first.resolve("compatible").client is second.resolve("compatible").client
 
         dependencies.clear_dependency_caches()
-        third = dependencies.get_provider_registry()
+        third = await dependencies.get_provider_registry(repository)
         assert third is not first
-        assert third.resolve("openai").client is not first.resolve("openai").client
+        assert third.resolve("compatible").client is not first.resolve("compatible").client
     finally:
         dependencies.clear_dependency_caches()

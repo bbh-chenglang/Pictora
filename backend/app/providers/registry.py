@@ -1,11 +1,14 @@
 from collections.abc import Mapping
 from typing import Any
 
+from pydantic import SecretStr
+
 from app.config import Settings
 from app.providers.base import ImageProvider, ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.common import ProviderModel
+from app.repositories.settings_repository import StoredProviderSettings
 
 
 def _secret_value(value: Any) -> str:
@@ -31,6 +34,21 @@ class ProviderRegistry:
                 settings.custom_base_url,
                 settings.custom_model,
                 settings.custom_provider_name,
+            )
+        return cls(providers)
+
+    @classmethod
+    def from_stored_settings(
+        cls,
+        settings: StoredProviderSettings,
+    ) -> "ProviderRegistry":
+        providers: dict[str, ImageProvider] = {}
+        if settings.api_key.strip():
+            providers["compatible"] = CompatibleProvider(
+                SecretStr(settings.api_key),
+                settings.base_url,
+                settings.model,
+                settings.provider_name,
             )
         return cls(providers)
 
