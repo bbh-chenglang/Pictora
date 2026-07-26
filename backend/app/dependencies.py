@@ -12,12 +12,19 @@ from app.repositories.settings_repository import (
     SettingsRepository,
     StoredProviderSettings,
 )
+from app.repositories.history_repository import HistoryRepository
+from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
 
 
 @lru_cache
 def get_settings_repository() -> SettingsRepository:
     return SettingsRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_history_repository() -> HistoryRepository:
+    return HistoryRepository(DATABASE_PATH)
 
 
 @lru_cache
@@ -45,6 +52,13 @@ async def get_image_service(
     return ImageService(registry)
 
 
+def get_history_service(
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> HistoryService:
+    return HistoryService(repository)
+
+
 def clear_dependency_caches() -> None:
     _registry_for.cache_clear()
     get_settings_repository.cache_clear()
+    get_history_repository.cache_clear()

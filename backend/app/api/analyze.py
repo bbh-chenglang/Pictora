@@ -2,9 +2,10 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.dependencies import get_image_service
+from app.dependencies import get_history_service, get_image_service
 from app.schemas.analyze import AnalyzeResponse
 from app.services.image_service import ImageService
+from app.services.history_service import HistoryService
 
 router = APIRouter(prefix="/api/analyze", tags=["analyze"])
 SUPPORTED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -19,17 +20,20 @@ async def analyze_image(
     detail: Annotated[Detail, Form()] = "auto",
     image: UploadFile = File(...),
     service: ImageService = Depends(get_image_service),
+    history_service: HistoryService = Depends(get_history_service),
 ) -> AnalyzeResponse:
     if image.content_type not in SUPPORTED_TYPES:
         raise HTTPException(400, {"error": {"code": "invalid_image", "message": "Unsupported image type"}})
     image_bytes = await image.read()
     if not image_bytes:
         raise HTTPException(400, {"error": {"code": "invalid_image", "message": "Image file is empty"}})
-    return await service.analyze(
-        provider,
-        model,
-        prompt,
-        detail,
-        image_bytes,
-        image.content_type or "application/octet-stream",
+    return await history_service.analyze(
+        image_service=service,
+        provider=provider,
+        model=model,
+        prompt=prompt,
+        detail=detail,
+        image_bytes=image_bytes,
+        content_type=image.content_type or "application/octet-stream",
+        filename=image.filename,
     )

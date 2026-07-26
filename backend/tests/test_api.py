@@ -6,7 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.database import initialize_database
-from app.dependencies import get_image_service, get_settings_repository
+from app.dependencies import (
+    get_history_service,
+    get_image_service,
+    get_settings_repository,
+)
 from app.main import app
 from app.providers.base import (
     ProviderAuthError,
@@ -47,10 +51,37 @@ class FakeImageService:
         return self.analyze_response
 
 
+class PassthroughHistoryService:
+    async def generate(self, request, image_service):
+        return await image_service.generate(request)
+
+    async def analyze(
+        self,
+        *,
+        image_service,
+        provider,
+        model,
+        prompt,
+        detail,
+        image_bytes,
+        content_type,
+        filename,
+    ):
+        return await image_service.analyze(
+            provider,
+            model,
+            prompt,
+            detail,
+            image_bytes,
+            content_type,
+        )
+
+
 @pytest.fixture
 def service():
     fake = FakeImageService()
     app.dependency_overrides[get_image_service] = lambda: fake
+    app.dependency_overrides[get_history_service] = PassthroughHistoryService
     yield fake
     app.dependency_overrides.clear()
 
@@ -185,6 +216,7 @@ def test_provider_errors_use_strict_error_response(
             raise error
 
     app.dependency_overrides[get_image_service] = ErrorService
+    app.dependency_overrides[get_history_service] = PassthroughHistoryService
     try:
         with TestClient(app) as client:
             response = client.post(
