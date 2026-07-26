@@ -40,7 +40,11 @@ class OpenAIProvider(ImageProvider):
         )
 
     async def generate_image(self, request: GenerateRequest) -> GenerateResponse:
-        arguments: dict[str, Any] = {"model": request.model, "prompt": request.prompt}
+        arguments: dict[str, Any] = {
+            "model": request.model,
+            "prompt": request.prompt,
+            "size": request.size,
+        }
         if request.detail in {"low", "high"}:
             arguments["quality"] = request.detail
         try:

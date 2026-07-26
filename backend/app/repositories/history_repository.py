@@ -36,15 +36,16 @@ class HistoryRepository:
         model: str,
         detail: str,
         image_count: int,
+        size: str | None = None,
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
             cursor = await connection.execute(
                 """
                 INSERT INTO history
-                    (kind, status, prompt, provider, model, detail, image_count)
-                VALUES (?, 'pending', ?, ?, ?, ?, ?)
+                    (kind, status, prompt, provider, model, detail, image_count, size)
+                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, prompt, provider, model, detail, image_count),
+                (kind, prompt, provider, model, detail, image_count, size),
             )
             await connection.commit()
             if cursor.lastrowid is None:
@@ -123,7 +124,7 @@ class HistoryRepository:
             cursor = await connection.execute(
                 """
                 SELECT id, kind, status, prompt, provider, model, detail,
-                       image_count, elapsed_ms, error_code, error_message,
+                       image_count, size, elapsed_ms, error_code, error_message,
                        created_at
                 FROM history
                 ORDER BY created_at DESC, id DESC
@@ -140,7 +141,7 @@ class HistoryRepository:
             cursor = await connection.execute(
                 """
                 SELECT id, kind, status, prompt, provider, model, detail,
-                       image_count, analysis_text, elapsed_ms, error_code,
+                       image_count, size, analysis_text, elapsed_ms, error_code,
                        error_message, created_at, completed_at
                 FROM history
                 WHERE id = ?

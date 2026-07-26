@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from app.database import FIXED_BASE_URL, FIXED_PROVIDER_NAME, initialize_database
@@ -40,3 +41,32 @@ async def test_settings_update_persists_only_model_and_api_key(tmp_path: Path) -
     assert reloaded.model == "new-model"
     assert reloaded.api_key == "new-key"
     assert reloaded.base_url == FIXED_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_database_migrates_existing_history_with_size_column(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.db"
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.execute(
+            """
+            CREATE TABLE history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                image_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        cursor = await connection.execute("PRAGMA table_info(history)")
+        columns = {row[1] for row in await cursor.fetchall()}
+    assert "size" in columns

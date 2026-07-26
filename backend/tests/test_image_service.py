@@ -60,7 +60,13 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
     )
 
     generated = await provider.generate_image(
-        SimpleNamespace(provider="openai", model="gpt-image-1", prompt="draw", detail="high")
+        SimpleNamespace(
+            provider="openai",
+            model="gpt-image-1",
+            prompt="draw",
+            detail="high",
+            size="1536x1152",
+        )
     )
     analysis = await provider.analyze_image("vision-model", "What is here?", b"abc", "image/png")
 
@@ -75,6 +81,7 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
         "model": "gpt-image-1",
         "prompt": "draw",
         "quality": "high",
+        "size": "1536x1152",
     }
     image_url = client.chat.completions.request["messages"][0]["content"][1]["image_url"]["url"]
     assert image_url == "data:image/png;base64,YWJj"
@@ -181,7 +188,7 @@ async def test_provider_errors_do_not_expose_key() -> None:
 
     with pytest.raises(ProviderAuthError) as error:
         await provider.generate_image(
-            SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+            GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
         )
 
     assert "do-not-leak" not in str(error.value)
@@ -204,7 +211,9 @@ async def test_provider_maps_unknown_sdk_failure_to_request_error() -> None:
     )
 
     with pytest.raises(ProviderRequestError) as error:
-        await provider.generate_image(SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai"))
+        await provider.generate_image(
+            GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
+        )
 
     assert "raw sdk payload" not in str(error.value)
 
@@ -226,7 +235,7 @@ async def test_provider_maps_sdk_timeout_to_timeout_error() -> None:
 
     with pytest.raises(ProviderTimeoutError):
         await provider.generate_image(
-            SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+            GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
         )
 
 
@@ -245,7 +254,7 @@ async def test_programming_errors_are_not_translated() -> None:
 
     with pytest.raises(ValueError, match="invalid fake SDK setup"):
         await provider.generate_image(
-            SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+            GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
         )
 
 
@@ -265,7 +274,7 @@ async def test_injected_falsy_client_is_preserved() -> None:
 
     assert provider.client is client
     await provider.generate_image(
-        SimpleNamespace(model="gpt-image-1", prompt="draw", detail="auto", provider="openai")
+        GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
     )
 
 
@@ -304,6 +313,75 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
     assert provider.calls == ["first", "first", "second", "second"]
     assert provider.max_active == 4
     assert all(image.generation_time_ms >= 1 for image in result.images)
+
+
+@pytest.mark.asyncio
+async def test_image_service_allows_one_minute_per_generated_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout_values: list[int] = []
+
+    class TimeoutContext:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    def capture_timeout(seconds: int):
+        timeout_values.append(seconds)
+        return TimeoutContext()
+
+    class ImmediateProvider:
+        async def generate_image(self, request):
+            return GenerateResponse(
+                provider="fake",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/image.png")],
+            )
+
+    monkeypatch.setattr(asyncio, "timeout", capture_timeout)
+    service = ImageService(SimpleNamespace(resolve=lambda _: ImmediateProvider()))
+
+    await service.generate(
+        GenerateRequest(
+            provider="fake",
+            model="image-model",
+            prompt="draw",
+            count=3,
+        )
+    )
+
+    assert timeout_values == [180]
+
+
+@pytest.mark.asyncio
+async def test_image_service_maps_batch_timeout_to_provider_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExpiredTimeout:
+        async def __aenter__(self):
+            raise TimeoutError
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(asyncio, "timeout", lambda _: ExpiredTimeout())
+
+    class ImmediateProvider:
+        async def generate_image(self, request):
+            return GenerateResponse(
+                provider="fake",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/image.png")],
+            )
+
+    service = ImageService(SimpleNamespace(resolve=lambda _: ImmediateProvider()))
+
+    with pytest.raises(ProviderTimeoutError):
+        await service.generate(
+            GenerateRequest(provider="fake", model="image-model", prompt="draw")
+        )
 
 
 @pytest.mark.asyncio

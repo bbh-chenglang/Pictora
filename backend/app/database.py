@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS history (
     model TEXT NOT NULL,
     detail TEXT NOT NULL,
     image_count INTEGER NOT NULL DEFAULT 1,
+    size TEXT,
     analysis_text TEXT,
     elapsed_ms INTEGER,
     error_code TEXT,
@@ -55,6 +56,10 @@ async def initialize_database(
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as connection:
         await connection.executescript(SCHEMA)
+        cursor = await connection.execute("PRAGMA table_info(history)")
+        history_columns = {row[1] for row in await cursor.fetchall()}
+        if "size" not in history_columns:
+            await connection.execute("ALTER TABLE history ADD COLUMN size TEXT")
         await connection.execute(
             """
             INSERT OR IGNORE INTO settings

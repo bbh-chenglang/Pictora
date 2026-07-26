@@ -44,23 +44,119 @@ describe("GenImage workspace", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("places connection settings above image parameters without showing the provider", async () => {
+  it("uses a collapsed API section and fixed image model options", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
     const panel = wrapper.get(".control-panel");
-    const connection = wrapper.get(".connection-section").element;
-    const imageParameters = wrapper.get(".image-parameter-section").element;
+    const connection = wrapper.get("details.connection-section");
+    const apiKeyLink = connection.get("a.api-key-link");
 
-    expect(panel.text()).toContain("API Key");
-    expect(panel.text()).not.toContain("提供商");
+    expect(connection.attributes("open")).toBeUndefined();
+    expect(connection.text()).toContain("接口配置");
+    expect(connection.text()).not.toContain("Base URL");
+    expect(apiKeyLink.attributes("href")).toBe(
+      "https://sub.beibeihai.xyz/home",
+    );
+    expect(apiKeyLink.attributes("target")).toBe("_blank");
+    expect(apiKeyLink.attributes("rel")).toBe("noopener noreferrer");
     expect(
-      connection.compareDocumentPosition(imageParameters) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+      wrapper.findAll(".model-select option").map((option) => option.text()),
+    ).toEqual([
+      "gpt-image-2",
+      "gpt-image-1.5",
+      "gpt-image-1",
+      "gpt-image-1Mini",
+    ]);
+    expect(
+      wrapper.findAll(".size-select option").map((option) => option.text()),
+    ).toEqual(["16:9", "9:16", "3:4", "4:3", "1:1"]);
+    expect(panel.text()).not.toContain("提供商");
+    expect(panel.text()).not.toContain("历史记录");
+    expect(panel.text()).not.toContain("保存设置");
     expect(wrapper.find(".composer-dock .reference-row").exists()).toBe(true);
     expect(wrapper.find(".composer-dock .prompt-row textarea").exists()).toBe(true);
     expect(wrapper.text()).not.toContain("批量提示词");
+  });
+
+  it("automatically saves the selected model", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get(".model-select").setValue("gpt-image-2");
+    await flushPromises();
+
+    const settingsUpdate = vi.mocked(fetch).mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith("/api/settings") && init?.method === "PUT",
+    );
+    expect(settingsUpdate).toBeDefined();
+    expect(JSON.parse(String(settingsUpdate?.[1]?.body))).toEqual({
+      model: "gpt-image-2",
+      api_key: null,
+    });
+  });
+
+  it("automatically saves an API key when editing finishes", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const input = wrapper.get(".connection-section input");
+    await input.setValue("new-private-key");
+    await input.trigger("change");
+    await flushPromises();
+
+    const settingsUpdate = vi.mocked(fetch).mock.calls.find(
+      ([inputValue, init]) =>
+        String(inputValue).endsWith("/api/settings") && init?.method === "PUT",
+    );
+    expect(settingsUpdate).toBeDefined();
+    expect(JSON.parse(String(settingsUpdate?.[1]?.body))).toEqual({
+      model: "gpt-image-1.5",
+      api_key: "new-private-key",
+    });
+  });
+
+  it("sends the selected image size when generating", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/generate")) {
+        return jsonResponse({ provider: "compatible", model: "gpt-image-2", images: [] });
+      }
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: [] }] });
+      }
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".size-select").setValue("1024x1024");
+    await wrapper.get(".prompt-row textarea").setValue("竖版海报");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    const generateRequest = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/generate"),
+    );
+    expect(generateRequest).toBeDefined();
+    expect(JSON.parse(String(generateRequest?.[1]?.body)).size).toBe("1024x1024");
+  });
+
+  it("opens and closes history in a right-side drawer", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.find(".history-drawer").exists()).toBe(false);
+    await wrapper.get(".history-trigger").trigger("click");
+    expect(wrapper.get(".history-drawer").attributes("role")).toBe("dialog");
+    await wrapper.get(".history-drawer-close").trigger("click");
+    expect(wrapper.find(".history-drawer").exists()).toBe(false);
   });
 
   it("restores a selected history record into the result canvas", async () => {
@@ -134,12 +230,19 @@ describe("GenImage workspace", () => {
 
     const wrapper = mount(App);
     await flushPromises();
+    await wrapper.get(".history-trigger").trigger("click");
     await wrapper.get("[data-history-id='7']").trigger("click");
     await flushPromises();
 
+    expect(wrapper.find(".history-drawer").exists()).toBe(false);
     const prompt = wrapper.get<HTMLTextAreaElement>(".prompt-row textarea");
     expect(prompt.element.value).toBe("蓝色海面");
     expect(wrapper.get(".image-grid img").attributes("src")).toBe(
+      "/api/history/7/images/9",
+    );
+    const imageCard = wrapper.get(".image-card");
+    expect(imageCard.get(".image-frame").find(".download").exists()).toBe(false);
+    expect(imageCard.get(".image-meta .download").attributes("href")).toBe(
       "/api/history/7/images/9",
     );
 
@@ -198,5 +301,67 @@ describe("GenImage workspace", () => {
       .map((node) => node.text());
     expect(metadata).toEqual(["0.50 秒", "14.05 秒"]);
     expect(wrapper.text()).not.toContain("500 ms");
+  });
+
+  it("shows the live generation timer in the center of the empty canvas", async () => {
+    let finishGeneration: ((response: Response) => void) | undefined;
+    const pendingGeneration = new Promise<Response>((resolve) => {
+      finishGeneration = resolve;
+    });
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/generate")) return pendingGeneration;
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: [] }] });
+      }
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("测试计时位置");
+    await wrapper.get(".primary-action").trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".result-heading .working").exists()).toBe(false);
+    expect(wrapper.get(".empty-wall h3").text()).toMatch(
+      /^等待生成结果 \d+\.\d{2} 秒$/,
+    );
+    expect(wrapper.get(".empty-wall p").text()).toBe(
+      "配置参数并在下方输入提示词。",
+    );
+
+    finishGeneration?.(
+      new Response(
+        JSON.stringify({ provider: "compatible", model: "gpt-image-1.5", images: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await flushPromises();
+  });
+
+  it("resizes the parameter panel within desktop limits", async () => {
+    vi.stubGlobal("innerWidth", 1440);
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const resizer = wrapper.get(".panel-resizer");
+    await resizer.trigger("pointerdown", { clientX: 320 });
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 450 }));
+    await flushPromises();
+    expect(wrapper.get(".studio-grid").attributes("style")).toContain("450px");
+
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 900 }));
+    await flushPromises();
+    expect(wrapper.get(".studio-grid").attributes("style")).toContain("480px");
+    window.dispatchEvent(new PointerEvent("pointerup"));
+
+    await resizer.trigger("keydown", { key: "ArrowLeft" });
+    await flushPromises();
+    expect(wrapper.get(".studio-grid").attributes("style")).toContain("464px");
   });
 });

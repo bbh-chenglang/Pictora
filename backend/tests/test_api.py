@@ -176,6 +176,7 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
                 "prompt": "帮我生成一个苹果的图片",
                 "detail": "auto",
                 "count": 2,
+                "size": "864x1536",
             },
         )
 
@@ -184,6 +185,7 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
     assert service.generate_calls[-1].model == "gpt-image-2"
     assert service.generate_calls[-1].prompt == "帮我生成一个苹果的图片"
     assert service.generate_calls[-1].count == 2
+    assert service.generate_calls[-1].size == "864x1536"
 
 
 def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
@@ -194,6 +196,37 @@ def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
         )
 
     assert response.status_code == 422
+
+
+def test_generate_rejects_unsupported_size(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "provider": "openai",
+                "model": "gpt-image-2",
+                "prompt": "draw",
+                "size": "1000x1000",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_generate_accepts_square_size(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "provider": "openai",
+                "model": "gpt-image-2",
+                "prompt": "draw a square icon",
+                "size": "1024x1024",
+            },
+        )
+
+    assert response.status_code == 200
+    assert service.generate_calls[-1].size == "1024x1024"
 
 
 def test_analyze_accepts_jpeg(service: FakeImageService) -> None:

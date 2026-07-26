@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
+  ChevronDown,
   Download,
+  ExternalLink,
+  History,
   ImagePlus,
   LoaderCircle,
-  Save,
   Sparkles,
   Upload,
   X,
@@ -25,6 +27,7 @@ type HistorySummary = {
   provider: string;
   model: string;
   detail: string;
+  size?: string | null;
   image_count: number;
   elapsed_ms?: number | null;
   error_code?: string | null;
@@ -45,20 +48,38 @@ type HistoryDetail = HistorySummary & {
   images: HistoryImage[];
 };
 
+const MODEL_OPTIONS = [
+  "gpt-image-2",
+  "gpt-image-1.5",
+  "gpt-image-1",
+  "gpt-image-1Mini",
+] as const;
+const DEFAULT_MODEL = MODEL_OPTIONS[0];
+const SIZE_OPTIONS = [
+  { label: "16:9", value: "1536x864" },
+  { label: "9:16", value: "864x1536" },
+  { label: "3:4", value: "1152x1536" },
+  { label: "4:3", value: "1536x1152" },
+  { label: "1:1", value: "1024x1024" },
+] as const;
+const DEFAULT_SIZE = SIZE_OPTIONS[0].value;
+const PANEL_MIN_WIDTH = 280;
+const PANEL_MAX_WIDTH = 480;
+
 const providers = ref<Provider[]>([]);
 const provider = ref("compatible");
-const model = ref("");
+const model = ref<string>(DEFAULT_MODEL);
 const prompt = ref("");
 const batchPrompts = ref("");
 const imageCount = ref(1);
 const detail = ref("auto");
+const size = ref<string>(DEFAULT_SIZE);
 const imageFile = ref<File | null>(null);
 const previewUrl = ref("");
 const generated = ref<ImageResult[]>([]);
 const analysis = ref("");
 const busy = ref<"generate" | "analyze" | "">("");
 const error = ref("");
-const baseUrl = ref("https://sub.beibeihai.xyz/v1");
 const apiKey = ref("");
 const apiKeyConfigured = ref(false);
 const savingSettings = ref(false);
@@ -67,9 +88,14 @@ const historyError = ref("");
 const activeHistoryId = ref<number | null>(null);
 const generationElapsedMs = ref(0);
 const lightboxUrl = ref("");
+const historyOpen = ref(false);
+const sidebarWidth = ref(320);
+const resizingSidebar = ref(false);
 let generationTimer: number | undefined;
 let generationStartedAt = 0;
 let generationController: AbortController | null = null;
+let settingsSaveQueue: Promise<void> = Promise.resolve();
+let pendingSettingsSaves = 0;
 
 const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -94,8 +120,9 @@ async function loadRuntimeSettings() {
   const response = await fetch(`${API_BASE}/api/settings`);
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载运行时配置"));
-  model.value = data.model ?? "";
-  baseUrl.value = data.base_url ?? "https://sub.beibeihai.xyz/v1";
+  model.value = (MODEL_OPTIONS as readonly string[]).includes(data.model)
+    ? data.model
+    : DEFAULT_MODEL;
   apiKeyConfigured.value = Boolean(data.api_key_configured);
 }
 
@@ -105,7 +132,6 @@ async function loadProviders() {
   if (!response.ok) throw new Error(readableError(data, "无法加载服务商"));
   providers.value = data.providers ?? [];
   provider.value = providers.value[0]?.id ?? "compatible";
-  if (!model.value) model.value = providers.value[0]?.models[0] ?? "";
 }
 
 async function loadHistory() {
@@ -131,8 +157,13 @@ async function openHistory(historyId: number) {
     activeHistoryId.value = historyId;
     prompt.value = data.prompt;
     provider.value = data.provider;
-    model.value = data.model;
+    model.value = (MODEL_OPTIONS as readonly string[]).includes(data.model)
+      ? data.model
+      : DEFAULT_MODEL;
     detail.value = data.detail;
+    if (SIZE_OPTIONS.some((option) => option.value === data.size)) {
+      size.value = data.size ?? DEFAULT_SIZE;
+    }
     imageCount.value = data.image_count;
     analysis.value = data.analysis_text ?? "";
     generated.value = data.images
@@ -143,36 +174,48 @@ async function openHistory(historyId: number) {
     if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
     imageFile.value = null;
     previewUrl.value = reference ? resourceUrl(reference.url) : "";
+    historyOpen.value = false;
   } catch (exception) {
     error.value =
       exception instanceof Error ? exception.message : "无法加载历史详情";
   }
 }
 
-async function applyRuntimeSettings() {
+async function applyRuntimeSettings(includeApiKey = false) {
+  const submittedModel = model.value.trim();
+  const submittedApiKey = includeApiKey ? apiKey.value.trim() || null : null;
+  if (!submittedModel) return;
+
+  pendingSettingsSaves += 1;
   savingSettings.value = true;
   error.value = "";
-  try {
-    const response = await fetch(`${API_BASE}/api/settings`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: model.value.trim(),
-        api_key: apiKey.value.trim() || null,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(readableError(data, "配置应用失败"));
-    model.value = data.model;
-    baseUrl.value = data.base_url;
-    apiKeyConfigured.value = Boolean(data.api_key_configured);
-    apiKey.value = "";
-    await loadProviders();
-  } catch (exception) {
-    error.value = exception instanceof Error ? exception.message : "配置应用失败";
-  } finally {
-    savingSettings.value = false;
-  }
+  const save = settingsSaveQueue.then(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: submittedModel,
+          api_key: submittedApiKey,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(readableError(data, "配置应用失败"));
+      model.value = (MODEL_OPTIONS as readonly string[]).includes(data.model)
+        ? data.model
+        : DEFAULT_MODEL;
+      apiKeyConfigured.value = Boolean(data.api_key_configured);
+      if (includeApiKey && apiKey.value.trim() === submittedApiKey) apiKey.value = "";
+      await loadProviders();
+    } catch (exception) {
+      error.value = exception instanceof Error ? exception.message : "配置应用失败";
+    }
+  });
+  settingsSaveQueue = save;
+  await save.finally(() => {
+    pendingSettingsSaves -= 1;
+    savingSettings.value = pendingSettingsSaves > 0;
+  });
 }
 
 function setFile(file?: File) {
@@ -251,6 +294,7 @@ async function generateImage() {
         prompts: prompts.length ? prompts : null,
         count: imageCount.value,
         detail: detail.value,
+        size: size.value,
       }),
     });
     const data = await response.json();
@@ -317,8 +361,48 @@ function closeLightbox() {
   lightboxUrl.value = "";
 }
 
+function closeHistory() {
+  historyOpen.value = false;
+}
+
+function updateSidebarWidth(clientX: number) {
+  const viewportMax = Math.max(PANEL_MIN_WIDTH, window.innerWidth - 560);
+  sidebarWidth.value = Math.min(
+    PANEL_MAX_WIDTH,
+    viewportMax,
+    Math.max(PANEL_MIN_WIDTH, clientX),
+  );
+}
+
+function handleSidebarPointerMove(event: PointerEvent) {
+  if (resizingSidebar.value) updateSidebarWidth(event.clientX);
+}
+
+function stopSidebarResize() {
+  resizingSidebar.value = false;
+  window.removeEventListener("pointermove", handleSidebarPointerMove);
+  window.removeEventListener("pointerup", stopSidebarResize);
+}
+
+function startSidebarResize(event: PointerEvent) {
+  resizingSidebar.value = true;
+  updateSidebarWidth(event.clientX);
+  window.addEventListener("pointermove", handleSidebarPointerMove);
+  window.addEventListener("pointerup", stopSidebarResize);
+}
+
+function handleSidebarKeydown(event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  updateSidebarWidth(
+    sidebarWidth.value + (event.key === "ArrowLeft" ? -16 : 16),
+  );
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") closeLightbox();
+  if (event.key !== "Escape") return;
+  if (lightboxUrl.value) closeLightbox();
+  else closeHistory();
 }
 
 onMounted(async () => {
@@ -331,6 +415,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
+  stopSidebarResize();
   stopGenerationTimer();
   if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
 });
@@ -343,57 +428,49 @@ onUnmounted(() => {
         <span class="brand-mark">G</span>
         <div><strong>GenImage</strong><small>图像工作台</small></div>
       </div>
-      <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
-        <i></i>{{ apiKeyConfigured ? "服务已配置" : "等待 API Key" }}
-      </span>
+      <div class="topbar-actions">
+        <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
+          <i></i>{{ apiKeyConfigured ? "服务已配置" : "等待 API Key" }}
+        </span>
+        <button type="button" class="history-trigger" @click="historyOpen = true">
+          <History :size="17" /><span>历史记录</span><strong>{{ history.length }}</strong>
+        </button>
+      </div>
     </header>
 
-    <div class="studio-grid">
+    <div class="studio-grid" :class="{ resizing: resizingSidebar }" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
       <aside class="control-panel">
         <div class="panel-title">
-          <div><span>生成设置</span><h1>工作台设置</h1></div>
+          <div><span>生成设置</span><h1>图片参数</h1></div>
           <strong>{{ imageCount }} 张</strong>
         </div>
 
-        <section class="connection-section">
-          <div class="section-label"><span>接口配置</span><small>{{ apiKeyConfigured ? "已保存" : "未配置" }}</small></div>
-          <label>API Key<input v-model="apiKey" type="password" autocomplete="off" :placeholder="apiKeyConfigured ? '留空则保持当前 Key' : '输入 API Key'" /></label>
-          <label>Base URL<input :value="baseUrl" readonly /></label>
-        </section>
+        <details class="connection-section">
+          <summary><span>接口配置</span><small>{{ savingSettings ? "保存中" : apiKeyConfigured ? "已配置" : "未配置" }}</small><ChevronDown :size="16" /></summary>
+          <div class="connection-body">
+            <label>API Key<input v-model="apiKey" type="password" autocomplete="off" :placeholder="apiKeyConfigured ? '留空则保持当前 Key' : '输入 API Key'" @change="applyRuntimeSettings(true)" /></label>
+            <a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a>
+          </div>
+        </details>
 
         <section class="image-parameter-section">
-          <div class="section-label"><span>图片参数</span></div>
-          <label>模型名称<input v-model="model" placeholder="例如：gpt-image-1.5" /></label>
+          <label>模型名称<select v-model="model" class="model-select" @change="applyRuntimeSettings(false)"><option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option></select></label>
+          <label>图片尺寸<select v-model="size" class="size-select"><option v-for="option in SIZE_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
           <div class="parameter-grid">
             <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>
             <label>生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
           </div>
         </section>
 
-        <button type="button" class="settings-action" :disabled="savingSettings || !model.trim()" @click="applyRuntimeSettings">
-          <LoaderCircle v-if="savingSettings" class="spin" :size="15" />
-          <Save v-else :size="15" />{{ savingSettings ? "保存中..." : "保存配置" }}
-        </button>
-
-        <section class="history-section">
-          <div class="section-label"><span>历史记录</span><small>{{ history.length }}</small></div>
-          <div v-if="history.length" class="history-list">
-            <button v-for="item in history" :key="item.id" type="button" class="history-item" :class="{ active: activeHistoryId === item.id, failed: item.status === 'failed' }" :data-history-id="item.id" @click="openHistory(item.id)">
-              <span>{{ item.prompt }}</span>
-              <small>{{ item.model }} · {{ formatHistoryTime(item.created_at) }}</small>
-            </button>
-          </div>
-          <p v-else-if="!historyError" class="history-empty">暂无历史记录</p>
-          <p v-if="historyError" class="history-error">{{ historyError }}</p>
-        </section>
       </aside>
+
+      <div class="panel-resizer" role="separator" aria-label="调整参数栏宽度" aria-orientation="vertical" :aria-valuenow="sidebarWidth" :aria-valuemin="PANEL_MIN_WIDTH" :aria-valuemax="PANEL_MAX_WIDTH" tabindex="0" @pointerdown="startSidebarResize" @keydown="handleSidebarKeydown"></div>
 
       <section class="workspace-panel">
         <div class="result-panel">
           <div class="result-heading">
             <div><span>作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
-            <span v-if="busy === 'generate'" class="working">生成中 {{ formatDuration(generationElapsedMs) }}</span>
-            <span v-else-if="busy" class="working">处理中</span>
+            <span v-if="busy === 'analyze'" class="working">处理中</span>
           </div>
 
           <div v-if="analysis" class="analysis-note"><div class="note-label">图片分析</div><p>{{ analysis }}</p></div>
@@ -404,14 +481,19 @@ onUnmounted(() => {
                   <img :src="imageSource(item)" :alt="`生成图片 ${index + 1}`" />
                 </button>
                 <div v-else class="missing-image">图片数据不可用</div>
-                <a v-if="imageSource(item)" class="download" :href="imageSource(item)" download="genimage-result.png" aria-label="下载图片"><Download :size="16" /></a>
               </div>
-              <div class="image-meta"><span>图片 {{ index + 1 }}</span><strong>{{ formatDuration(item.generation_time_ms) }}</strong></div>
+              <div class="image-meta">
+                <span>图片 {{ index + 1 }}</span>
+                <div class="image-meta-actions">
+                  <strong>{{ formatDuration(item.generation_time_ms) }}</strong>
+                  <a v-if="imageSource(item)" class="download" :href="imageSource(item)" download="genimage-result.png" aria-label="下载图片" title="下载图片"><Download :size="16" /></a>
+                </div>
+              </div>
             </article>
           </div>
           <div v-else-if="!analysis" class="empty-wall">
             <div class="empty-shape"><Sparkles :size="24" /></div>
-            <h3>等待生成结果</h3>
+            <h3>{{ busy === "generate" ? `等待生成结果 ${formatDuration(generationElapsedMs)}` : "等待生成结果" }}</h3>
             <p>配置参数并在下方输入提示词。</p>
           </div>
         </div>
@@ -434,6 +516,25 @@ onUnmounted(() => {
         </section>
       </section>
     </div>
+
+    <Transition name="drawer">
+      <div v-if="historyOpen" class="drawer-layer" @click.self="closeHistory">
+        <aside class="history-drawer" role="dialog" aria-modal="true" aria-label="历史记录">
+          <div class="history-drawer-header">
+            <div><span>历史记录</span><strong>{{ history.length }} 条</strong></div>
+            <button type="button" class="history-drawer-close" aria-label="关闭历史记录" title="关闭" @click="closeHistory"><X :size="20" /></button>
+          </div>
+          <div v-if="history.length" class="history-list">
+            <button v-for="item in history" :key="item.id" type="button" class="history-item" :class="{ active: activeHistoryId === item.id, failed: item.status === 'failed' }" :data-history-id="item.id" @click="openHistory(item.id)">
+              <span>{{ item.prompt }}</span>
+              <small>{{ item.model }} · {{ formatHistoryTime(item.created_at) }}</small>
+            </button>
+          </div>
+          <p v-else-if="!historyError" class="history-empty">暂无历史记录</p>
+          <p v-if="historyError" class="history-error">{{ historyError }}</p>
+        </aside>
+      </div>
+    </Transition>
 
     <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" aria-label="生成图片全屏预览" @click.self="closeLightbox">
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>

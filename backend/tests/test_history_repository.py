@@ -21,6 +21,7 @@ async def test_history_repository_tracks_task_and_blob_images(
         model="custom-model",
         detail="high",
         image_count=1,
+        size="1152x1536",
     )
     await repository.add_image(
         history_id=history_id,
@@ -39,6 +40,7 @@ async def test_history_repository_tracks_task_and_blob_images(
 
     assert summaries[0].status == "completed"
     assert summaries[0].prompt == "画一个苹果"
+    assert summaries[0].size == "1152x1536"
     assert detail.images[0].role == "generated"
     assert (
         detail.images[0].url

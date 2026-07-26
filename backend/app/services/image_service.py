@@ -2,6 +2,7 @@ import asyncio
 import re
 from time import perf_counter
 
+from app.providers.base import ProviderTimeoutError
 from app.providers.registry import ProviderRegistry
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.generate import GenerateRequest, GenerateResponse
@@ -20,8 +21,16 @@ class ImageService:
         count = request.count if request.count > 1 else max(
             request.count, *(self._prompt_count(prompt) for prompt in prompts)
         )
-        jobs = [self._generate_one(provider, request, prompt) for prompt in prompts for _ in range(count)]
-        responses = await asyncio.gather(*jobs)
+        try:
+            async with asyncio.timeout(count * 60):
+                jobs = [
+                    self._generate_one(provider, request, prompt)
+                    for prompt in prompts
+                    for _ in range(count)
+                ]
+                responses = await asyncio.gather(*jobs)
+        except TimeoutError:
+            raise ProviderTimeoutError() from None
         return GenerateResponse(
             provider=request.provider,
             model=request.model,

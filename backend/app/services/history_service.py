@@ -33,6 +33,7 @@ class HistoryService:
             model=request.model,
             detail=request.detail,
             image_count=request.count,
+            size=request.size,
         )
         started_at = perf_counter()
         try:
@@ -90,6 +91,7 @@ class HistoryService:
             model=model,
             detail=detail,
             image_count=1,
+            size=None,
         )
         started_at = perf_counter()
         try:
