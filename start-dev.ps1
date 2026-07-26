@@ -8,7 +8,7 @@ $venvPath = Join-Path $projectRoot "backend\.venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $node = Get-Command node -ErrorAction SilentlyContinue
 $backendPort = 8002
-$frontendPort = 5175
+$frontendPort = 3000
 
 function Get-DescendantProcessIds([int]$parentId) {
     $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentId")
@@ -117,15 +117,15 @@ try {
 
     $frontend = Start-Process `
         -FilePath $node.Source `
-        -ArgumentList @($npmCli, "run", "dev", "--", "--host", "localhost", "--port", "$frontendPort", "--strictPort") `
+        -ArgumentList @($npmCli, "run", "dev", "--", "--host", "127.0.0.1", "--port", "$frontendPort", "--strictPort") `
         -WorkingDirectory $frontendRoot `
         -PassThru
 
     Wait-Endpoint "http://127.0.0.1:$backendPort/health"
-    Wait-Endpoint "http://localhost:$frontendPort/"
+    Wait-Endpoint "http://127.0.0.1:$frontendPort/"
 
     Write-Host "GenImage development services started:" -ForegroundColor Green
-    Write-Host "Frontend: http://localhost:$frontendPort/"
+    Write-Host "Frontend: http://127.0.0.1:$frontendPort/"
     Write-Host "Backend: http://localhost:$backendPort/"
     Write-Host "Press Ctrl+C to stop both services."
 
