@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 from openai import (
@@ -32,11 +33,18 @@ class OpenAIProvider(ImageProvider):
         base_url: str,
         model: str,
         client: Any | None = None,
+        default_headers: Mapping[str, str] | None = None,
     ) -> None:
         secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self.model = model
         self.client = (
-            client if client is not None else AsyncOpenAI(api_key=secret, base_url=base_url)
+            client
+            if client is not None
+            else AsyncOpenAI(
+                api_key=secret,
+                base_url=base_url,
+                default_headers=default_headers,
+            )
         )
 
     async def generate_image(self, request: GenerateRequest) -> GenerateResponse:

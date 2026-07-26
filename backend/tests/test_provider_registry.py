@@ -67,6 +67,22 @@ def test_registry_builds_fixed_compatible_provider_from_stored_settings() -> Non
 
 
 @pytest.mark.asyncio
+async def test_compatible_provider_uses_browser_user_agent() -> None:
+    provider = CompatibleProvider(
+        api_key=SecretStr("stored-secret"),
+        base_url="https://sub.beibeihai.xyz/v1",
+        model="gpt-image-2",
+    )
+
+    try:
+        user_agent = provider.client.default_headers["User-Agent"]
+        assert user_agent.startswith("Mozilla/5.0")
+        assert "OpenAI/Python" not in user_agent
+    finally:
+        await provider.client.close()
+
+
+@pytest.mark.asyncio
 async def test_custom_provider_fails_explicitly() -> None:
     provider = CustomProvider()
 
