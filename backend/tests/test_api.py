@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.database import initialize_database
 from app.dependencies import (
+    get_history_repository,
     get_history_service,
     get_image_service,
     get_settings_repository,
@@ -22,6 +23,7 @@ from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult, ProviderModel
 from app.schemas.generate import GenerateResponse
 from app.repositories.settings_repository import SettingsRepository
+from app.repositories.history_repository import HistoryRepository
 
 
 class FakeImageService:
@@ -97,6 +99,42 @@ def settings_repository(tmp_path: Path) -> SettingsRepository:
         )
     )
     return SettingsRepository(database_path)
+
+
+@pytest.fixture
+def empty_history_repository(tmp_path: Path) -> HistoryRepository:
+    database_path = tmp_path / "empty-history.db"
+    asyncio.run(initialize_database(database_path))
+    return HistoryRepository(database_path)
+
+
+@pytest.fixture
+def history_repository_with_record(tmp_path: Path) -> HistoryRepository:
+    database_path = tmp_path / "history-api.db"
+    asyncio.run(initialize_database(database_path))
+    repository = HistoryRepository(database_path)
+    history_id = asyncio.run(
+        repository.create(
+            kind="generate",
+            prompt="画一个苹果",
+            provider="compatible",
+            model="custom-model",
+            detail="high",
+            image_count=1,
+        )
+    )
+    asyncio.run(
+        repository.add_image(
+            history_id=history_id,
+            role="generated",
+            mime_type="image/png",
+            filename="result.png",
+            position=0,
+            data=b"png-bytes",
+        )
+    )
+    asyncio.run(repository.complete(history_id, elapsed_ms=500))
+    return repository
 
 
 def test_list_providers_returns_safe_models(service: FakeImageService) -> None:
@@ -273,3 +311,60 @@ def test_settings_api_rejects_mutating_fixed_fields(
         app.dependency_overrides.clear()
 
     assert response.status_code == 422
+
+
+def test_history_list_excludes_blob_data(
+    history_repository_with_record: HistoryRepository,
+) -> None:
+    app.dependency_overrides[get_history_repository] = (
+        lambda: history_repository_with_record
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/history")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()[0]["prompt"] == "画一个苹果"
+    assert "data" not in response.text
+    assert "base64" not in response.text
+
+
+def test_history_detail_and_image_routes(
+    history_repository_with_record: HistoryRepository,
+) -> None:
+    app.dependency_overrides[get_history_repository] = (
+        lambda: history_repository_with_record
+    )
+    try:
+        with TestClient(app) as client:
+            detail = client.get("/api/history/1")
+            image = client.get("/api/history/1/images/1")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert detail.status_code == 200
+    assert detail.json()["images"][0]["url"] == "/api/history/1/images/1"
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+    assert image.content == b"png-bytes"
+
+
+def test_missing_history_resources_return_404(
+    empty_history_repository: HistoryRepository,
+) -> None:
+    app.dependency_overrides[get_history_repository] = (
+        lambda: empty_history_repository
+    )
+    try:
+        with TestClient(app) as client:
+            detail = client.get("/api/history/999")
+            image = client.get("/api/history/999/images/999")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert detail.status_code == 404
+    assert detail.json()["error"]["code"] == "history_not_found"
+    assert image.status_code == 404
+    assert image.json()["error"]["code"] == "history_image_not_found"
