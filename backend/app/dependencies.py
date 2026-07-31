@@ -1,7 +1,8 @@
 from functools import lru_cache
 
-from fastapi import Depends
+from fastapi import Cookie, Depends, HTTPException
 
+from app.auth import SESSION_COOKIE, hash_session_token
 from app.database import (
     DATABASE_PATH,
     FIXED_BASE_URL,
@@ -13,6 +14,8 @@ from app.repositories.settings_repository import (
     StoredProviderSettings,
 )
 from app.repositories.history_repository import HistoryRepository
+from app.repositories.user_repository import UserRepository
+from app.schemas.auth import StoredSessionUser
 from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
 
@@ -25,6 +28,29 @@ def get_settings_repository() -> SettingsRepository:
 @lru_cache
 def get_history_repository() -> HistoryRepository:
     return HistoryRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_user_repository() -> UserRepository:
+    return UserRepository(DATABASE_PATH)
+
+
+async def get_current_user(
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    repository: UserRepository = Depends(get_user_repository),
+) -> StoredSessionUser:
+    if not session_token:
+        raise HTTPException(
+            401,
+            {"error": {"code": "authentication_required", "message": "请先登录"}},
+        )
+    user = await repository.get_session_user(hash_session_token(session_token))
+    if user is None:
+        raise HTTPException(
+            401,
+            {"error": {"code": "authentication_required", "message": "请先登录"}},
+        )
+    return user
 
 
 @lru_cache
@@ -62,3 +88,4 @@ def clear_dependency_caches() -> None:
     _registry_for.cache_clear()
     get_settings_repository.cache_clear()
     get_history_repository.cache_clear()
+    get_user_repository.cache_clear()

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.analyze import router as analyze_router
+from app.api.auth import router as auth_router
 from app.api.generate import router as generate_router
 from app.api.providers import router as providers_router
 from app.api.settings import router as settings_router
@@ -64,6 +65,7 @@ async def http_error_handler(_: Request, exc: HTTPException):
 
 
 app.include_router(providers_router)
+app.include_router(auth_router)
 app.include_router(settings_router)
 app.include_router(generate_router)
 app.include_router(analyze_router)
