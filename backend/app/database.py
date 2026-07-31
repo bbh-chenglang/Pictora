@@ -5,19 +5,29 @@ import aiosqlite
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "genimage.db"
 FIXED_PROVIDER_NAME = "北海AI"
 FIXED_BASE_URL = "https://sub.beibeihai.xyz/v1"
+SCHEMA_VERSION = 2
 
-SCHEMA = """
+SCHEMA = f"""
 PRAGMA foreign_keys = ON;
-CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    provider_name TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    model TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'gpt-image-1.5',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind TEXT NOT NULL CHECK (kind IN ('generate', 'analyze')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
     prompt TEXT NOT NULL,
@@ -42,35 +52,23 @@ CREATE TABLE IF NOT EXISTS history_images (
     position INTEGER NOT NULL DEFAULT 0,
     data BLOB NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_history_images_history_id
-    ON history_images(history_id, position);
+CREATE INDEX IF NOT EXISTS idx_history_user_created_at ON history(user_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_history_images_history_id ON history_images(history_id, position);
 """
 
 
-async def initialize_database(
-    path: Path = DATABASE_PATH,
-    default_model: str = "gpt-image-1.5",
-    default_api_key: str = "",
-) -> None:
+async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as connection:
-        await connection.executescript(SCHEMA)
-        cursor = await connection.execute("PRAGMA table_info(history)")
-        history_columns = {row[1] for row in await cursor.fetchall()}
-        if "size" not in history_columns:
-            await connection.execute("ALTER TABLE history ADD COLUMN size TEXT")
-        await connection.execute(
-            """
-            INSERT OR IGNORE INTO settings
-                (id, provider_name, base_url, model, api_key)
-            VALUES (1, ?, ?, ?, ?)
-            """,
-            (
-                FIXED_PROVIDER_NAME,
-                FIXED_BASE_URL,
-                default_model,
-                default_api_key,
-            ),
-        )
+        await connection.execute("PRAGMA foreign_keys = ON")
+        cursor = await connection.execute("PRAGMA user_version")
+        version = (await cursor.fetchone())[0]
+        if version < SCHEMA_VERSION:
+            await connection.execute("DROP TABLE IF EXISTS history_images")
+            await connection.execute("DROP TABLE IF EXISTS history")
+            await connection.execute("DROP TABLE IF EXISTS settings")
+            await connection.executescript(SCHEMA)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        else:
+            await connection.executescript(SCHEMA)
         await connection.commit()

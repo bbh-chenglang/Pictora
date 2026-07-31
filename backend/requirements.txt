@@ -5,3 +5,4 @@ httpx==0.28.1
 pydantic-settings==2.14.1
 python-multipart==0.0.32
 aiosqlite==0.21.0
+bcrypt==4.3.0
