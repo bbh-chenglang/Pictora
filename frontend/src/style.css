@@ -979,9 +979,11 @@ select { cursor: pointer; }
  .auth-form h1{margin:0;font-size:24px}
  .auth-form label{display:grid;gap:6px;font-weight:700}
 .auth-form input{min-height:42px;border:2px solid #191817;padding:8px;font:inherit}
-.settings-page{max-width:860px;margin:0 auto;padding:32px;display:grid;gap:20px}
-.settings-section{display:grid;gap:12px;border:2px solid #191817;background:#fffdf8;padding:20px}
+.settings-page{max-width:720px;margin:0 auto;padding:32px 48px;display:grid;gap:20px}
+.settings-section{display:grid;gap:12px;border:2px solid #191817;background:#fffdf8;padding:20px 32px}
 .settings-section h1,.settings-section h2,.settings-section p{margin:0}
 .settings-section label{display:grid;gap:6px;font-weight:700}
 .settings-section input{min-height:42px;border:2px solid #191817;padding:8px;font:inherit}
 .settings-section label:has(.theme-option){display:flex;align-items:center;gap:8px;color:#625d54}
+@media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:20px}}
+@media (max-width:520px){.settings-page{padding-inline:16px}.settings-section{padding-inline:16px}}
