@@ -129,6 +129,11 @@ const activeGenerationRun = computed(() => {
     ? null
     : generationRuns.get(activeGenerationRunId.value) ?? null;
 });
+const activeGenerationElapsedMs = computed(() => {
+  generationVersion.value;
+  if (activeGenerationRunId.value === null) return null;
+  return generationRuns.get(activeGenerationRunId.value)?.elapsedMs ?? 0;
+});
 const canAnalyze = computed(() => Boolean(imageFile.value) && busy.value !== "analyze");
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -768,7 +773,7 @@ onUnmounted(() => {
           </div>
           <div v-else-if="!analysis" class="empty-wall">
             <div class="empty-shape"><Sparkles :size="24" /></div>
-            <h3>{{ activeGenerationRun ? `等待生成结果 ${formatDuration(activeGenerationRun.elapsedMs)}` : "等待生成结果" }}</h3>
+            <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
             <p>配置参数并在下方输入提示词。</p>
           </div>
         </div>
