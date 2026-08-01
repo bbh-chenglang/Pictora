@@ -71,6 +71,12 @@ const DETAIL_OPTIONS = [
 ] as const;
 const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
 type ParameterMenu = "model" | "size" | "detail" | "count";
+type GenerationRun = {
+  controller: AbortController;
+  startedAt: number;
+  elapsedMs: number;
+  timer?: number;
+};
 
 const providers = ref<Provider[]>([]);
 const provider = ref("compatible");
@@ -99,7 +105,6 @@ const confirmProject = ref<ProjectSummary | null>(null);
 const confirmHistoryIds = ref<number[]>([]);
 const actionBusy = ref(false);
 const activeHistoryId = ref<number | null>(null);
-const generationElapsedMs = ref(0);
 const lightboxUrl = ref("");
 const openParameterMenu = ref<ParameterMenu | null>(null);
 const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
@@ -113,12 +118,18 @@ const settingsApiKey = ref("");
 const oldPassword = ref("");
 const newPassword = ref("");
 const newPasswordConfirmation = ref("");
-let generationTimer: number | undefined;
-let generationStartedAt = 0;
-let generationController: AbortController | null = null;
 let settingsSaveQueue: Promise<void> = Promise.resolve();
 
-const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
+const generationRuns = new Map<number, GenerationRun>();
+const generationVersion = ref(0);
+const activeGenerationRunId = ref<number | null>(null);
+const activeGenerationRun = computed(() => {
+  generationVersion.value;
+  return activeGenerationRunId.value === null
+    ? null
+    : generationRuns.get(activeGenerationRunId.value) ?? null;
+});
+const canAnalyze = computed(() => Boolean(imageFile.value) && busy.value !== "analyze");
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 function readableError(data: any, fallback: string) {
@@ -333,9 +344,9 @@ function clearWorkspace() {
 }
 
 function selectProject(projectId: number) {
-  if (busy.value) return;
   selectedProjectId.value = projectId;
   history.value = projects.value.find((project) => project.id === projectId)?.history ?? [];
+  activeGenerationRunId.value = null;
   clearWorkspace();
 }
 
@@ -428,7 +439,10 @@ async function confirmDeletion() {
   }
 }
 
-function startNewConversation() { if (!busy.value) clearWorkspace(); }
+function startNewConversation() {
+  activeGenerationRunId.value = null;
+  clearWorkspace();
+}
 
 async function applyRuntimeSettings() {
   const submittedModel = model.value.trim();
@@ -486,40 +500,41 @@ function formatHistoryTime(value: string) {
   }).format(new Date(value));
 }
 
-function startGenerationTimer() {
-  generationStartedAt = performance.now();
-  generationElapsedMs.value = 0;
-  generationTimer = window.setInterval(() => {
-    generationElapsedMs.value = performance.now() - generationStartedAt;
+function startGenerationRun(runId: number, controller: AbortController) {
+  const run: GenerationRun = { controller, startedAt: performance.now(), elapsedMs: 0 };
+  run.timer = window.setInterval(() => {
+    run.elapsedMs = performance.now() - run.startedAt;
+    generationVersion.value++;
   }, 100);
+  generationRuns.set(runId, run);
+  activeGenerationRunId.value = runId;
 }
 
-function stopGenerationTimer() {
-  if (generationTimer !== undefined) window.clearInterval(generationTimer);
-  generationTimer = undefined;
-  generationElapsedMs.value = generationStartedAt
-    ? performance.now() - generationStartedAt
-    : 0;
+function stopGenerationRun(runId: number) {
+  const run = generationRuns.get(runId);
+  if (!run) return;
+  if (run.timer !== undefined) window.clearInterval(run.timer);
+  run.elapsedMs = performance.now() - run.startedAt;
+  generationRuns.delete(runId);
+  generationVersion.value++;
 }
 
 async function generateImage() {
-  if (busy.value === "generate") return;
   if (!provider.value || !model.value) {
     error.value = "请先配置 API Key 和模型名称";
     return;
   }
-  busy.value = "generate";
+  const runId = Date.now() + Math.random();
+  const controller = new AbortController();
+  startGenerationRun(runId, controller);
   error.value = "";
   analysis.value = "";
   generated.value = [];
   activeHistoryId.value = null;
-  startGenerationTimer();
   const prompts = batchPrompts.value
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
-  const controller = new AbortController();
-  generationController = controller;
   try {
     const requestPrompt = prompt.value.trim() || prompts[0] || "请生成一张图片";
     const response = await fetch(`${API_BASE}/api/generate`, {
@@ -542,23 +557,27 @@ async function generateImage() {
       throw new Error(readableError(data, `生成失败（HTTP ${response.status}）`));
     }
     if (!data) throw new Error("服务返回了无效响应");
-    generated.value = data.images ?? [];
+    if (activeGenerationRunId.value === runId) generated.value = data.images ?? [];
     await refreshConversationLists();
   } catch (exception) {
     if (!(exception instanceof DOMException && exception.name === "AbortError")) {
-      error.value = exception instanceof Error ? exception.message : "生成失败";
+      if (activeGenerationRunId.value === runId) {
+        error.value = exception instanceof Error ? exception.message : "生成失败";
+      }
       await refreshConversationLists();
     }
   } finally {
-    if (generationController === controller) generationController = null;
-    stopGenerationTimer();
-    busy.value = "";
+    stopGenerationRun(runId);
+    if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
   }
 }
 
 function handleGenerateClick() {
-  if (busy.value === "generate") generationController?.abort();
-  else void generateImage();
+  if (activeGenerationRun.value) {
+    activeGenerationRun.value.controller.abort();
+    return;
+  }
+  void generateImage();
 }
 
 async function analyzeImage() {
@@ -638,7 +657,11 @@ window.addEventListener("popstate", () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
-  stopGenerationTimer();
+  for (const run of generationRuns.values()) {
+    if (run.timer !== undefined) window.clearInterval(run.timer);
+    run.controller.abort();
+  }
+  generationRuns.clear();
   if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
 });
 </script>
@@ -745,7 +768,7 @@ onUnmounted(() => {
           </div>
           <div v-else-if="!analysis" class="empty-wall">
             <div class="empty-shape"><Sparkles :size="24" /></div>
-            <h3>{{ busy === "generate" ? `等待生成结果 ${formatDuration(generationElapsedMs)}` : "等待生成结果" }}</h3>
+            <h3>{{ activeGenerationRun ? `等待生成结果 ${formatDuration(activeGenerationRun.elapsedMs)}` : "等待生成结果" }}</h3>
             <p>配置参数并在下方输入提示词。</p>
           </div>
         </div>
@@ -769,7 +792,7 @@ onUnmounted(() => {
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
               </div>
             </div>
-            <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === "generate" ? "取消生成" : "生成图片" }}</button></div>
+            <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': activeGenerationRun }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="activeGenerationRun" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ activeGenerationRun ? "取消生成" : "生成图片" }}</button></div>
           </div>
           <p v-if="error" class="error-message">{{ error }}</p>
         </section>
