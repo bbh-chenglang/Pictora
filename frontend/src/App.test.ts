@@ -97,30 +97,17 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".auth-page").exists()).toBe(true);
   });
 
-  it("keeps API key configuration on settings and fixed image model options on the workspace", async () => {
+  it("keeps image parameters in the prompt toolbar", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
-    const panel = wrapper.get(".control-panel");
     expect(wrapper.find(".connection-section").exists()).toBe(false);
     expect(wrapper.find(".api-key-link").exists()).toBe(false);
-    expect(
-      wrapper.findAll(".model-select option").map((option) => option.text()),
-    ).toEqual([
-      "gpt-image-2",
-      "gpt-image-1.5",
-      "gpt-image-1",
-      "gpt-image-1Mini",
-    ]);
-    expect(
-      wrapper.findAll(".size-select option").map((option) => option.text()),
-    ).toEqual(["3:2", "2:3", "1:1"]);
-    expect(panel.text()).not.toContain("提供商");
-    expect(panel.text()).not.toContain("历史记录");
-    expect(panel.text()).not.toContain("保存设置");
+    expect(wrapper.find(".control-panel").exists()).toBe(false);
+    expect(wrapper.find(".panel-resizer").exists()).toBe(false);
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(4);
     expect(wrapper.find(".composer-dock .reference-row").exists()).toBe(true);
     expect(wrapper.find(".composer-dock .prompt-row textarea").exists()).toBe(true);
-    expect(wrapper.text()).not.toContain("批量提示词");
   });
 
   it("labels a configured API key explicitly", async () => {
@@ -144,11 +131,20 @@ describe("GenImage workspace", () => {
     expect(wrapper.text()).not.toContain("服务已配置");
   });
 
-  it("automatically saves the selected model", async () => {
+  it("opens only one parameter menu and saves a selected model", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
-    await wrapper.get(".model-select").setValue("gpt-image-2");
+    await wrapper.get("[data-parameter-trigger='model']").trigger("click");
+    expect(wrapper.find("[data-parameter-menu='model']").exists()).toBe(true);
+    await wrapper.get("[data-parameter-trigger='size']").trigger("click");
+    expect(wrapper.find("[data-parameter-menu='model']").exists()).toBe(false);
+    expect(wrapper.find("[data-parameter-menu='size']").exists()).toBe(true);
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(wrapper.find("[data-parameter-menu='size']").exists()).toBe(false);
+    await wrapper.get("[data-parameter-trigger='model']").trigger("click");
+    await wrapper.get("[data-parameter-option='gpt-image-2']").trigger("click");
     await flushPromises();
 
     const settingsUpdate = vi.mocked(fetch).mock.calls.find(
@@ -160,6 +156,16 @@ describe("GenImage workspace", () => {
       model: "gpt-image-2",
       api_key: null,
     });
+  });
+
+  it("places the light-blue analysis action above image generation", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const actions = wrapper.get(".composer-actions").findAll("button");
+    expect(actions).toHaveLength(2);
+    expect(actions[0].classes()).toContain("analyze-action");
+    expect(actions[1].classes()).toContain("primary-action");
   });
 
   it("automatically saves an API key in settings when editing finishes", async () => {
@@ -210,7 +216,8 @@ describe("GenImage workspace", () => {
 
     const wrapper = mount(App);
     await flushPromises();
-    await wrapper.get(".size-select").setValue("1024x1024");
+    await wrapper.get("[data-parameter-trigger='size']").trigger("click");
+    await wrapper.get("[data-parameter-option='1024x1024']").trigger("click");
     await wrapper.get(".prompt-row textarea").setValue("竖版海报");
     await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
@@ -482,24 +489,4 @@ describe("GenImage workspace", () => {
     await flushPromises();
   });
 
-  it("resizes the parameter panel within desktop limits", async () => {
-    vi.stubGlobal("innerWidth", 1440);
-    const wrapper = mount(App);
-    await flushPromises();
-
-    const resizer = wrapper.get(".panel-resizer");
-    await resizer.trigger("pointerdown", { clientX: 320 });
-    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 450 }));
-    await flushPromises();
-    expect(wrapper.get(".studio-grid").attributes("style")).toContain("450px");
-
-    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 900 }));
-    await flushPromises();
-    expect(wrapper.get(".studio-grid").attributes("style")).toContain("480px");
-    window.dispatchEvent(new PointerEvent("pointerup"));
-
-    await resizer.trigger("keydown", { key: "ArrowLeft" });
-    await flushPromises();
-    expect(wrapper.get(".studio-grid").attributes("style")).toContain("464px");
-  });
 });

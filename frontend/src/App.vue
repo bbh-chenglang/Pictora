@@ -60,8 +60,14 @@ const SIZE_OPTIONS = [
   { label: "1:1", value: "1024x1024" },
 ] as const;
 const DEFAULT_SIZE = "1024x1024";
-const PANEL_MIN_WIDTH = 280;
-const PANEL_MAX_WIDTH = 480;
+const DETAIL_OPTIONS = [
+  { label: "自动", value: "auto" },
+  { label: "低", value: "low" },
+  { label: "高", value: "high" },
+  { label: "原始", value: "original" },
+] as const;
+const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
+type ParameterMenu = "model" | "size" | "detail" | "count";
 
 const providers = ref<Provider[]>([]);
 const provider = ref("compatible");
@@ -84,8 +90,7 @@ const activeHistoryId = ref<number | null>(null);
 const generationElapsedMs = ref(0);
 const lightboxUrl = ref("");
 const historyOpen = ref(false);
-const sidebarWidth = ref(320);
-const resizingSidebar = ref(false);
+const openParameterMenu = ref<ParameterMenu | null>(null);
 const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
 const username = ref("");
 const password = ref("");
@@ -167,6 +172,35 @@ function navigateToSettings() {
 function navigateToWorkspace() {
   window.history.pushState({}, "", "/");
   currentView.value = "workspace";
+}
+
+function toggleParameterMenu(menu: ParameterMenu) {
+  openParameterMenu.value = openParameterMenu.value === menu ? null : menu;
+}
+
+function closeParameterMenu() {
+  openParameterMenu.value = null;
+}
+
+async function selectModel(value: string) {
+  model.value = value;
+  closeParameterMenu();
+  await applyRuntimeSettings();
+}
+
+function selectSize(value: string) {
+  size.value = value;
+  closeParameterMenu();
+}
+
+function selectDetail(value: string) {
+  detail.value = value;
+  closeParameterMenu();
+}
+
+function selectImageCount(value: number) {
+  imageCount.value = value;
+  closeParameterMenu();
 }
 
 async function saveSettingsApiKey() {
@@ -432,48 +466,23 @@ function closeHistory() {
   historyOpen.value = false;
 }
 
-function updateSidebarWidth(clientX: number) {
-  const viewportMax = Math.max(PANEL_MIN_WIDTH, window.innerWidth - 560);
-  sidebarWidth.value = Math.min(
-    PANEL_MAX_WIDTH,
-    viewportMax,
-    Math.max(PANEL_MIN_WIDTH, clientX),
-  );
-}
-
-function handleSidebarPointerMove(event: PointerEvent) {
-  if (resizingSidebar.value) updateSidebarWidth(event.clientX);
-}
-
-function stopSidebarResize() {
-  resizingSidebar.value = false;
-  window.removeEventListener("pointermove", handleSidebarPointerMove);
-  window.removeEventListener("pointerup", stopSidebarResize);
-}
-
-function startSidebarResize(event: PointerEvent) {
-  resizingSidebar.value = true;
-  updateSidebarWidth(event.clientX);
-  window.addEventListener("pointermove", handleSidebarPointerMove);
-  window.addEventListener("pointerup", stopSidebarResize);
-}
-
-function handleSidebarKeydown(event: KeyboardEvent) {
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-  event.preventDefault();
-  updateSidebarWidth(
-    sidebarWidth.value + (event.key === "ArrowLeft" ? -16 : 16),
-  );
-}
-
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
-  if (lightboxUrl.value) closeLightbox();
+  if (openParameterMenu.value) closeParameterMenu();
+  else if (lightboxUrl.value) closeLightbox();
   else closeHistory();
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  const target = event.target;
+  if (target instanceof Element && !target.closest(".parameter-toolbar")) {
+    closeParameterMenu();
+  }
 }
 
 onMounted(async () => {
   window.addEventListener("keydown", handleGlobalKeydown);
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const response = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
     if (!response.ok) { authView.value = "login"; return; }
@@ -489,7 +498,7 @@ window.addEventListener("popstate", () => {
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
-  stopSidebarResize();
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
   stopGenerationTimer();
   if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
 });
@@ -534,26 +543,7 @@ onUnmounted(() => {
       <section class="settings-section"><h2>主题</h2><p>暂不支持</p><label><input class="theme-option" type="radio" disabled />亮色</label><label><input class="theme-option" type="radio" disabled />暗色</label></section>
     </section>
     <template v-else>
-    <div class="studio-grid" :class="{ resizing: resizingSidebar }" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
-      <aside class="control-panel">
-        <div class="panel-title">
-          <div><span>生成设置</span><h1>图片参数</h1></div>
-          <strong>{{ imageCount }} 张</strong>
-        </div>
-
-        <section class="image-parameter-section">
-          <label>模型名称<select v-model="model" class="model-select" @change="applyRuntimeSettings"><option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option></select></label>
-          <label>图片尺寸<select v-model="size" class="size-select"><option v-for="option in SIZE_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-          <div class="parameter-grid">
-            <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>
-            <label>生成数量<input v-model.number="imageCount" type="number" min="1" max="4" /></label>
-          </div>
-        </section>
-
-      </aside>
-
-      <div class="panel-resizer" role="separator" aria-label="调整参数栏宽度" aria-orientation="vertical" :aria-valuenow="sidebarWidth" :aria-valuemin="PANEL_MIN_WIDTH" :aria-valuemax="PANEL_MAX_WIDTH" tabindex="0" @pointerdown="startSidebarResize" @keydown="handleSidebarKeydown"></div>
-
+    <div class="studio-grid">
       <section class="workspace-panel">
         <div class="result-panel">
           <div class="result-heading">
@@ -593,12 +583,19 @@ onUnmounted(() => {
               <label for="image-input"><Upload :size="18" /><span>{{ imageFile ? imageFile.name : "添加参考图片" }}</span><small>PNG、JPG、WEBP、GIF</small></label>
             </div>
             <div v-if="previewUrl" class="file-chip"><img :src="previewUrl" alt="参考图片预览" /><span>{{ imageFile?.name ?? "历史参考图片" }}</span><button type="button" aria-label="移除参考图片" @click="clearFile"><X :size="15" /></button></div>
-            <button type="button" class="secondary-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button>
           </div>
 
-          <div class="prompt-row">
+          <div class="composer-main">
+            <div class="prompt-row">
             <label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label>
-            <button type="button" class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === "generate" ? "取消生成" : "生成图片" }}</button>
+              <div class="parameter-toolbar">
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ model }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"> <button v-for="option in MODEL_OPTIONS" :key="option" type="button" class="parameter-option" :data-parameter-option="option" @click="selectModel(option)">{{ option }}</button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :data-parameter-option="option.value" @click="selectSize(option.value)">{{ option.label }}</button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="detail" :aria-expanded="openParameterMenu === 'detail'" @click="toggleParameterMenu('detail')">细节级别 <strong>{{ DETAIL_OPTIONS.find((option) => option.value === detail)?.label }}</strong></button><div v-if="openParameterMenu === 'detail'" class="parameter-menu" data-parameter-menu="detail"><button v-for="option in DETAIL_OPTIONS" :key="option.value" type="button" class="parameter-option" :data-parameter-option="option.value" @click="selectDetail(option.value)">{{ option.label }}</button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :data-parameter-option="option" @click="selectImageCount(option)">{{ option }} 张</button></div></div>
+              </div>
+            </div>
+            <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === "generate" ? "取消生成" : "生成图片" }}</button></div>
           </div>
           <p v-if="error" class="error-message">{{ error }}</p>
         </section>
