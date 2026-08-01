@@ -774,6 +774,7 @@ onUnmounted(() => {
           <div v-else-if="!analysis" class="empty-wall">
             <div class="empty-shape"><Sparkles :size="24" /></div>
             <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
+            <p v-if="error" class="error-message generation-error">{{ error }}</p>
             <p>配置参数并在下方输入提示词。</p>
           </div>
         </div>
@@ -799,7 +800,6 @@ onUnmounted(() => {
             </div>
             <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': activeGenerationRun }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="activeGenerationRun" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ activeGenerationRun ? "取消生成" : "生成图片" }}</button></div>
           </div>
-          <p v-if="error" class="error-message">{{ error }}</p>
         </section>
       </section>
     </div>

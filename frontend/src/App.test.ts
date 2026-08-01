@@ -325,6 +325,35 @@ describe("GenImage workspace", () => {
     expect(wrapper.get(".error-message").text()).toBe("生成失败（HTTP 504）");
   });
 
+  it("shows provider timeout below the waiting result message", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/generate")) {
+        return Promise.resolve(new Response(JSON.stringify({ error: { code: "provider_timeout" } }), {
+          status: 504,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: [] }] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-2", api_key_configured: true });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("生成小猫");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    const error = wrapper.get(".empty-wall .generation-error");
+    expect(error.text()).toBe("服务商请求超时，请稍后重试");
+    expect(error.classes()).toContain("error-message");
+    expect(wrapper.find(".composer-dock > .error-message").exists()).toBe(false);
+  });
+
   it("renders projects instead of the removed history trigger", async () => {
     vi.mocked(fetch).mockImplementation((input) => {
       const url = String(input);

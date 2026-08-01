@@ -512,6 +512,11 @@ select { cursor: pointer; }
   font-size: 12px;
 }
 
+.empty-wall .generation-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .composer-dock {
   min-width: 0;
   border-top: 1px solid var(--line);
