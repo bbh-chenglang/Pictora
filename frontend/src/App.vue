@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
-  ChevronDown,
   Download,
   ExternalLink,
   History,
@@ -80,9 +79,7 @@ const generated = ref<ImageResult[]>([]);
 const analysis = ref("");
 const busy = ref<"generate" | "analyze" | "">("");
 const error = ref("");
-const apiKey = ref("");
 const apiKeyConfigured = ref(false);
-const savingSettings = ref(false);
 const history = ref<HistorySummary[]>([]);
 const historyError = ref("");
 const activeHistoryId = ref<number | null>(null);
@@ -106,7 +103,6 @@ let generationTimer: number | undefined;
 let generationStartedAt = 0;
 let generationController: AbortController | null = null;
 let settingsSaveQueue: Promise<void> = Promise.resolve();
-let pendingSettingsSaves = 0;
 
 const canAnalyze = computed(() => Boolean(imageFile.value) && !busy.value);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -261,23 +257,17 @@ async function openHistory(historyId: number) {
   }
 }
 
-async function applyRuntimeSettings(includeApiKey = false) {
+async function applyRuntimeSettings() {
   const submittedModel = model.value.trim();
-  const submittedApiKey = includeApiKey ? apiKey.value.trim() || null : null;
   if (!submittedModel) return;
 
-  pendingSettingsSaves += 1;
-  savingSettings.value = true;
   error.value = "";
   const save = settingsSaveQueue.then(async () => {
     try {
       const response = await fetch(`${API_BASE}/api/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: submittedModel,
-          api_key: submittedApiKey,
-        }),
+        body: JSON.stringify({ model: submittedModel, api_key: null }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(readableError(data, "配置应用失败"));
@@ -285,17 +275,13 @@ async function applyRuntimeSettings(includeApiKey = false) {
         ? data.model
         : DEFAULT_MODEL;
       apiKeyConfigured.value = Boolean(data.api_key_configured);
-      if (includeApiKey && apiKey.value.trim() === submittedApiKey) apiKey.value = "";
       await loadProviders();
     } catch (exception) {
       error.value = exception instanceof Error ? exception.message : "配置应用失败";
     }
   });
   settingsSaveQueue = save;
-  await save.finally(() => {
-    pendingSettingsSaves -= 1;
-    savingSettings.value = pendingSettingsSaves > 0;
-  });
+  await save;
 }
 
 function setFile(file?: File) {
@@ -545,7 +531,7 @@ onUnmounted(() => {
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
-      <section class="settings-section"><h1>接口配置</h1><p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p><label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" /></label><button type="button" class="primary-action" data-action="save-api-key" @click="saveSettingsApiKey">保存接口配置</button></section>
+      <section class="settings-section"><h1>接口配置</h1><p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p><label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></section>
       <section class="settings-section"><h2>修改密码</h2><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="button" class="primary-action" data-action="change-password" @click="changePassword">修改密码</button></section>
       <section class="settings-section"><h2>主题</h2><p>暂不支持</p><label><input class="theme-option" type="radio" disabled />亮色</label><label><input class="theme-option" type="radio" disabled />暗色</label></section>
     </section>
@@ -557,16 +543,8 @@ onUnmounted(() => {
           <strong>{{ imageCount }} 张</strong>
         </div>
 
-        <details class="connection-section">
-          <summary><span>接口配置</span><small>{{ savingSettings ? "保存中" : apiKeyConfigured ? "已配置" : "未配置" }}</small><ChevronDown :size="16" /></summary>
-          <div class="connection-body">
-            <label>API Key<input v-model="apiKey" type="password" autocomplete="off" :placeholder="apiKeyConfigured ? '留空则保持当前 Key' : '输入 API Key'" @change="applyRuntimeSettings(true)" /></label>
-            <a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a>
-          </div>
-        </details>
-
         <section class="image-parameter-section">
-          <label>模型名称<select v-model="model" class="model-select" @change="applyRuntimeSettings(false)"><option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option></select></label>
+          <label>模型名称<select v-model="model" class="model-select" @change="applyRuntimeSettings"><option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option></select></label>
           <label>图片尺寸<select v-model="size" class="size-select"><option v-for="option in SIZE_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
           <div class="parameter-grid">
             <label>细节级别<select v-model="detail"><option value="auto">自动</option><option value="low">低</option><option value="high">高</option><option value="original">原始</option></select></label>

@@ -250,46 +250,6 @@ textarea:focus {
 
 select { cursor: pointer; }
 
-.connection-section {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-subtle);
-}
-
-.connection-section summary {
-  min-height: 46px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 9px;
-  padding: 0 12px;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  list-style: none;
-}
-
-.connection-section summary::-webkit-details-marker { display: none; }
-
-.connection-section summary small {
-  color: var(--blue);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.connection-section summary svg {
-  color: var(--muted);
-  transition: transform 160ms ease;
-}
-
-.connection-section[open] summary svg { transform: rotate(180deg); }
-
-.connection-body {
-  border-top: 1px solid var(--line);
-  padding: 0 12px 13px;
-}
-
 .api-key-link {
   min-height: 38px;
   border: 1px solid var(--line-strong);

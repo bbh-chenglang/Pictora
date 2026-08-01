@@ -60,7 +60,7 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".theme-option:disabled").exists()).toBe(true);
   });
 
-  it("saves an API key from settings and returns to login after changing password", async () => {
+  it("saves an API key from settings when editing finishes and returns to login after changing password", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
@@ -76,8 +76,17 @@ describe("GenImage workspace", () => {
     await flushPromises();
     await wrapper.get("[data-action='settings']").trigger("click");
     await wrapper.get("[data-field='api-key']").setValue("new-private-key");
-    await wrapper.get("[data-action='save-api-key']").trigger("click");
+    await wrapper.get("[data-field='api-key']").trigger("blur");
     await flushPromises();
+    const settingsUpdate = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith("/api/settings") && init?.method === "PUT",
+    );
+    expect(settingsUpdate).toBeDefined();
+    expect(JSON.parse(String(settingsUpdate?.[1]?.body))).toEqual({
+      model: "gpt-image-1.5",
+      api_key: "new-private-key",
+    });
     expect(wrapper.text()).not.toContain("new-private-key");
 
     await wrapper.get("[data-field='old-password']").setValue("secret6");
@@ -88,22 +97,13 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".auth-page").exists()).toBe(true);
   });
 
-  it("uses a collapsed API section and fixed image model options", async () => {
+  it("keeps API key configuration on settings and fixed image model options on the workspace", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
     const panel = wrapper.get(".control-panel");
-    const connection = wrapper.get("details.connection-section");
-    const apiKeyLink = connection.get("a.api-key-link");
-
-    expect(connection.attributes("open")).toBeUndefined();
-    expect(connection.text()).toContain("接口配置");
-    expect(connection.text()).not.toContain("Base URL");
-    expect(apiKeyLink.attributes("href")).toBe(
-      "https://sub.beibeihai.xyz/home",
-    );
-    expect(apiKeyLink.attributes("target")).toBe("_blank");
-    expect(apiKeyLink.attributes("rel")).toBe("noopener noreferrer");
+    expect(wrapper.find(".connection-section").exists()).toBe(false);
+    expect(wrapper.find(".api-key-link").exists()).toBe(false);
     expect(
       wrapper.findAll(".model-select option").map((option) => option.text()),
     ).toEqual([
@@ -141,13 +141,21 @@ describe("GenImage workspace", () => {
     });
   });
 
-  it("automatically saves an API key when editing finishes", async () => {
+  it("automatically saves an API key in settings when editing finishes", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
-    const input = wrapper.get(".connection-section input");
+    await wrapper.get("[data-action='settings']").trigger("click");
+    expect(wrapper.get("a.api-key-link").attributes("href")).toBe(
+      "https://sub.beibeihai.xyz/home",
+    );
+    expect(wrapper.get("a.api-key-link").attributes("target")).toBe("_blank");
+    expect(wrapper.get("a.api-key-link").attributes("rel")).toBe(
+      "noopener noreferrer",
+    );
+    const input = wrapper.get("[data-field='api-key']");
     await input.setValue("new-private-key");
-    await input.trigger("change");
+    await input.trigger("blur");
     await flushPromises();
 
     const settingsUpdate = vi.mocked(fetch).mock.calls.find(
