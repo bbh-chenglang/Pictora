@@ -1,11 +1,16 @@
 import asyncio
+import logging
 import re
 from time import perf_counter
 
 from app.providers.base import ProviderTimeoutError
+from app.observability import log_context
 from app.providers.registry import ProviderRegistry
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.generate import GenerateRequest, GenerateResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 class ImageService:
@@ -47,10 +52,34 @@ class ImageService:
 
     async def _generate_one(self, provider, request: GenerateRequest, prompt: str) -> GenerateResponse:
         started_at = perf_counter()
-        response = await provider.generate_image(
-            request.model_copy(update={"prompt": prompt, "count": 1})
+        logger.info(
+            "image_generation step=provider_call_started provider=%s model=%s %s",
+            getattr(provider, "provider_id", request.provider),
+            request.model,
+            " ".join(f"{key}={value}" for key, value in log_context().items()),
         )
+        try:
+            response = await provider.generate_image(
+                request.model_copy(update={"prompt": prompt, "count": 1})
+            )
+        except Exception:
+            logger.error(
+                "image_generation step=provider_call_failed duration_ms=%d provider=%s model=%s %s",
+                max(1, round((perf_counter() - started_at) * 1000)),
+                getattr(provider, "provider_id", request.provider),
+                request.model,
+                " ".join(f"{key}={value}" for key, value in log_context().items()),
+            )
+            raise
         elapsed_ms = max(1, round((perf_counter() - started_at) * 1000))
+        logger.info(
+            "image_generation step=provider_call_completed duration_ms=%d provider=%s model=%s image_count=%d %s",
+            elapsed_ms,
+            getattr(provider, "provider_id", request.provider),
+            request.model,
+            len(response.images),
+            " ".join(f"{key}={value}" for key, value in log_context().items()),
+        )
         return response.model_copy(
             update={
                 "images": [image.model_copy(update={"generation_time_ms": elapsed_ms}) for image in response.images]

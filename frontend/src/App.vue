@@ -55,13 +55,11 @@ const MODEL_OPTIONS = [
 ] as const;
 const DEFAULT_MODEL = MODEL_OPTIONS[0];
 const SIZE_OPTIONS = [
-  { label: "16:9", value: "1536x864" },
-  { label: "9:16", value: "864x1536" },
-  { label: "3:4", value: "1152x1536" },
-  { label: "4:3", value: "1536x1152" },
+  { label: "3:2", value: "1536x1024" },
+  { label: "2:3", value: "1024x1536" },
   { label: "1:1", value: "1024x1024" },
 ] as const;
-const DEFAULT_SIZE = SIZE_OPTIONS[0].value;
+const DEFAULT_SIZE = "1024x1024";
 const PANEL_MIN_WIDTH = 280;
 const PANEL_MAX_WIDTH = 480;
 

@@ -114,7 +114,7 @@ describe("GenImage workspace", () => {
     ]);
     expect(
       wrapper.findAll(".size-select option").map((option) => option.text()),
-    ).toEqual(["16:9", "9:16", "3:4", "4:3", "1:1"]);
+    ).toEqual(["3:2", "2:3", "1:1"]);
     expect(panel.text()).not.toContain("提供商");
     expect(panel.text()).not.toContain("历史记录");
     expect(panel.text()).not.toContain("保存设置");
@@ -198,6 +198,35 @@ describe("GenImage workspace", () => {
       String(input).endsWith("/api/generate"),
     );
     expect(generateRequest).toBeDefined();
+    expect(JSON.parse(String(generateRequest?.[1]?.body)).size).toBe("1024x1024");
+  });
+
+  it("uses a standard square size by default", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/generate")) {
+        return jsonResponse({ provider: "compatible", model: "gpt-image-1.5", images: [] });
+      }
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "鍖楁捣AI", models: [] }] });
+      }
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("square image");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    const generateRequest = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/generate"),
+    );
     expect(JSON.parse(String(generateRequest?.[1]?.body)).size).toBe("1024x1024");
   });
 

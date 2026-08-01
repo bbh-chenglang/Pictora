@@ -183,3 +183,37 @@ async def test_provider_failure_marks_history_failed(
     assert detail is not None
     assert detail.status == "failed"
     assert detail.error_code == "provider_auth"
+
+
+@pytest.mark.asyncio
+async def test_generation_logs_timed_steps(
+    history_repository: HistoryRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="compatible",
+            model="custom-model",
+            images=[ImageResult(base64_data="cG5nLWJ5dGVz")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+
+    with caplog.at_level("INFO", logger="app.services.history_service"):
+        await service.generate(
+            GenerateRequest(
+                provider="compatible",
+                model="custom-model",
+                prompt="timed generation",
+            ),
+            image_service,
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("step=generation_started" in message for message in messages)
+    assert any("step=image_service_completed" in message for message in messages)
+    assert any("step=image_materialize_completed" in message for message in messages)
+    assert any("step=history_image_saved" in message for message in messages)
+    assert any("step=generation_completed" in message for message in messages)
+    assert all("generation_id=" in message for message in messages)
+    assert all("duration_ms=" in message for message in messages)

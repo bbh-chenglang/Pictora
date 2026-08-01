@@ -1,3 +1,9 @@
+# Run from the repository root:
+# powershell -ExecutionPolicy Bypass -File .\start-dev.ps1
+#
+# Starts FastAPI on http://127.0.0.1:8002 and Vite on http://127.0.0.1:5173.
+# Press Ctrl+C to stop both processes started by this script.
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -8,7 +14,7 @@ $venvPath = Join-Path $projectRoot "backend\.venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $node = Get-Command node -ErrorAction SilentlyContinue
 $backendPort = 8002
-$frontendPort = 3000
+$frontendPort = 5173
 
 function Get-DescendantProcessIds([int]$parentId) {
     $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentId")
