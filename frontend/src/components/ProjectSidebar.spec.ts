@@ -31,4 +31,43 @@ describe("ProjectSidebar", () => {
       [1],
     ]);
   });
+
+  it("opens project actions, starts a conversation, and closes on outside click", async () => {
+    const wrapper = mount(ProjectSidebar, {
+      props: { projects: [{ id: 1, name: "project", history: history(1), history_count: 1 }], selectedProjectId: 1 },
+      attachTo: document.body,
+    });
+
+    await wrapper.get(".project-row .icon-action").trigger("click");
+    expect(wrapper.find(".project-menu").exists()).toBe(true);
+    expect(wrapper.findAll(".project-menu button")).toHaveLength(3);
+
+    await wrapper.find(".project-menu button").trigger("click");
+    expect(wrapper.emitted("new-conversation")).toHaveLength(1);
+    expect(wrapper.find(".project-menu").exists()).toBe(false);
+
+    await wrapper.get(".project-row .icon-action").trigger("click");
+    await wrapper.get(".sidebar-heading").trigger("click");
+    expect(wrapper.find(".project-menu").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("expands and collapses each project independently", async () => {
+    const projects = [
+      { id: 1, name: "项目一", history: history(1), history_count: 1 },
+      { id: 2, name: "项目二", history: history(1), history_count: 1 },
+    ];
+    const wrapper = mount(ProjectSidebar, { props: { projects, selectedProjectId: 1 } });
+
+    expect(wrapper.find('[data-project-id="1"] .project-history').exists()).toBe(true);
+    expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(false);
+
+    await wrapper.get('[data-project-id="2"] .project-toggle').trigger("click");
+    expect(wrapper.find('[data-project-id="1"] .project-history').exists()).toBe(true);
+    expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(true);
+
+    await wrapper.get('[data-project-id="1"] .project-toggle').trigger("click");
+    expect(wrapper.find('[data-project-id="1"] .project-history').exists()).toBe(false);
+    expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(true);
+  });
 });

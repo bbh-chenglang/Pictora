@@ -185,6 +185,8 @@ summary:focus-visible {
 .project-select { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; border: 0; padding: 7px 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .project-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
 .project-select small { margin-left: auto; color: var(--muted); font-size: 10px; }
+.project-toggle { width: 26px; height: 26px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 4px; padding: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.project-toggle:hover { background: var(--blue-soft); color: var(--blue); }
 .project-history { display: grid; gap: 3px; margin: 3px 0 0 10px; }
 .history-row { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; font-size: 11px; font-weight: 400; }
 .history-select { min-width: 0; display: flex; align-items: center; gap: 5px; border: 0; padding: 5px 3px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }

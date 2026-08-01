@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ChevronDown, ChevronRight, FileImage, Folder, MoreHorizontal, Plus, Trash2 } from "lucide-vue-next";
 
 export type HistorySummary = {
@@ -14,12 +14,19 @@ const emit = defineEmits<{
   "delete-history": [project: ProjectSummary, ids: number[]]; "open-history": [id: number];
 }>();
 const expanded = ref<Record<number, boolean>>({});
+const projectExpanded = ref<Record<number, boolean>>({});
 const selectedHistory = ref<Record<number, number[]>>({});
 const menuProjectId = ref<number | null>(null);
 const selectedProject = computed(() => props.projects.find((item) => item.id === props.selectedProjectId));
 
 function visibleHistory(project: ProjectSummary) {
   return expanded.value[project.id] ? project.history : project.history.slice(0, 5);
+}
+function isProjectExpanded(project: ProjectSummary) {
+  return projectExpanded.value[project.id] ?? project.id === props.selectedProjectId;
+}
+function toggleProject(project: ProjectSummary) {
+  projectExpanded.value[project.id] = !isProjectExpanded(project);
 }
 function toggleHistory(project: ProjectSummary) { expanded.value[project.id] = !expanded.value[project.id]; }
 function selected(project: ProjectSummary) { return selectedHistory.value[project.id] ?? []; }
@@ -32,6 +39,13 @@ function deleteSelected(project: ProjectSummary) {
   const ids = selected(project);
   if (ids.length) emit("delete-history", project, ids);
 }
+function closeMenuOnOutsideClick(event: MouseEvent) {
+  if (!(event.target instanceof Element)) return;
+  if (event.target.closest(".project-menu, [data-project-menu-trigger]")) return;
+  menuProjectId.value = null;
+}
+onMounted(() => document.addEventListener("click", closeMenuOnOutsideClick));
+onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick));
 </script>
 
 <template>
@@ -40,13 +54,14 @@ function deleteSelected(project: ProjectSummary) {
     <button type="button" class="new-conversation" :disabled="!selectedProject" @click="emit('new-conversation')"><Plus :size="16" />新建对话</button>
     <p v-if="loading" class="sidebar-muted">正在加载项目...</p>
     <div v-else class="project-list">
-      <section v-for="project in projects" :key="project.id" class="project-group" :class="{ active: project.id === selectedProjectId }">
+      <section v-for="project in projects" :key="project.id" :data-project-id="project.id" class="project-group" :class="{ active: project.id === selectedProjectId }">
         <div class="project-row">
           <button type="button" class="project-select" @click="emit('select-project', project.id)"><Folder :size="16" /><span>{{ project.name }}</span><small>{{ project.history_count }}</small></button>
-          <button type="button" class="icon-action" title="项目操作" aria-label="项目操作" @click="menuProjectId = menuProjectId === project.id ? null : project.id"><MoreHorizontal :size="17" /></button>
-          <div v-if="menuProjectId === project.id" class="project-menu"><button type="button" @click="emit('rename-project', project); menuProjectId = null">重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
+          <button type="button" class="project-toggle" :aria-label="isProjectExpanded(project) ? '收起项目' : '展开项目'" :aria-expanded="isProjectExpanded(project)" @click.stop="toggleProject(project)"><ChevronDown v-if="isProjectExpanded(project)" :size="15" /><ChevronRight v-else :size="15" /></button>
+          <button type="button" class="icon-action" data-project-menu-trigger title="项目操作" aria-label="项目操作" @click="menuProjectId = menuProjectId === project.id ? null : project.id"><MoreHorizontal :size="17" /></button>
+          <div v-if="menuProjectId === project.id" class="project-menu"><button type="button" @click="emit('new-conversation'); menuProjectId = null"><Plus :size="14" />新建对话</button><button type="button" @click="emit('rename-project', project); menuProjectId = null">重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
         </div>
-        <div v-if="project.id === selectedProjectId" class="project-history">
+        <div v-if="isProjectExpanded(project)" class="project-history">
           <p v-if="!project.history.length" class="sidebar-muted">暂无历史记录</p>
           <label v-for="item in visibleHistory(project)" :key="item.id" class="history-row">
             <input type="checkbox" :checked="selected(project).includes(item.id)" @click.stop @change="toggleHistorySelection(project, item.id)" />
