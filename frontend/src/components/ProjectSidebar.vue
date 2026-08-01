@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import { ChevronDown, ChevronRight, FileImage, Folder, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-vue-next";
 
 export type HistorySummary = {
@@ -38,6 +38,17 @@ function deleteSelected(project: ProjectSummary) {
   const ids = selected(project);
   if (ids.length) emit("delete-history", project, ids);
 }
+watch(() => props.projects, (projects) => {
+  const currentHistoryIds = new Map(projects.map((project) => [project.id, new Set(project.history.map((item) => item.id))]));
+  for (const [projectId, ids] of Object.entries(selectedHistory.value)) {
+    const availableIds = currentHistoryIds.get(Number(projectId));
+    if (!availableIds) {
+      delete selectedHistory.value[Number(projectId)];
+      continue;
+    }
+    selectedHistory.value[Number(projectId)] = ids.filter((id) => availableIds.has(id));
+  }
+}, { deep: true });
 function closeMenuOnOutsideClick(event: MouseEvent) {
   if (!(event.target instanceof Element)) return;
   if (event.target.closest(".project-menu, [data-project-menu-trigger]")) return;

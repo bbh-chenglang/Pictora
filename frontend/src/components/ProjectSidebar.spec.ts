@@ -34,6 +34,18 @@ describe("ProjectSidebar", () => {
     ]);
   });
 
+  it("clears deleted history selections when project data refreshes", async () => {
+    const wrapper = mount(ProjectSidebar, {
+      props: { projects: [{ id: 1, name: "第一个项目", history: history(1), history_count: 1 }], selectedProjectId: 1 },
+    });
+
+    await wrapper.get("input[type=checkbox]").setValue(true);
+    expect(wrapper.find(".danger-text").exists()).toBe(true);
+
+    await wrapper.setProps({ projects: [{ id: 1, name: "第一个项目", history: [], history_count: 0 }] });
+    expect(wrapper.find(".danger-text").exists()).toBe(false);
+  });
+
   it("opens project actions, starts a conversation, and closes on outside click", async () => {
     const wrapper = mount(ProjectSidebar, {
       props: { projects: [{ id: 1, name: "project", history: history(1), history_count: 1 }], selectedProjectId: 1 },
