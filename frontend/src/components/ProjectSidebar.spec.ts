@@ -1,6 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import ProjectSidebar from "./ProjectSidebar.vue";
+import "../style.css";
 
 const history = (count: number) => Array.from({ length: count }, (_, index) => ({
   id: index + 1,
@@ -25,6 +26,7 @@ describe("ProjectSidebar", () => {
       props: { projects: [{ id: 1, name: "第一个项目", history: history(1), history_count: 1 }], selectedProjectId: 1 },
     });
     await wrapper.get("input[type=checkbox]").setValue(true);
+    expect(wrapper.get("input[type=checkbox]").classes()).toContain("history-checkbox");
     await wrapper.get(".danger-text").trigger("click");
     expect(wrapper.emitted("delete-history")?.[0]).toEqual([
       expect.objectContaining({ id: 1 }),
@@ -38,9 +40,13 @@ describe("ProjectSidebar", () => {
       attachTo: document.body,
     });
 
+    expect(wrapper.find(".new-conversation").exists()).toBe(false);
     await wrapper.get(".project-row .icon-action").trigger("click");
     expect(wrapper.find(".project-menu").exists()).toBe(true);
     expect(wrapper.findAll(".project-menu button")).toHaveLength(3);
+    expect(wrapper.find(".project-menu").element.parentElement?.classList.contains("project-group")).toBe(true);
+    expect(wrapper.find(".project-menu").classes()).toContain("project-menu-overlay");
+    expect(wrapper.get('[data-project-action="rename"] svg').exists()).toBe(true);
 
     await wrapper.find(".project-menu button").trigger("click");
     expect(wrapper.emitted("new-conversation")).toHaveLength(1);

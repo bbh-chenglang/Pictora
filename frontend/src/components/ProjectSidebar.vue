@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ChevronDown, ChevronRight, FileImage, Folder, MoreHorizontal, Plus, Trash2 } from "lucide-vue-next";
+import { onMounted, onUnmounted, ref } from "vue";
+import { ChevronDown, ChevronRight, FileImage, Folder, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-vue-next";
 
 export type HistorySummary = {
   id: number; prompt: string; model: string; status: string; created_at: string;
@@ -17,7 +17,6 @@ const expanded = ref<Record<number, boolean>>({});
 const projectExpanded = ref<Record<number, boolean>>({});
 const selectedHistory = ref<Record<number, number[]>>({});
 const menuProjectId = ref<number | null>(null);
-const selectedProject = computed(() => props.projects.find((item) => item.id === props.selectedProjectId));
 
 function visibleHistory(project: ProjectSummary) {
   return expanded.value[project.id] ? project.history : project.history.slice(0, 5);
@@ -51,7 +50,6 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
 <template>
   <aside class="project-sidebar" aria-label="项目列表">
     <div class="sidebar-heading"><div><span>工作区</span><h2>项目</h2></div><button type="button" class="icon-action" title="新建项目" aria-label="新建项目" @click="emit('create-project')"><Plus :size="17" /></button></div>
-    <button type="button" class="new-conversation" :disabled="!selectedProject" @click="emit('new-conversation')"><Plus :size="16" />新建对话</button>
     <p v-if="loading" class="sidebar-muted">正在加载项目...</p>
     <div v-else class="project-list">
       <section v-for="project in projects" :key="project.id" :data-project-id="project.id" class="project-group" :class="{ active: project.id === selectedProjectId }">
@@ -59,12 +57,12 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
           <button type="button" class="project-select" @click="emit('select-project', project.id)"><Folder :size="16" /><span>{{ project.name }}</span><small>{{ project.history_count }}</small></button>
           <button type="button" class="project-toggle" :aria-label="isProjectExpanded(project) ? '收起项目' : '展开项目'" :aria-expanded="isProjectExpanded(project)" @click.stop="toggleProject(project)"><ChevronDown v-if="isProjectExpanded(project)" :size="15" /><ChevronRight v-else :size="15" /></button>
           <button type="button" class="icon-action" data-project-menu-trigger title="项目操作" aria-label="项目操作" @click="menuProjectId = menuProjectId === project.id ? null : project.id"><MoreHorizontal :size="17" /></button>
-          <div v-if="menuProjectId === project.id" class="project-menu"><button type="button" @click="emit('new-conversation'); menuProjectId = null"><Plus :size="14" />新建对话</button><button type="button" @click="emit('rename-project', project); menuProjectId = null">重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
         </div>
+        <div v-if="menuProjectId === project.id" class="project-menu project-menu-overlay"><button type="button" @click="emit('new-conversation'); menuProjectId = null"><Plus :size="14" />新建对话</button><button type="button" data-project-action="rename" @click="emit('rename-project', project); menuProjectId = null"><Pencil :size="14" />重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
         <div v-if="isProjectExpanded(project)" class="project-history">
           <p v-if="!project.history.length" class="sidebar-muted">暂无历史记录</p>
           <label v-for="item in visibleHistory(project)" :key="item.id" class="history-row">
-            <input type="checkbox" :checked="selected(project).includes(item.id)" @click.stop @change="toggleHistorySelection(project, item.id)" />
+            <input class="history-checkbox" type="checkbox" :checked="selected(project).includes(item.id)" @click.stop @change="toggleHistorySelection(project, item.id)" />
             <button type="button" class="history-select" :class="{ failed: item.status === 'failed' }" @click="emit('open-history', item.id)"><FileImage :size="14" /><span>{{ item.prompt }}</span></button>
           </label>
           <div class="history-tools">
