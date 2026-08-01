@@ -59,11 +59,8 @@ const MODEL_OPTIONS = [
 const DEFAULT_MODEL = MODEL_OPTIONS[0];
 const SIZE_OPTIONS = [
   { label: "1:1", value: "1024x1024", description: "正方形，头像" },
-  { label: "2:3", value: "1024x1536", description: "社交媒体，自拍" },
-  { label: "3:4", value: "1152x1536", description: "经典比例，拍照" },
-  { label: "4:3", value: "1536x1152", description: "文章配图，插画" },
-  { label: "9:16", value: "864x1536", description: "手机壁纸，人像" },
-  { label: "16:9", value: "1536x864", description: "桌面壁纸，风景" },
+  { label: "3:2", value: "1536x1024", description: "横向图片，风景" },
+  { label: "2:3", value: "1024x1536", description: "竖向图片，人像" },
 ] as const;
 const DEFAULT_SIZE = "1024x1024";
 const DETAIL_OPTIONS = [
@@ -691,7 +688,6 @@ onUnmounted(() => {
         <span>{{ currentUsername }}</span>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
-        <button type="button" class="secondary-action" @click="logout">退出登录</button>
       </div>
     </header>
 

@@ -166,9 +166,10 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
 
     const menu = wrapper.get("[data-parameter-menu='size']");
-    expect(menu.findAll(".parameter-option")).toHaveLength(6);
+    expect(menu.findAll(".parameter-option")).toHaveLength(3);
     expect(menu.text()).toContain("正方形，头像");
-    expect(menu.text()).toContain("桌面壁纸，风景");
+    expect(menu.text()).toContain("横向图片");
+    expect(menu.text()).toContain("竖向图片");
     expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
     expect(menu.get(".parameter-option.is-selected svg").exists()).toBe(true);
   });
