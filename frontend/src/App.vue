@@ -208,11 +208,12 @@ function selectImageCount(value: number) {
 }
 
 async function saveSettingsApiKey() {
+  const apiKey = settingsApiKey.value.trim() || null;
   const response = await fetch(`${API_BASE}/api/settings`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: model.value, api_key: settingsApiKey.value }),
+    body: JSON.stringify({ model: model.value, api_key: apiKey }),
   });
   const data = await parseJsonResponse(response);
   if (!response.ok) { authError.value = readableError(data, "保存接口配置失败"); return; }
@@ -533,7 +534,7 @@ onUnmounted(() => {
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
         <button type="button" class="secondary-action" @click="logout">退出登录</button>
         <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
-          <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "等待 API Key" }}
+          <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
         <button type="button" class="history-trigger" @click="historyOpen = true">
           <History :size="17" /><span>历史记录</span><strong>{{ history.length }}</strong>

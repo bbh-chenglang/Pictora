@@ -210,6 +210,25 @@ describe("GenImage workspace", () => {
     });
   });
 
+  it("keeps the existing API key when saving with an empty value", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-action="settings"]').trigger("click");
+    await wrapper.get('[data-action="save-api-key"]').trigger("click");
+    await flushPromises();
+
+    const settingsUpdate = vi.mocked(fetch).mock.calls.find(
+      ([input, init]) =>
+        String(input).endsWith("/api/settings") && init?.method === "PUT",
+    );
+    expect(settingsUpdate).toBeDefined();
+    expect(JSON.parse(String(settingsUpdate?.[1]?.body))).toEqual({
+      model: "gpt-image-1.5",
+      api_key: null,
+    });
+  });
+
   it("sends the selected image size when generating", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
