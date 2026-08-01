@@ -688,11 +688,13 @@ onUnmounted(() => {
         <span>{{ currentUsername }}</span>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
+        <button type="button" class="secondary-action" @click="logout">退出登录</button>
       </div>
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
       <section class="settings-section"><h1>接口配置</h1><p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p><label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></section>
+      <section class="settings-section settings-account-actions"><h2>账号</h2><p>退出当前账号，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></section>
       <section class="settings-section"><h2>修改密码</h2><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="button" class="primary-action" data-action="change-password" @click="changePassword">修改密码</button></section>
     </section>
     <template v-else>

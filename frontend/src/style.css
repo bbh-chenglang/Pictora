@@ -1079,19 +1079,21 @@ select { cursor: pointer; }
 .auth-link { border: 0; padding: 0 0 0 5px; background: transparent; color: #256aa5; cursor: pointer; font-weight: 700; }
 .auth-link:hover { text-decoration: underline; }
 .auth-loading { color: #4b7092; font-size: 14px; }
-.settings-page{max-width:720px;margin:0 auto;padding:32px 48px;display:grid;gap:20px}
-.settings-section{display:grid;gap:12px;border:1px solid #d7d3cb;border-radius:8px;background:#fffdf8;padding:20px 32px;box-shadow:0 2px 8px rgba(25,24,23,.06)}
+.settings-page{height:calc(100dvh - 64px);max-width:720px;margin:0 auto;padding:20px 48px 24px;display:grid;align-content:start;gap:10px;overflow-y:auto}
+.settings-section{display:grid;gap:8px;border:1px solid #d7d3cb;border-radius:8px;background:#fffdf8;padding:14px 24px;box-shadow:0 2px 8px rgba(25,24,23,.06)}
 .settings-section h1,.settings-section h2,.settings-section p{margin:0}
-.settings-section label{display:grid;gap:6px;font-weight:700}
-.settings-section input{min-height:42px;border:1px solid #c9c5bd;border-radius:6px;padding:8px 10px;font:inherit;background:#fff}
+.settings-section h1{font-size:20px}
+.settings-section h2{font-size:16px}
+.settings-section label{display:grid;gap:5px;font-size:13px;font-weight:700}
+.settings-section input{min-height:38px;border:1px solid #c9c5bd;border-radius:6px;padding:6px 10px;font:inherit;background:#fff}
 .settings-section input:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
 .settings-section .primary-action{border-width:1px;border-radius:6px}
 .settings-account-actions{margin-top:4px}
 .settings-account-actions p{color:var(--muted)}
 .settings-account-actions .logout-action{width:max-content;border-color:#e4b8b3;color:#a33b32;background:#fffafa}
 .settings-account-actions .logout-action:hover{border-color:#b42318;color:#b42318;background:#fff3f1}
-@media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:20px}}
-@media (max-width:520px){.settings-page{padding-inline:16px}.settings-section{padding-inline:16px}}
+@media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:18px}}
+@media (max-width:520px){.settings-page{padding-inline:16px;padding-top:14px}.settings-section{padding-inline:14px}}
 
 @media (max-width: 680px) {
   .auth-page { padding: 16px; }

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import aiosqlite
 import pytest
 import pytest_asyncio
 
@@ -107,6 +108,30 @@ async def test_generation_history_decodes_base64_into_blob(
     assert blob is not None
     assert blob.data == b"png-bytes"
     assert blob.mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_generation_names_empty_project_from_prompt(
+    history_repository: HistoryRepository,
+) -> None:
+    async with aiosqlite.connect(history_repository.database_path) as connection:
+        await connection.execute("UPDATE projects SET name = '   ' WHERE user_id = 1")
+        await connection.commit()
+
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    await service.generate(
+        GenerateRequest(
+            provider="compatible",
+            model="custom-model",
+            prompt="蓝色海面与晨光",
+        ),
+        FakeImageService(),
+        1,
+    )
+
+    async with aiosqlite.connect(history_repository.database_path) as connection:
+        cursor = await connection.execute("SELECT name FROM projects WHERE user_id = 1")
+        assert (await cursor.fetchone())[0] == "蓝色海面与"
 
 
 @pytest.mark.asyncio

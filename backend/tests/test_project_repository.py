@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from app.auth import hash_password
@@ -24,6 +25,24 @@ async def test_user_starts_with_default_project_and_projects_are_isolated(tmp_pa
     assert [project.name for project in first_projects] == ["第一个项目"]
     assert [project.name for project in second_projects] == ["第一个项目"]
     assert await repository.get_owned(first_projects[0].id, second.id) is None
+
+
+@pytest.mark.asyncio
+async def test_empty_project_name_can_be_filled_from_prompt(tmp_path: Path) -> None:
+    database_path = tmp_path / "projects.db"
+    await initialize_database(database_path)
+    user = await UserRepository(database_path).create("alice", hash_password("secret6"))
+    repository = ProjectRepository(database_path)
+    project = (await repository.list_with_history(user.id))[0]
+
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.execute("UPDATE projects SET name = '   ' WHERE id = ?", (project.id,))
+        await connection.commit()
+
+    renamed = await repository.rename_if_empty(project.id, user.id, "蓝色海面与晨光")
+
+    assert renamed is True
+    assert (await repository.get_owned(project.id, user.id)).name == "蓝色海面与晨光"
 
 
 @pytest.mark.asyncio

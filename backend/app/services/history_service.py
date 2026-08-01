@@ -126,6 +126,11 @@ class HistoryService:
                 history_id,
                 elapsed_ms=_duration_ms(started_at),
             )
+            await self.project_repository.rename_if_empty(
+                project_id,
+                user_id,
+                request.prompt[:5],
+            )
             _log_step("history_completed", complete_started_at, history_id=history_id)
             _log_step(
                 "generation_completed",

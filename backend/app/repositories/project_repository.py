@@ -104,6 +104,21 @@ class ProjectRepository:
             raise ProjectNotFoundError(project_id)
         return project
 
+    async def rename_if_empty(self, project_id: int, user_id: int, name: str) -> bool:
+        normalized = name.strip()
+        if not normalized:
+            return False
+        async with aiosqlite.connect(self.database_path) as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ? AND trim(name) = ''
+                """,
+                (normalized[:80], project_id, user_id),
+            )
+            await connection.commit()
+        return cursor.rowcount > 0
+
     async def delete(self, project_id: int, user_id: int) -> ProjectDeleteResult:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
