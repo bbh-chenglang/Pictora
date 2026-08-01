@@ -11,6 +11,8 @@ import {
   X,
 } from "lucide-vue-next";
 import ProjectSidebar, { type ProjectSummary } from "./components/ProjectSidebar.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
+import ProjectDialog from "./components/ProjectDialog.vue";
 
 type Provider = { id: string; label: string; models: string[] };
 type ImageResult = {
@@ -93,6 +95,12 @@ const historyError = ref("");
 const projects = ref<ProjectSummary[]>([]);
 const selectedProjectId = ref<number | null>(null);
 const projectError = ref("");
+const projectDialogMode = ref<"create" | "rename" | null>(null);
+const projectDialogProject = ref<ProjectSummary | null>(null);
+const confirmAction = ref<"project" | "history" | null>(null);
+const confirmProject = ref<ProjectSummary | null>(null);
+const confirmHistoryIds = ref<number[]>([]);
+const actionBusy = ref(false);
 const activeHistoryId = ref<number | null>(null);
 const generationElapsedMs = ref(0);
 const lightboxUrl = ref("");
@@ -327,8 +335,7 @@ function selectProject(projectId: number) {
   clearWorkspace();
 }
 
-async function createProject() {
-  const name = window.prompt("请输入项目名称", "新项目")?.trim();
+async function submitCreateProject(name: string) {
   if (!name) return;
   const response = await fetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   if (!response.ok) { projectError.value = "创建项目失败"; return; }
@@ -337,16 +344,14 @@ async function createProject() {
   selectProject(data.id);
 }
 
-async function renameProject(project: ProjectSummary) {
-  const name = window.prompt("请输入新的项目名称", project.name)?.trim();
+async function submitRenameProject(project: ProjectSummary, name: string) {
   if (!name || name === project.name) return;
   const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   if (!response.ok) { projectError.value = "重命名项目失败"; return; }
   await loadProjects();
 }
 
-async function deleteProject(project: ProjectSummary) {
-  if (!window.confirm(`确认删除项目“${project.name}”及其 ${project.history_count} 条历史记录吗？`)) return;
+async function submitDeleteProject(project: ProjectSummary) {
   const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "DELETE" });
   if (!response.ok) { projectError.value = "删除项目失败"; return; }
   const data = await response.json();
@@ -355,12 +360,68 @@ async function deleteProject(project: ProjectSummary) {
   clearWorkspace();
 }
 
-async function deleteHistory(project: ProjectSummary, ids: number[]) {
-  if (!window.confirm(`确认删除选中的 ${ids.length} 条历史记录吗？`)) return;
+async function submitDeleteHistory(project: ProjectSummary, ids: number[]) {
   const response = await fetch(`${API_BASE}/api/projects/${project.id}/history`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ history_ids: ids }) });
   if (!response.ok) { projectError.value = "删除历史记录失败"; return; }
   if (ids.includes(activeHistoryId.value ?? -1)) clearWorkspace();
   await loadProjects();
+}
+
+function createProject() {
+  projectDialogProject.value = null;
+  projectDialogMode.value = "create";
+}
+
+function renameProject(project: ProjectSummary) {
+  projectDialogProject.value = project;
+  projectDialogMode.value = "rename";
+}
+
+function cancelProjectDialog() {
+  projectDialogMode.value = null;
+  projectDialogProject.value = null;
+}
+
+async function submitProjectDialog(name: string) {
+  const mode = projectDialogMode.value;
+  const project = projectDialogProject.value;
+  cancelProjectDialog();
+  if (mode === "create") await submitCreateProject(name);
+  else if (mode === "rename" && project) await submitRenameProject(project, name);
+}
+
+function deleteProject(project: ProjectSummary) {
+  confirmProject.value = project;
+  confirmHistoryIds.value = [];
+  confirmAction.value = "project";
+}
+
+function deleteHistory(project: ProjectSummary, ids: number[]) {
+  confirmProject.value = project;
+  confirmHistoryIds.value = ids;
+  confirmAction.value = "history";
+}
+
+function cancelConfirm() {
+  if (actionBusy.value) return;
+  confirmAction.value = null;
+  confirmProject.value = null;
+  confirmHistoryIds.value = [];
+}
+
+async function confirmDeletion() {
+  if (actionBusy.value || !confirmProject.value) return;
+  const project = confirmProject.value;
+  const action = confirmAction.value;
+  const ids = confirmHistoryIds.value;
+  actionBusy.value = true;
+  try {
+    if (action === "project") await submitDeleteProject(project);
+    else if (action === "history") await submitDeleteHistory(project, ids);
+  } finally {
+    actionBusy.value = false;
+    cancelConfirm();
+  }
 }
 
 function startNewConversation() { if (!busy.value) clearWorkspace(); }
@@ -707,6 +768,21 @@ onUnmounted(() => {
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>
       <img :src="lightboxUrl" alt="生成图片全屏预览" />
     </div>
+    <ProjectDialog
+      :open="projectDialogMode !== null"
+      :title="projectDialogMode === 'rename' ? '重命名项目' : '新建项目'"
+      :initial-name="projectDialogProject?.name"
+      @submit="submitProjectDialog"
+      @cancel="cancelProjectDialog"
+    />
+    <ConfirmDialog
+      :open="confirmAction !== null"
+      :title="confirmAction === 'project' ? '删除项目' : '删除历史记录'"
+      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？`"
+      :busy="actionBusy"
+      @confirm="confirmDeletion"
+      @cancel="cancelConfirm"
+    />
     </template>
     </template>
   </main>
