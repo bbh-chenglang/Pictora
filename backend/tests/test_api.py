@@ -7,11 +7,15 @@ from fastapi.testclient import TestClient
 
 from app.database import initialize_database
 from app.dependencies import (
+    get_current_user,
     get_history_repository,
     get_history_service,
     get_image_service,
     get_settings_repository,
 )
+from app.schemas.auth import StoredSessionUser
+from app.auth import hash_password
+from app.repositories.user_repository import UserRepository
 from app.main import app
 from app.providers.base import (
     ProviderAuthError,
@@ -54,12 +58,13 @@ class FakeImageService:
 
 
 class PassthroughHistoryService:
-    async def generate(self, request, image_service):
+    async def generate(self, request, image_service, user_id):
         return await image_service.generate(request)
 
     async def analyze(
         self,
         *,
+        user_id,
         image_service,
         provider,
         model,
@@ -77,6 +82,13 @@ class PassthroughHistoryService:
             image_bytes,
             content_type,
         )
+
+
+@pytest.fixture(autouse=True)
+def authenticated_user():
+    app.dependency_overrides[get_current_user] = lambda: StoredSessionUser(id=1, username="alice", api_key="", model="gpt-image-1.5")
+    yield
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -98,6 +110,7 @@ def settings_repository(tmp_path: Path) -> SettingsRepository:
             default_api_key="",
         )
     )
+    asyncio.run(UserRepository(database_path).create("alice", hash_password("secret6")))
     return SettingsRepository(database_path)
 
 
@@ -105,6 +118,7 @@ def settings_repository(tmp_path: Path) -> SettingsRepository:
 def empty_history_repository(tmp_path: Path) -> HistoryRepository:
     database_path = tmp_path / "empty-history.db"
     asyncio.run(initialize_database(database_path))
+    asyncio.run(UserRepository(database_path).create("alice", hash_password("secret6")))
     return HistoryRepository(database_path)
 
 
@@ -112,9 +126,11 @@ def empty_history_repository(tmp_path: Path) -> HistoryRepository:
 def history_repository_with_record(tmp_path: Path) -> HistoryRepository:
     database_path = tmp_path / "history-api.db"
     asyncio.run(initialize_database(database_path))
+    asyncio.run(UserRepository(database_path).create("alice", hash_password("secret6")))
     repository = HistoryRepository(database_path)
     history_id = asyncio.run(
         repository.create(
+            user_id=1,
             kind="generate",
             prompt="画一个苹果",
             provider="compatible",
@@ -125,6 +141,7 @@ def history_repository_with_record(tmp_path: Path) -> HistoryRepository:
     )
     asyncio.run(
         repository.add_image(
+            user_id=1,
             history_id=history_id,
             role="generated",
             mime_type="image/png",

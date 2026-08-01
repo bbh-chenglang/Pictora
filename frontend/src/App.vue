@@ -4,13 +4,13 @@ import {
   Check,
   Download,
   ExternalLink,
-  History,
   ImagePlus,
   LoaderCircle,
   Sparkles,
   Upload,
   X,
 } from "lucide-vue-next";
+import ProjectSidebar, { type ProjectSummary } from "./components/ProjectSidebar.vue";
 
 type Provider = { id: string; label: string; models: string[] };
 type ImageResult = {
@@ -90,10 +90,12 @@ const error = ref("");
 const apiKeyConfigured = ref(false);
 const history = ref<HistorySummary[]>([]);
 const historyError = ref("");
+const projects = ref<ProjectSummary[]>([]);
+const selectedProjectId = ref<number | null>(null);
+const projectError = ref("");
 const activeHistoryId = ref<number | null>(null);
 const generationElapsedMs = ref(0);
 const lightboxUrl = ref("");
-const historyOpen = ref(false);
 const openParameterMenu = ref<ParameterMenu | null>(null);
 const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
 const username = ref("");
@@ -157,7 +159,7 @@ async function submitAuth(mode: "login" | "register") {
   password.value = "";
   passwordConfirmation.value = "";
   authView.value = "workspace";
-  await Promise.all([loadRuntimeSettings(), loadProviders(), loadHistory()]);
+  await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
 }
 
 async function logout() {
@@ -287,12 +289,81 @@ async function openHistory(historyId: number) {
     if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
     imageFile.value = null;
     previewUrl.value = reference ? resourceUrl(reference.url) : "";
-    historyOpen.value = false;
   } catch (exception) {
     error.value =
       exception instanceof Error ? exception.message : "无法加载历史详情";
   }
 }
+
+async function loadProjects() {
+  try {
+    const response = await fetch(`${API_BASE}/api/projects`);
+    const data = await response.json();
+    if (!response.ok) throw new Error("无法加载项目");
+    projects.value = Array.isArray(data) ? data : [];
+    if (!projects.value.some((project) => project.id === selectedProjectId.value)) selectedProjectId.value = projects.value[0]?.id ?? null;
+    history.value = projects.value.find((project) => project.id === selectedProjectId.value)?.history ?? [];
+    projectError.value = "";
+  } catch (exception) {
+    projectError.value = exception instanceof Error ? exception.message : "无法加载项目";
+  }
+}
+
+function clearWorkspace() {
+  generated.value = [];
+  analysis.value = "";
+  activeHistoryId.value = null;
+  prompt.value = "";
+  batchPrompts.value = "";
+  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
+  imageFile.value = null;
+  previewUrl.value = "";
+}
+
+function selectProject(projectId: number) {
+  if (busy.value) return;
+  selectedProjectId.value = projectId;
+  history.value = projects.value.find((project) => project.id === projectId)?.history ?? [];
+  clearWorkspace();
+}
+
+async function createProject() {
+  const name = window.prompt("请输入项目名称", "新项目")?.trim();
+  if (!name) return;
+  const response = await fetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!response.ok) { projectError.value = "创建项目失败"; return; }
+  const data = await response.json();
+  await loadProjects();
+  selectProject(data.id);
+}
+
+async function renameProject(project: ProjectSummary) {
+  const name = window.prompt("请输入新的项目名称", project.name)?.trim();
+  if (!name || name === project.name) return;
+  const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (!response.ok) { projectError.value = "重命名项目失败"; return; }
+  await loadProjects();
+}
+
+async function deleteProject(project: ProjectSummary) {
+  if (!window.confirm(`确认删除项目“${project.name}”及其 ${project.history_count} 条历史记录吗？`)) return;
+  const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "DELETE" });
+  if (!response.ok) { projectError.value = "删除项目失败"; return; }
+  const data = await response.json();
+  selectedProjectId.value = data.selected_project_id;
+  await loadProjects();
+  clearWorkspace();
+}
+
+async function deleteHistory(project: ProjectSummary, ids: number[]) {
+  if (!window.confirm(`确认删除选中的 ${ids.length} 条历史记录吗？`)) return;
+  const response = await fetch(`${API_BASE}/api/projects/${project.id}/history`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ history_ids: ids }) });
+  if (!response.ok) { projectError.value = "删除历史记录失败"; return; }
+  if (ids.includes(activeHistoryId.value ?? -1)) clearWorkspace();
+  await loadProjects();
+}
+
+function startNewConversation() { if (!busy.value) clearWorkspace(); }
 
 async function applyRuntimeSettings() {
   const submittedModel = model.value.trim();
@@ -398,6 +469,7 @@ async function generateImage() {
         count: imageCount.value,
         detail: detail.value,
         size: size.value,
+        project_id: selectedProjectId.value,
       }),
     });
     const data = await parseJsonResponse(response);
@@ -406,11 +478,11 @@ async function generateImage() {
     }
     if (!data) throw new Error("服务返回了无效响应");
     generated.value = data.images ?? [];
-    await loadHistory();
+    await loadProjects();
   } catch (exception) {
     if (!(exception instanceof DOMException && exception.name === "AbortError")) {
       error.value = exception instanceof Error ? exception.message : "生成失败";
-      await loadHistory();
+      await loadProjects();
     }
   } finally {
     if (generationController === controller) generationController = null;
@@ -435,6 +507,7 @@ async function analyzeImage() {
   form.append("model", model.value);
   form.append("prompt", prompt.value || "请描述这张图片");
   form.append("detail", detail.value);
+  if (selectedProjectId.value !== null) form.append("project_id", String(selectedProjectId.value));
   form.append("image", imageFile.value);
   try {
     const response = await fetch(`${API_BASE}/api/analyze`, {
@@ -444,10 +517,10 @@ async function analyzeImage() {
     const data = await response.json();
     if (!response.ok) throw new Error(readableError(data, "分析失败"));
     analysis.value = data.text ?? "";
-    await loadHistory();
+    await loadProjects();
   } catch (exception) {
     error.value = exception instanceof Error ? exception.message : "分析失败";
-    await loadHistory();
+    await loadProjects();
   } finally {
     busy.value = "";
   }
@@ -467,15 +540,11 @@ function closeLightbox() {
   lightboxUrl.value = "";
 }
 
-function closeHistory() {
-  historyOpen.value = false;
-}
-
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   if (openParameterMenu.value) closeParameterMenu();
   else if (lightboxUrl.value) closeLightbox();
-  else closeHistory();
+  else if (lightboxUrl.value) closeLightbox();
 }
 
 function handleDocumentPointerDown(event: PointerEvent) {
@@ -493,7 +562,7 @@ onMounted(async () => {
     if (!response.ok) { authView.value = "login"; return; }
     currentUsername.value = (await response.json()).username;
     authView.value = "workspace";
-    await Promise.all([loadRuntimeSettings(), loadProviders(), loadHistory()]);
+    await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
   } catch {
     error.value = "无法加载服务商，请先启动后端";
   }
@@ -536,9 +605,6 @@ onUnmounted(() => {
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
         <button type="button" class="secondary-action" @click="logout">退出登录</button>
-        <button type="button" class="history-trigger" @click="historyOpen = true">
-          <History :size="17" /><span>历史记录</span><strong>{{ history.length }}</strong>
-        </button>
       </div>
     </header>
 
@@ -548,6 +614,18 @@ onUnmounted(() => {
     </section>
     <template v-else>
     <div class="studio-grid">
+      <ProjectSidebar
+        :projects="projects"
+        :selected-project-id="selectedProjectId"
+        :loading="!projects.length && !projectError"
+        @select-project="selectProject"
+        @new-conversation="startNewConversation"
+        @create-project="createProject"
+        @rename-project="renameProject"
+        @delete-project="deleteProject"
+        @delete-history="deleteHistory"
+        @open-history="openHistory"
+      />
       <section class="workspace-panel">
         <div class="result-panel">
           <div class="result-heading">
@@ -606,7 +684,7 @@ onUnmounted(() => {
       </section>
     </div>
 
-    <Transition name="drawer">
+    <!--
       <div v-if="historyOpen" class="drawer-layer" @click.self="closeHistory">
         <aside class="history-drawer" role="dialog" aria-modal="true" aria-label="历史记录">
           <div class="history-drawer-header">
@@ -623,7 +701,7 @@ onUnmounted(() => {
           <p v-if="historyError" class="history-error">{{ historyError }}</p>
         </aside>
       </div>
-    </Transition>
+    -->
 
     <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" aria-label="生成图片全屏预览" @click.self="closeLightbox">
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>

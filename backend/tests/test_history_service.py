@@ -4,8 +4,10 @@ import pytest
 import pytest_asyncio
 
 from app.database import initialize_database
+from app.auth import hash_password
 from app.providers.base import ProviderAuthError
 from app.repositories.history_repository import HistoryRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
 from app.schemas.generate import GenerateRequest, GenerateResponse
@@ -16,6 +18,7 @@ from app.services.history_service import HistoryService
 async def history_repository(tmp_path: Path) -> HistoryRepository:
     database_path = tmp_path / "history-service.db"
     await initialize_database(database_path)
+    await UserRepository(database_path).create("alice", hash_password("secret6"))
     return HistoryRepository(database_path)
 
 
@@ -93,11 +96,12 @@ async def test_generation_history_decodes_base64_into_blob(
             prompt="苹果",
         ),
         image_service,
+        1,
     )
-    summary = (await history_repository.list(limit=1))[0]
-    detail = await history_repository.get(summary.id)
+    summary = (await history_repository.list(user_id=1, limit=1))[0]
+    detail = await history_repository.get(1, summary.id)
     assert detail is not None
-    blob = await history_repository.get_image(detail.id, detail.images[0].id)
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
 
     assert response.images[0].base64_data == "cG5nLWJ5dGVz"
     assert blob is not None
@@ -126,10 +130,11 @@ async def test_generation_history_downloads_remote_images(
             prompt="海面",
         ),
         image_service,
+        1,
     )
-    detail = await history_repository.get((await history_repository.list(limit=1))[0].id)
+    detail = await history_repository.get(1, (await history_repository.list(user_id=1, limit=1))[0].id)
     assert detail is not None
-    blob = await history_repository.get_image(detail.id, detail.images[0].id)
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
 
     assert http_client.requested_urls == ["https://cdn.example/result.webp"]
     assert blob is not None
@@ -144,6 +149,7 @@ async def test_analysis_history_stores_reference_and_text(
     service = HistoryService(history_repository, http_client=FakeHttpClient())
 
     result = await service.analyze(
+        user_id=1,
         image_service=FakeImageService(),
         provider="compatible",
         model="vision-model",
@@ -154,7 +160,7 @@ async def test_analysis_history_stores_reference_and_text(
         filename="reference.jpg",
     )
 
-    detail = await history_repository.get((await history_repository.list(limit=1))[0].id)
+    detail = await history_repository.get(1, (await history_repository.list(user_id=1, limit=1))[0].id)
 
     assert result.text == "分析结果"
     assert detail is not None
@@ -176,9 +182,10 @@ async def test_provider_failure_marks_history_failed(
                 prompt="苹果",
             ),
             FailingImageService(ProviderAuthError()),
+            1,
         )
 
-    detail = await history_repository.get((await history_repository.list(limit=1))[0].id)
+    detail = await history_repository.get(1, (await history_repository.list(user_id=1, limit=1))[0].id)
 
     assert detail is not None
     assert detail.status == "failed"

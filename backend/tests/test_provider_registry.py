@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
+from app.schemas.auth import StoredSessionUser
 import app.dependencies as dependencies
 from app.providers.base import ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
@@ -109,21 +110,22 @@ async def test_registry_dependency_reuses_clients_until_cache_is_cleared() -> No
     )
 
     class Repository:
-        async def get(self):
+        async def get(self, user_id):
             return settings
 
     repository = Repository()
     dependencies.clear_dependency_caches()
 
     try:
-        first = await dependencies.get_provider_registry(repository)
-        second = await dependencies.get_provider_registry(repository)
+        user = StoredSessionUser(id=1, username="alice", api_key="", model="custom-image-model")
+        first = await dependencies.get_provider_registry(user, repository)
+        second = await dependencies.get_provider_registry(user, repository)
 
         assert first is second
         assert first.resolve("compatible").client is second.resolve("compatible").client
 
         dependencies.clear_dependency_caches()
-        third = await dependencies.get_provider_registry(repository)
+        third = await dependencies.get_provider_registry(user, repository)
         assert third is not first
         assert third.resolve("compatible").client is not first.resolve("compatible").client
     finally:

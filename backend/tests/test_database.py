@@ -45,7 +45,13 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
     assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 2
+    assert version == 3
+    async with aiosqlite.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in await (await connection.execute("PRAGMA table_info(history)")).fetchall()
+        }
+    assert "project_id" in columns
 
     await initialize_database(database_path)
     async with aiosqlite.connect(database_path) as connection:

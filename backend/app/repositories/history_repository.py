@@ -30,6 +30,8 @@ class HistoryRepository:
     async def create(
         self,
         *,
+        user_id: int,
+        project_id: int | None = None,
         kind: HistoryKind,
         prompt: str,
         provider: str,
@@ -39,13 +41,27 @@ class HistoryRepository:
         size: str | None = None,
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
+            if project_id is None:
+                project_cursor = await connection.execute(
+                    """
+                    SELECT id FROM projects
+                    WHERE user_id = ?
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+                project_row = await project_cursor.fetchone()
+                if project_row is None:
+                    raise ValueError("User has no project")
+                project_id = project_row[0]
             cursor = await connection.execute(
                 """
                 INSERT INTO history
-                    (kind, status, prompt, provider, model, detail, image_count, size)
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)
+                    (user_id, project_id, kind, status, prompt, provider, model, detail, image_count, size)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, prompt, provider, model, detail, image_count, size),
+                (user_id, project_id, kind, prompt, provider, model, detail, image_count, size),
             )
             await connection.commit()
             if cursor.lastrowid is None:
@@ -55,6 +71,7 @@ class HistoryRepository:
     async def add_image(
         self,
         *,
+        user_id: int,
         history_id: int,
         role: HistoryImageRole,
         mime_type: str,
@@ -118,7 +135,7 @@ class HistoryRepository:
             )
             await connection.commit()
 
-    async def list(self, *, limit: int = 50) -> list[HistorySummary]:
+    async def list(self, *, user_id: int, limit: int = 50) -> list[HistorySummary]:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
@@ -127,15 +144,16 @@ class HistoryRepository:
                        image_count, size, elapsed_ms, error_code, error_message,
                        created_at
                 FROM history
+                WHERE user_id = ?
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (user_id, limit),
             )
             rows = await cursor.fetchall()
         return [HistorySummary.model_validate(dict(row)) for row in rows]
 
-    async def get(self, history_id: int) -> HistoryDetail | None:
+    async def get(self, user_id: int, history_id: int) -> HistoryDetail | None:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
@@ -144,9 +162,9 @@ class HistoryRepository:
                        image_count, size, analysis_text, elapsed_ms, error_code,
                        error_message, created_at, completed_at
                 FROM history
-                WHERE id = ?
+                WHERE id = ? AND user_id = ?
                 """,
-                (history_id,),
+                (history_id, user_id),
             )
             row = await cursor.fetchone()
             if row is None:
@@ -173,6 +191,7 @@ class HistoryRepository:
 
     async def get_image(
         self,
+        user_id: int,
         history_id: int,
         image_id: int,
     ) -> StoredHistoryImage | None:
@@ -180,11 +199,12 @@ class HistoryRepository:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
                 """
-                SELECT id, history_id, mime_type, filename, data
-                FROM history_images
-                WHERE history_id = ? AND id = ?
+                SELECT image.id, image.history_id, image.mime_type, image.filename, image.data
+                FROM history_images AS image
+                JOIN history ON history.id = image.history_id
+                WHERE image.history_id = ? AND image.id = ? AND history.user_id = ?
                 """,
-                (history_id, image_id),
+                (history_id, image_id, user_id),
             )
             row = await cursor.fetchone()
         if row is None:

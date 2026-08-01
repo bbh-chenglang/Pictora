@@ -9,6 +9,7 @@ import httpx
 from app.observability import generation_id, log_context
 from app.providers.base import ProviderError
 from app.repositories.history_repository import HistoryRepository
+from app.repositories.project_repository import ProjectNotFoundError, ProjectRepository
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
 from app.schemas.generate import GenerateRequest, GenerateResponse
@@ -35,14 +36,27 @@ class HistoryService:
         self,
         repository: HistoryRepository,
         http_client: Any | None = None,
+        project_repository: ProjectRepository | None = None,
     ) -> None:
         self.repository = repository
         self.http_client = http_client
+        self.project_repository = project_repository or ProjectRepository(repository.database_path)
+
+    async def _resolve_project(self, project_id: int | None, user_id: int) -> int:
+        if project_id is not None:
+            if await self.project_repository.get_owned(project_id, user_id) is None:
+                raise ProjectNotFoundError(project_id)
+            return project_id
+        projects = await self.project_repository.list_with_history(user_id)
+        if not projects:
+            raise ProjectNotFoundError(user_id)
+        return projects[0].id
 
     async def generate(
         self,
         request: GenerateRequest,
         image_service: ImageService,
+        user_id: int = 1,
     ) -> GenerateResponse:
         generation_token = generation_id.set(uuid4().hex)
         started_at = perf_counter()
@@ -54,8 +68,10 @@ class HistoryService:
             request.count,
         )
         create_started_at = perf_counter()
+        project_id = await self._resolve_project(request.project_id, user_id)
         history_id = await self.repository.create(
-            kind="generate",
+            user_id=user_id, kind="generate",
+            project_id=project_id,
             prompt=request.prompt,
             provider=request.provider,
             model=request.model,
@@ -91,6 +107,7 @@ class HistoryService:
                 save_started_at = perf_counter()
                 await self.repository.add_image(
                     history_id=history_id,
+                    user_id=user_id,
                     role="generated",
                     mime_type=mime_type,
                     filename=f"generated-{position + 1}.{extension}",
@@ -139,6 +156,8 @@ class HistoryService:
     async def analyze(
         self,
         *,
+        user_id: int,
+        project_id: int | None = None,
         image_service: ImageService,
         provider: str,
         model: str,
@@ -148,8 +167,10 @@ class HistoryService:
         content_type: str,
         filename: str | None,
     ) -> AnalyzeResponse:
+        project_id = await self._resolve_project(project_id, user_id)
         history_id = await self.repository.create(
-            kind="analyze",
+            user_id=user_id, kind="analyze",
+            project_id=project_id,
             prompt=prompt,
             provider=provider,
             model=model,
@@ -161,6 +182,7 @@ class HistoryService:
         try:
             await self.repository.add_image(
                 history_id=history_id,
+                user_id=user_id,
                 role="reference",
                 mime_type=content_type,
                 filename=filename,

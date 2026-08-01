@@ -10,6 +10,7 @@ from app.api.generate import router as generate_router
 from app.api.providers import router as providers_router
 from app.api.settings import router as settings_router
 from app.api.history import router as history_router
+from app.api.projects import router as projects_router
 from app.providers.base import ProviderError
 from app.config import Settings
 from app.database import initialize_database
@@ -70,6 +71,7 @@ app.include_router(settings_router)
 app.include_router(generate_router)
 app.include_router(analyze_router)
 app.include_router(history_router)
+app.include_router(projects_router)
 
 
 @app.get("/health")

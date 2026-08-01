@@ -14,6 +14,7 @@ from app.repositories.settings_repository import (
     StoredProviderSettings,
 )
 from app.repositories.history_repository import HistoryRepository
+from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import StoredSessionUser
 from app.services.history_service import HistoryService
@@ -28,6 +29,11 @@ def get_settings_repository() -> SettingsRepository:
 @lru_cache
 def get_history_repository() -> HistoryRepository:
     return HistoryRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_project_repository() -> ProjectRepository:
+    return ProjectRepository(DATABASE_PATH)
 
 
 @lru_cache
@@ -66,9 +72,10 @@ def _registry_for(api_key: str, model: str) -> ProviderRegistry:
 
 
 async def get_provider_registry(
+    user: StoredSessionUser = Depends(get_current_user),
     repository: SettingsRepository = Depends(get_settings_repository),
 ) -> ProviderRegistry:
-    settings = await repository.get()
+    settings = await repository.get(user.id)
     return _registry_for(settings.api_key, settings.model)
 
 
@@ -80,12 +87,14 @@ async def get_image_service(
 
 def get_history_service(
     repository: HistoryRepository = Depends(get_history_repository),
+    project_repository: ProjectRepository = Depends(get_project_repository),
 ) -> HistoryService:
-    return HistoryService(repository)
+    return HistoryService(repository, project_repository=project_repository)
 
 
 def clear_dependency_caches() -> None:
     _registry_for.cache_clear()
     get_settings_repository.cache_clear()
     get_history_repository.cache_clear()
+    get_project_repository.cache_clear()
     get_user_repository.cache_clear()

@@ -12,6 +12,7 @@ ImageSize = Literal[
 
 
 class GenerateRequest(BaseModel):
+    project_id: int | None = None
     provider: str
     model: str
     prompt: str = Field(min_length=1, max_length=4000)
