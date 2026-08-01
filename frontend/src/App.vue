@@ -288,7 +288,10 @@ async function openHistory(historyId: number) {
     analysis.value = data.analysis_text ?? "";
     generated.value = data.images
       .filter((image) => image.role === "generated")
-      .map((image) => ({ url: resourceUrl(image.url) }));
+      .map((image) => ({
+        url: resourceUrl(image.url),
+        generation_time_ms: data.elapsed_ms,
+      }));
 
     const reference = data.images.find((image) => image.role === "reference");
     if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);

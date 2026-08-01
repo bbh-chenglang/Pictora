@@ -498,6 +498,73 @@ describe("GenImage workspace", () => {
     expect(wrapper.text()).not.toContain("500 ms");
   });
 
+  it("keeps the generation duration when reopening a generated conversation", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/projects")) {
+        return jsonResponse([
+          {
+            id: 1,
+            name: "我的项目",
+            history: [{
+              id: 7,
+              kind: "generate",
+              status: "completed",
+              prompt: "已生成的图片",
+              provider: "compatible",
+              model: "gpt-image-1.5",
+              detail: "high",
+              image_count: 1,
+              elapsed_ms: 500,
+              error_code: null,
+              error_message: null,
+              created_at: "2026-07-26T10:00:00",
+            }],
+            history_count: 1,
+          },
+        ]);
+      }
+      if (url.endsWith("/api/history/7")) {
+        return jsonResponse({
+          id: 7,
+          kind: "generate",
+          status: "completed",
+          prompt: "已生成的图片",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "high",
+          image_count: 1,
+          elapsed_ms: 500,
+          analysis_text: null,
+          error_code: null,
+          error_message: null,
+          created_at: "2026-07-26T10:00:00",
+          completed_at: "2026-07-26T10:00:01",
+          images: [{
+            id: 9,
+            role: "generated",
+            mime_type: "image/png",
+            filename: "result.png",
+            position: 0,
+            url: "/api/history/7/images/9",
+          }],
+        });
+      }
+      if (url.endsWith("/api/providers")) return jsonResponse([]);
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".image-meta strong").text()).toBe("0.50 秒");
+  });
+
   it("shows the live generation timer in the center of the empty canvas", async () => {
     let finishGeneration: ((response: Response) => void) | undefined;
     const pendingGeneration = new Promise<Response>((resolve) => {
