@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.api.analyze import router as analyze_router
 from app.api.auth import router as auth_router
@@ -11,7 +11,7 @@ from app.api.providers import router as providers_router
 from app.api.settings import router as settings_router
 from app.api.history import router as history_router
 from app.api.projects import router as projects_router
-from app.providers.base import ProviderError
+from app.providers.base import ProviderError, ProviderRequestError
 from app.config import Settings
 from app.database import initialize_database
 
@@ -45,6 +45,13 @@ app.add_middleware(
 
 @app.exception_handler(ProviderError)
 async def provider_error_handler(_: Request, exc: ProviderError):
+    if isinstance(exc, ProviderRequestError) and exc.response_content is not None:
+        headers = {"content-type": exc.content_type} if exc.content_type else None
+        return Response(
+            content=exc.response_content,
+            status_code=exc.status_code or 502,
+            headers=headers,
+        )
     status = {
         "provider_auth": 401,
         "provider_timeout": 504,

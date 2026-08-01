@@ -40,8 +40,17 @@ class ProviderTimeoutError(ProviderError):
 
 
 class ProviderRequestError(ProviderError):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        status_code: int | None = None,
+        response_content: bytes | None = None,
+        content_type: str | None = None,
+    ) -> None:
         super().__init__("provider_request", "Provider request failed")
+        self.status_code = status_code
+        self.response_content = response_content
+        self.content_type = content_type
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:

@@ -215,7 +215,7 @@ def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
     assert response.status_code == 422
 
 
-def test_generate_rejects_unsupported_size(service: FakeImageService) -> None:
+def test_generate_accepts_custom_size(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/generate",
@@ -227,10 +227,11 @@ def test_generate_rejects_unsupported_size(service: FakeImageService) -> None:
             },
         )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert service.generate_calls[-1].size == "1000x1000"
 
 
-def test_generate_rejects_nonstandard_landscape_size(service: FakeImageService) -> None:
+def test_generate_accepts_nonstandard_landscape_size(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/generate",
@@ -242,7 +243,8 @@ def test_generate_rejects_nonstandard_landscape_size(service: FakeImageService) 
             },
         )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert service.generate_calls[-1].size == "1536x864"
 
 
 def test_generate_accepts_square_size(service: FakeImageService) -> None:
@@ -332,6 +334,34 @@ def test_provider_errors_use_strict_error_response(
     assert response.status_code == status_code
     assert response.json() == {"error": {"code": code, "message": error.message}}
     assert set(response.json()) == {"error"}
+
+
+def test_provider_request_error_forwards_upstream_response() -> None:
+    upstream_body = b'{"error":{"message":"rate limited","type":"upstream_error"}}'
+    error = ProviderRequestError(
+        status_code=429,
+        response_content=upstream_body,
+        content_type="application/json",
+    )
+
+    class ErrorService(FakeImageService):
+        async def generate(self, request):
+            raise error
+
+    app.dependency_overrides[get_image_service] = ErrorService
+    app.dependency_overrides[get_history_service] = PassthroughHistoryService
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/generate",
+                json={"provider": "openai", "model": "gpt-image-1", "prompt": "draw"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 429
+    assert response.content == upstream_body
+    assert response.headers["content-type"] == "application/json"
 
 
 def test_settings_api_updates_only_model_and_optional_key(

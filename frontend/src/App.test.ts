@@ -166,10 +166,12 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
 
     const menu = wrapper.get("[data-parameter-menu='size']");
-    expect(menu.findAll(".parameter-option")).toHaveLength(3);
+    expect(menu.findAll(".parameter-option")).toHaveLength(5);
     expect(menu.text()).toContain("1:1 正方形，头像 1024x1024");
     expect(menu.text()).toContain("3:2 横向图片，风景 1536x1024");
     expect(menu.text()).toContain("2:3 竖向图片，人像 1024x1536");
+    expect(menu.text()).toContain("9:16 手机壁纸，人像 1024x1792");
+    expect(menu.text()).toContain("16:9 桌面壁纸，风景 1792x1024");
     expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
     expect(menu.get(".parameter-option.is-selected svg").exists()).toBe(true);
   });
@@ -325,7 +327,7 @@ describe("GenImage workspace", () => {
     expect(wrapper.get(".error-message").text()).toBe("生成失败（HTTP 504）");
   });
 
-  it("shows provider timeout below the waiting result message", async () => {
+  it("shows only the provider timeout in the empty canvas", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
@@ -351,6 +353,8 @@ describe("GenImage workspace", () => {
     const error = wrapper.get(".empty-wall .generation-error");
     expect(error.text()).toBe("服务商请求超时，请稍后重试");
     expect(error.classes()).toContain("error-message");
+    expect(wrapper.find(".empty-wall h3").exists()).toBe(false);
+    expect(wrapper.find(".empty-wall > p:not(.generation-error)").exists()).toBe(false);
     expect(wrapper.find(".composer-dock > .error-message").exists()).toBe(false);
   });
 

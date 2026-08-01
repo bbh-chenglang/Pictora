@@ -5,10 +5,9 @@ from typing import Any
 
 from openai import (
     APIError,
+    APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
-    AuthenticationError,
-    PermissionDeniedError,
 )
 from pydantic import SecretStr
 
@@ -16,7 +15,6 @@ from app.observability import log_context
 from app.schemas.analyze import AnalyzeResponse
 from app.providers.base import (
     ImageProvider,
-    ProviderAuthError,
     ProviderRequestError,
     ProviderTimeoutError,
     image_data_url,
@@ -72,9 +70,13 @@ class OpenAIProvider(ImageProvider):
         )
         try:
             response = await self.client.images.generate(**arguments)
-        except (AuthenticationError, PermissionDeniedError):
-            self._log_generation_failure(request, started_at, "authentication")
-            raise ProviderAuthError() from None
+        except APIStatusError as exc:
+            self._log_generation_failure(request, started_at, "api_status_error")
+            raise ProviderRequestError(
+                status_code=exc.status_code,
+                response_content=exc.response.content,
+                content_type=exc.response.headers.get("content-type"),
+            ) from None
         except APITimeoutError:
             self._log_generation_failure(request, started_at, "timeout")
             raise ProviderTimeoutError() from None
@@ -127,8 +129,12 @@ class OpenAIProvider(ImageProvider):
         }
         try:
             response = await self.client.chat.completions.create(**arguments)
-        except (AuthenticationError, PermissionDeniedError):
-            raise ProviderAuthError() from None
+        except APIStatusError as exc:
+            raise ProviderRequestError(
+                status_code=exc.status_code,
+                response_content=exc.response.content,
+                content_type=exc.response.headers.get("content-type"),
+            ) from None
         except APITimeoutError:
             raise ProviderTimeoutError() from None
         except APIError:

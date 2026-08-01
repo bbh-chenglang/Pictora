@@ -7,7 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.providers.compatible_provider import CompatibleProvider
-from app.providers.base import ProviderAuthError, ProviderRequestError, ProviderTimeoutError
+from app.providers.base import ProviderRequestError, ProviderTimeoutError
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
@@ -116,20 +116,26 @@ def _analysis_provider_with_failure(error: Exception) -> OpenAIProvider:
 
 
 @pytest.mark.asyncio
-async def test_analyze_maps_sdk_authentication_error() -> None:
+async def test_analyze_forwards_sdk_authentication_response() -> None:
     error = openai.AuthenticationError(
         "analysis auth failure",
         response=httpx.Response(
             401,
+            content=b'{"error":{"message":"invalid key"}}',
+            headers={"content-type": "application/json"},
             request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
         ),
         body=None,
     )
 
-    with pytest.raises(ProviderAuthError):
+    with pytest.raises(ProviderRequestError) as raised:
         await _analysis_provider_with_failure(error).analyze_image(
             "vision-model", "What is here?", b"abc", "image/png"
         )
+
+    assert raised.value.status_code == 401
+    assert raised.value.response_content == b'{"error":{"message":"invalid key"}}'
+    assert raised.value.content_type == "application/json"
 
 
 @pytest.mark.asyncio
@@ -186,7 +192,7 @@ async def test_provider_errors_do_not_expose_key() -> None:
         client=client,
     )
 
-    with pytest.raises(ProviderAuthError) as error:
+    with pytest.raises(ProviderRequestError) as error:
         await provider.generate_image(
             GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
         )
@@ -316,7 +322,7 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
 
 
 @pytest.mark.asyncio
-async def test_image_service_allows_three_minutes_per_generated_image(
+async def test_image_service_allows_five_minutes_per_generated_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timeout_values: list[int] = []
@@ -352,7 +358,7 @@ async def test_image_service_allows_three_minutes_per_generated_image(
         )
     )
 
-    assert timeout_values == [540]
+    assert timeout_values == [900]
 
 
 @pytest.mark.asyncio

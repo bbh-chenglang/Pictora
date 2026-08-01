@@ -61,6 +61,8 @@ const SIZE_OPTIONS = [
   { label: "1:1", value: "1024x1024", description: "正方形，头像" },
   { label: "3:2", value: "1536x1024", description: "横向图片，风景" },
   { label: "2:3", value: "1024x1536", description: "竖向图片，人像" },
+  { label: "9:16", value: "1024x1792", description: "手机壁纸，人像" },
+  { label: "16:9", value: "1792x1024", description: "桌面壁纸，风景" },
 ] as const;
 const DEFAULT_SIZE = "1024x1024";
 const DETAIL_OPTIONS = [
@@ -773,9 +775,11 @@ onUnmounted(() => {
           </div>
           <div v-else-if="!analysis" class="empty-wall">
             <div class="empty-shape"><Sparkles :size="24" /></div>
-            <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
             <p v-if="error" class="error-message generation-error">{{ error }}</p>
-            <p>配置参数并在下方输入提示词。</p>
+            <template v-else>
+              <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
+              <p>配置参数并在下方输入提示词。</p>
+            </template>
           </div>
         </div>
 
