@@ -980,10 +980,12 @@ select { cursor: pointer; }
  .auth-form label{display:grid;gap:6px;font-weight:700}
 .auth-form input{min-height:42px;border:2px solid #191817;padding:8px;font:inherit}
 .settings-page{max-width:720px;margin:0 auto;padding:32px 48px;display:grid;gap:20px}
-.settings-section{display:grid;gap:12px;border:2px solid #191817;background:#fffdf8;padding:20px 32px}
+.settings-section{display:grid;gap:12px;border:1px solid #d7d3cb;border-radius:8px;background:#fffdf8;padding:20px 32px;box-shadow:0 2px 8px rgba(25,24,23,.06)}
 .settings-section h1,.settings-section h2,.settings-section p{margin:0}
 .settings-section label{display:grid;gap:6px;font-weight:700}
-.settings-section input{min-height:42px;border:2px solid #191817;padding:8px;font:inherit}
+.settings-section input:not(.theme-option){min-height:42px;border:1px solid #c9c5bd;border-radius:6px;padding:8px 10px;font:inherit;background:#fff}
+.settings-section input:not(.theme-option):focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
+.settings-section .primary-action{border-width:1px;border-radius:6px}
 .settings-section label:has(.theme-option){display:flex;align-items:center;gap:8px;color:#625d54}
 @media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:20px}}
 @media (max-width:520px){.settings-page{padding-inline:16px}.settings-section{padding-inline:16px}}
