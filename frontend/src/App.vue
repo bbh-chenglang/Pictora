@@ -520,7 +520,7 @@ onUnmounted(() => {
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
         <button type="button" class="secondary-action" @click="logout">退出登录</button>
         <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
-          <i></i>{{ apiKeyConfigured ? "服务已配置" : "等待 API Key" }}
+          <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "等待 API Key" }}
         </span>
         <button type="button" class="history-trigger" @click="historyOpen = true">
           <History :size="17" /><span>历史记录</span><strong>{{ history.length }}</strong>

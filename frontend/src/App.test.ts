@@ -123,6 +123,27 @@ describe("GenImage workspace", () => {
     expect(wrapper.text()).not.toContain("批量提示词");
   });
 
+  it("labels a configured API key explicitly", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) {
+        return jsonResponse({ username: "alice", api_key_configured: true });
+      }
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("API Key 已配置");
+    expect(wrapper.text()).not.toContain("服务已配置");
+  });
+
   it("automatically saves the selected model", async () => {
     const wrapper = mount(App);
     await flushPromises();
@@ -205,6 +226,9 @@ describe("GenImage workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) {
+        return jsonResponse({ username: "alice", api_key_configured: true });
+      }
       if (url.endsWith("/api/generate")) {
         return jsonResponse({ provider: "compatible", model: "gpt-image-1.5", images: [] });
       }
