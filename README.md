@@ -1,5 +1,30 @@
 # GenImage
 
+## v1 Docker Deployment (Port 9001)
+
+The v1 deployment is isolated from the default deployment. It uses `compose.v1.yaml`, host port `9001`, containers `genimage-v1-web` and `genimage-v1-backend`, and the `genimage_v1_data` volume.
+
+Deploy v1 on Linux:
+
+```bash
+git checkout v1
+chmod +x deploy-v1.sh
+./deploy-v1.sh
+```
+
+Access the v1 deployment at `http://SERVER_IP:9001/` and check health with `curl http://127.0.0.1:9001/health`.
+
+Manage only the v1 deployment:
+
+```bash
+docker compose -p genimage-v1 -f compose.v1.yaml ps
+docker compose -p genimage-v1 -f compose.v1.yaml logs -f --tail=200
+docker compose -p genimage-v1 -f compose.v1.yaml restart
+docker compose -p genimage-v1 -f compose.v1.yaml down
+```
+
+Do not use `docker compose down -v` unless the isolated v1 database and generated images can be deleted.
+
 GenImage 是一个基于 Vue、FastAPI 和 SQLite 的图片生成工作台。生产环境使用 Docker Compose 运行，统一通过服务器的 `8083` 端口访问。
 
 ## Linux 部署
