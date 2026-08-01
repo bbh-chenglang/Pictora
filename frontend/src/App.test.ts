@@ -215,7 +215,7 @@ describe("GenImage workspace", () => {
     await flushPromises();
 
     await wrapper.get('[data-action="settings"]').trigger("click");
-    await wrapper.get('[data-action="save-api-key"]').trigger("click");
+    await wrapper.get('[data-field="api-key"]').trigger("blur");
     await flushPromises();
 
     const settingsUpdate = vi.mocked(fetch).mock.calls.find(
