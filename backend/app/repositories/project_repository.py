@@ -112,7 +112,7 @@ class ProjectRepository:
             cursor = await connection.execute(
                 """
                 UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND user_id = ? AND trim(name) = ''
+                WHERE id = ? AND user_id = ? AND trim(name) IN ('', '第一个项目')
                 """,
                 (normalized[:80], project_id, user_id),
             )

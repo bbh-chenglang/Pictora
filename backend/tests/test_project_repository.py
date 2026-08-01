@@ -46,6 +46,22 @@ async def test_empty_project_name_can_be_filled_from_prompt(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_default_project_name_can_be_filled_from_prompt(tmp_path: Path) -> None:
+    database_path = tmp_path / "projects.db"
+    await initialize_database(database_path)
+    user = await UserRepository(database_path).create("alice", hash_password("secret6"))
+    repository = ProjectRepository(database_path)
+    project = (await repository.list_with_history(user.id))[0]
+
+    renamed = await repository.rename_if_empty(project.id, user.id, "蓝色海面与晨光")
+
+    assert renamed is True
+    saved = await repository.get_owned(project.id, user.id)
+    assert saved is not None
+    assert saved.name == "蓝色海面与晨光"
+
+
+@pytest.mark.asyncio
 async def test_deleting_last_project_replaces_it_and_cascades_history_images(tmp_path: Path) -> None:
     database_path = tmp_path / "projects.db"
     await initialize_database(database_path)
