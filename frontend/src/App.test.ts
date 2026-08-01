@@ -57,7 +57,8 @@ describe("GenImage workspace", () => {
     expect(window.location.pathname).toBe("/settings");
     expect(wrapper.find(".settings-page").exists()).toBe(true);
     expect(wrapper.find(".settings-page .model-select").exists()).toBe(false);
-    expect(wrapper.find(".theme-option:disabled").exists()).toBe(true);
+    expect(wrapper.find(".theme-option").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("暂不支持");
   });
 
   it("saves an API key from settings when editing finishes and returns to login after changing password", async () => {
