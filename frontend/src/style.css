@@ -639,7 +639,7 @@ select { cursor: pointer; }
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 5;
-  min-width: 178px;
+  min-width: 232px;
   max-height: 240px;
   overflow-y: auto;
   border: 1px solid var(--line-strong);
@@ -656,6 +656,8 @@ select { cursor: pointer; }
   border-radius: 5px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 8px;
   background: transparent;
   color: var(--text);
@@ -668,6 +670,21 @@ select { cursor: pointer; }
 .parameter-option:hover {
   background: var(--blue-soft);
   color: var(--blue);
+}
+
+.parameter-option.is-selected {
+  color: var(--blue);
+}
+
+.parameter-option.is-selected svg {
+  flex: 0 0 auto;
+}
+
+.parameter-option-description {
+  margin-left: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .composer-actions {

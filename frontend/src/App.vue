@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
+  Check,
   Download,
   ExternalLink,
   History,
@@ -55,9 +56,12 @@ const MODEL_OPTIONS = [
 ] as const;
 const DEFAULT_MODEL = MODEL_OPTIONS[0];
 const SIZE_OPTIONS = [
-  { label: "3:2", value: "1536x1024" },
-  { label: "2:3", value: "1024x1536" },
-  { label: "1:1", value: "1024x1024" },
+  { label: "1:1", value: "1024x1024", description: "正方形，头像" },
+  { label: "2:3", value: "1024x1536", description: "社交媒体，自拍" },
+  { label: "3:4", value: "1152x1536", description: "经典比例，拍照" },
+  { label: "4:3", value: "1536x1152", description: "文章配图，插画" },
+  { label: "9:16", value: "864x1536", description: "手机壁纸，人像" },
+  { label: "16:9", value: "1536x864", description: "桌面壁纸，风景" },
 ] as const;
 const DEFAULT_SIZE = "1024x1024";
 const DETAIL_OPTIONS = [
@@ -589,10 +593,10 @@ onUnmounted(() => {
             <div class="prompt-row">
             <label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label>
               <div class="parameter-toolbar">
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ model }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"> <button v-for="option in MODEL_OPTIONS" :key="option" type="button" class="parameter-option" :data-parameter-option="option" @click="selectModel(option)">{{ option }}</button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :data-parameter-option="option.value" @click="selectSize(option.value)">{{ option.label }}</button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="detail" :aria-expanded="openParameterMenu === 'detail'" @click="toggleParameterMenu('detail')">细节级别 <strong>{{ DETAIL_OPTIONS.find((option) => option.value === detail)?.label }}</strong></button><div v-if="openParameterMenu === 'detail'" class="parameter-menu" data-parameter-menu="detail"><button v-for="option in DETAIL_OPTIONS" :key="option.value" type="button" class="parameter-option" :data-parameter-option="option.value" @click="selectDetail(option.value)">{{ option.label }}</button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :data-parameter-option="option" @click="selectImageCount(option)">{{ option }} 张</button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ model }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in MODEL_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === model }" :data-parameter-option="option" @click="selectModel(option)"><span>{{ option }}</span><Check v-if="option === model" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong><small class="parameter-option-description">{{ option.description }}</small></span><Check v-if="option.value === size" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="detail" :aria-expanded="openParameterMenu === 'detail'" @click="toggleParameterMenu('detail')">细节级别 <strong>{{ DETAIL_OPTIONS.find((option) => option.value === detail)?.label }}</strong></button><div v-if="openParameterMenu === 'detail'" class="parameter-menu" data-parameter-menu="detail"><button v-for="option in DETAIL_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === detail }" :data-parameter-option="option.value" @click="selectDetail(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === detail" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
               </div>
             </div>
             <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': busy === 'generate' }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="busy === 'generate'" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ busy === "generate" ? "取消生成" : "生成图片" }}</button></div>

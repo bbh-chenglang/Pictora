@@ -158,6 +158,20 @@ describe("GenImage workspace", () => {
     });
   });
 
+  it("shows the selected size with a checkmark and descriptive size options", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-parameter-trigger='size']").trigger("click");
+
+    const menu = wrapper.get("[data-parameter-menu='size']");
+    expect(menu.findAll(".parameter-option")).toHaveLength(6);
+    expect(menu.text()).toContain("正方形，头像");
+    expect(menu.text()).toContain("桌面壁纸，风景");
+    expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
+    expect(menu.get(".parameter-option.is-selected svg").exists()).toBe(true);
+  });
+
   it("places the light-blue analysis action above image generation", async () => {
     const wrapper = mount(App);
     await flushPromises();
