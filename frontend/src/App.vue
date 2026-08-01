@@ -642,15 +642,41 @@ onUnmounted(() => {
 <template>
   <main class="studio-shell">
     <section v-if="authView !== 'workspace'" class="auth-page">
-      <form v-if="authView !== 'checking'" class="auth-form" @submit.prevent="authView === 'register' ? submitAuth('register') : submitAuth('login')">
-        <h1>{{ authView === 'register' ? '注册账号' : '登录' }}</h1>
-        <label>用户名<input v-model="username" autocomplete="username" /></label>
-        <label>密码<input v-model="password" type="password" autocomplete="current-password" /></label>
-        <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" /></label>
-        <p v-if="authError" class="error-message">{{ authError }}</p>
-        <button type="submit" class="primary-action">{{ authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
-        <button type="button" class="secondary-action" @click="authView = authView === 'register' ? 'login' : 'register'">{{ authView === 'register' ? '返回登录' : '注册账号' }}</button>
-      </form>
+      <div v-if="authView === 'checking'" class="auth-loading" aria-live="polite">正在检查登录状态…</div>
+      <div v-else class="auth-layout">
+        <aside class="auth-intro">
+          <div class="auth-brand-mark">G</div>
+          <p class="auth-eyebrow">GenImage</p>
+          <h1>把想法变成画面</h1>
+          <p class="auth-intro-copy">在一个清晰、专注的工作台里生成和管理你的图片。</p>
+          <div class="auth-intro-rule" aria-hidden="true"></div>
+          <p class="auth-intro-note">登录后即可继续使用你的项目与历史记录。</p>
+        </aside>
+
+        <form class="auth-form" @submit.prevent="authView === 'register' ? submitAuth('register') : submitAuth('login')">
+          <div class="auth-form-heading">
+            <div>
+              <p class="auth-kicker">欢迎回来</p>
+              <h2>{{ authView === 'register' ? '创建账号' : '登录 GenImage' }}</h2>
+            </div>
+            <span class="auth-step">{{ authView === 'register' ? '02' : '01' }}</span>
+          </div>
+
+          <div class="auth-mode" role="tablist" aria-label="认证方式">
+            <button type="button" role="tab" :aria-selected="authView === 'login'" :class="{ active: authView === 'login' }" @click="authView = 'login'">登录</button>
+            <button type="button" role="tab" :aria-selected="authView === 'register'" :class="{ active: authView === 'register' }" @click="authView = 'register'">注册</button>
+          </div>
+
+          <div class="auth-fields">
+            <label>用户名<input v-model="username" autocomplete="username" placeholder="输入用户名" required /></label>
+            <label>密码<input v-model="password" type="password" :autocomplete="authView === 'register' ? 'new-password' : 'current-password'" placeholder="至少 6 位字符" minlength="6" required /></label>
+            <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" autocomplete="new-password" placeholder="再次输入密码" minlength="6" required /></label>
+          </div>
+          <p v-if="authError" class="error-message" role="alert">{{ authError }}</p>
+          <button type="submit" class="primary-action auth-submit">{{ authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
+          <p class="auth-footnote">{{ authView === 'register' ? '已有账号？' : '还没有账号？' }}<button type="button" class="auth-link" @click="authView = authView === 'register' ? 'login' : 'register'">{{ authView === 'register' ? '返回登录' : '立即注册' }}</button></p>
+        </form>
+      </div>
     </section>
     <template v-else>
     <header class="topbar">
