@@ -17,6 +17,7 @@ describe("GenImage workspace", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
         if (url.endsWith("/api/providers")) {
           return jsonResponse({
             providers: [
@@ -42,7 +43,50 @@ describe("GenImage workspace", () => {
     );
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("opens a dedicated settings page without the workspace model selector", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+
+    expect(window.location.pathname).toBe("/settings");
+    expect(wrapper.find(".settings-page").exists()).toBe(true);
+    expect(wrapper.find(".settings-page .model-select").exists()).toBe(false);
+    expect(wrapper.find(".theme-option:disabled").exists()).toBe(true);
+  });
+
+  it("saves an API key from settings and returns to login after changing password", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && init?.method === "PUT") return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/auth/password")) return Promise.resolve(new Response(null, { status: 204 }));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.get("[data-field='api-key']").setValue("new-private-key");
+    await wrapper.get("[data-action='save-api-key']").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("new-private-key");
+
+    await wrapper.get("[data-field='old-password']").setValue("secret6");
+    await wrapper.get("[data-field='new-password']").setValue("changed6");
+    await wrapper.get("[data-field='new-password-confirmation']").setValue("changed6");
+    await wrapper.get("[data-action='change-password']").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".auth-page").exists()).toBe(true);
+  });
 
   it("uses a collapsed API section and fixed image model options", async () => {
     const wrapper = mount(App);
@@ -121,6 +165,7 @@ describe("GenImage workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/generate")) {
         return jsonResponse({ provider: "compatible", model: "gpt-image-2", images: [] });
       }
@@ -152,6 +197,7 @@ describe("GenImage workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/generate")) {
         return Promise.resolve(new Response(null, { status: 504 }));
       }
@@ -191,6 +237,7 @@ describe("GenImage workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/history/7")) {
         return jsonResponse({
           id: 7,
@@ -287,6 +334,7 @@ describe("GenImage workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/generate")) {
         return jsonResponse({
           images: [
@@ -338,6 +386,7 @@ describe("GenImage workspace", () => {
     });
     vi.mocked(fetch).mockImplementation((input) => {
       const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/generate")) return pendingGeneration;
       if (url.endsWith("/api/providers")) {
         return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: [] }] });

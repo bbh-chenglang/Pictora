@@ -91,6 +91,17 @@ const lightboxUrl = ref("");
 const historyOpen = ref(false);
 const sidebarWidth = ref(320);
 const resizingSidebar = ref(false);
+const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
+const username = ref("");
+const password = ref("");
+const passwordConfirmation = ref("");
+const currentUsername = ref("");
+const authError = ref("");
+const currentView = ref<"workspace" | "settings">(window.location.pathname === "/settings" ? "settings" : "workspace");
+const settingsApiKey = ref("");
+const oldPassword = ref("");
+const newPassword = ref("");
+const newPasswordConfirmation = ref("");
 let generationTimer: number | undefined;
 let generationStartedAt = 0;
 let generationController: AbortController | null = null;
@@ -124,6 +135,65 @@ async function parseJsonResponse(response: Response): Promise<any | null> {
 
 function resourceUrl(path: string) {
   return /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`;
+}
+
+async function submitAuth(mode: "login" | "register") {
+  authError.value = "";
+  const passwordsMatch = mode === "login" || password.value === passwordConfirmation.value;
+  if (!username.value.trim() || password.value.length < 6 || !passwordsMatch) {
+    authError.value = "请填写用户名，密码至少 6 位且两次输入一致";
+    return;
+  }
+  const body = mode === "register"
+    ? { username: username.value, password: password.value, password_confirmation: passwordConfirmation.value }
+    : { username: username.value, password: password.value };
+  const response = await fetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await parseJsonResponse(response);
+  if (!response.ok) { authError.value = readableError(data, "登录失败"); return; }
+  currentUsername.value = data.username;
+  password.value = "";
+  passwordConfirmation.value = "";
+  authView.value = "workspace";
+  await Promise.all([loadRuntimeSettings(), loadProviders(), loadHistory()]);
+}
+
+async function logout() {
+  await fetch(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "include" });
+  authView.value = "login";
+  history.value = [];
+  currentUsername.value = "";
+}
+
+function navigateToSettings() {
+  window.history.pushState({}, "", "/settings");
+  currentView.value = "settings";
+  settingsApiKey.value = "";
+}
+
+function navigateToWorkspace() {
+  window.history.pushState({}, "", "/");
+  currentView.value = "workspace";
+}
+
+async function saveSettingsApiKey() {
+  const response = await fetch(`${API_BASE}/api/settings`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: model.value, api_key: settingsApiKey.value }),
+  });
+  const data = await parseJsonResponse(response);
+  if (!response.ok) { authError.value = readableError(data, "保存接口配置失败"); return; }
+  apiKeyConfigured.value = Boolean(data?.api_key_configured);
+  settingsApiKey.value = "";
+}
+
+async function changePassword() {
+  if (newPassword.value.length < 6 || newPassword.value !== newPasswordConfirmation.value) { authError.value = "新密码至少 6 位且两次输入一致"; return; }
+  const response = await fetch(`${API_BASE}/api/auth/password`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_password: oldPassword.value, new_password: newPassword.value, new_password_confirmation: newPasswordConfirmation.value }) });
+  if (!response.ok) { authError.value = readableError(await parseJsonResponse(response), "修改密码失败"); return; }
+  oldPassword.value = newPassword.value = newPasswordConfirmation.value = "";
+  authView.value = "login";
 }
 
 async function loadRuntimeSettings() {
@@ -421,10 +491,17 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener("keydown", handleGlobalKeydown);
   try {
+    const response = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
+    if (!response.ok) { authView.value = "login"; return; }
+    currentUsername.value = (await response.json()).username;
+    authView.value = "workspace";
     await Promise.all([loadRuntimeSettings(), loadProviders(), loadHistory()]);
   } catch {
     error.value = "无法加载服务商，请先启动后端";
   }
+});
+window.addEventListener("popstate", () => {
+  currentView.value = window.location.pathname === "/settings" ? "settings" : "workspace";
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
@@ -436,12 +513,28 @@ onUnmounted(() => {
 
 <template>
   <main class="studio-shell">
+    <section v-if="authView !== 'workspace'" class="auth-page">
+      <form v-if="authView !== 'checking'" class="auth-form" @submit.prevent="authView === 'register' ? submitAuth('register') : submitAuth('login')">
+        <h1>{{ authView === 'register' ? '注册账号' : '登录' }}</h1>
+        <label>用户名<input v-model="username" autocomplete="username" /></label>
+        <label>密码<input v-model="password" type="password" autocomplete="current-password" /></label>
+        <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" /></label>
+        <p v-if="authError" class="error-message">{{ authError }}</p>
+        <button type="submit" class="primary-action">{{ authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
+        <button type="button" class="secondary-action" @click="authView = authView === 'register' ? 'login' : 'register'">{{ authView === 'register' ? '返回登录' : '注册账号' }}</button>
+      </form>
+    </section>
+    <template v-else>
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">G</span>
         <div><strong>GenImage</strong><small>图像工作台</small></div>
       </div>
       <div class="topbar-actions">
+        <span>{{ currentUsername }}</span>
+        <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
+        <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
+        <button type="button" class="secondary-action" @click="logout">退出登录</button>
         <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
           <i></i>{{ apiKeyConfigured ? "服务已配置" : "等待 API Key" }}
         </span>
@@ -451,6 +544,12 @@ onUnmounted(() => {
       </div>
     </header>
 
+    <section v-if="currentView === 'settings'" class="settings-page">
+      <section class="settings-section"><h1>接口配置</h1><p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p><label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" /></label><button type="button" class="primary-action" data-action="save-api-key" @click="saveSettingsApiKey">保存接口配置</button></section>
+      <section class="settings-section"><h2>修改密码</h2><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="button" class="primary-action" data-action="change-password" @click="changePassword">修改密码</button></section>
+      <section class="settings-section"><h2>主题</h2><p>暂不支持</p><label><input class="theme-option" type="radio" disabled />亮色</label><label><input class="theme-option" type="radio" disabled />暗色</label></section>
+    </section>
+    <template v-else>
     <div class="studio-grid" :class="{ resizing: resizingSidebar }" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
       <aside class="control-panel">
         <div class="panel-title">
@@ -553,5 +652,7 @@ onUnmounted(() => {
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>
       <img :src="lightboxUrl" alt="生成图片全屏预览" />
     </div>
+    </template>
+    </template>
   </main>
 </template>
