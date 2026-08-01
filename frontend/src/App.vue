@@ -317,6 +317,10 @@ async function loadProjects() {
   }
 }
 
+async function refreshConversationLists() {
+  await Promise.all([loadProjects(), loadHistory()]);
+}
+
 function clearWorkspace() {
   generated.value = [];
   analysis.value = "";
@@ -539,11 +543,11 @@ async function generateImage() {
     }
     if (!data) throw new Error("服务返回了无效响应");
     generated.value = data.images ?? [];
-    await loadProjects();
+    await refreshConversationLists();
   } catch (exception) {
     if (!(exception instanceof DOMException && exception.name === "AbortError")) {
       error.value = exception instanceof Error ? exception.message : "生成失败";
-      await loadProjects();
+      await refreshConversationLists();
     }
   } finally {
     if (generationController === controller) generationController = null;
