@@ -36,6 +36,11 @@ from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+MODEL_BY_PROVIDER = {
+    "gpt": "gpt-image-1.5",
+    "gemini": "gemini-3.1-flash-image",
+}
+
 
 def _provider_type_for_model(model_id: str) -> str:
     return "gemini" if "gemini" in model_id.lower() else "gpt"
@@ -122,7 +127,7 @@ async def create_api_key_config(
 ):
     try:
         config = await repository.create(
-            user.id, request.alias, request.api_key, request.provider_type, request.model
+            user.id, request.alias, request.api_key, request.provider_type, MODEL_BY_PROVIDER[request.provider_type]
         )
     except ApiKeyConfigAliasTakenError:
         raise HTTPException(409, {"error": {"code": "api_key_alias_taken", "message": "别名已存在"}}) from None
@@ -135,6 +140,24 @@ async def discover_api_key_models(request: ApiKeyDiscoveryRequest) -> ApiKeyDisc
         return ApiKeyDiscoveryResponse(models=await _list_remote_models(request.api_key.strip()))
     except APIError:
         raise HTTPException(502, {"error": {"code": "api_key_model_discovery_failed", "message": "无法获取模型列表"}}) from None
+
+
+@router.get("/api-keys/{config_id}/models", response_model=ApiKeyDiscoveryResponse)
+async def list_api_key_config_models(
+    config_id: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: ApiKeyConfigRepository = Depends(get_api_key_config_repository),
+) -> ApiKeyDiscoveryResponse:
+    config = await repository.get_owned(user.id, config_id)
+    if config is None:
+        raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}})
+    try:
+        models = await _list_remote_models(config.api_key)
+    except APIError:
+        raise HTTPException(502, {"error": {"code": "api_key_model_discovery_failed", "message": "无法获取模型列表"}}) from None
+    return ApiKeyDiscoveryResponse(
+        models=[model for model in models if model.provider_type == config.provider_type]
+    )
 
 
 @router.post("/api-keys/{config_id}/test")
@@ -161,7 +184,17 @@ async def update_api_key_config(
     repository: ApiKeyConfigRepository = Depends(get_api_key_config_repository),
 ):
     try:
-        config = await repository.update(user.id, config_id, **request.model_dump(exclude_unset=True))
+        current = await repository.get_owned(user.id, config_id)
+        if current is None:
+            raise ApiKeyConfigNotFoundError(config_id)
+        changes = request.model_dump(exclude_unset=True)
+        provider_type = changes.get("provider_type", current.provider_type)
+        config = await repository.update(
+            user.id,
+            config_id,
+            **changes,
+            model=MODEL_BY_PROVIDER[provider_type],
+        )
     except ApiKeyConfigNotFoundError:
         raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}}) from None
     except ApiKeyConfigAliasTakenError:

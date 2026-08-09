@@ -117,7 +117,7 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".api-key-link").exists()).toBe(false);
     expect(wrapper.find(".control-panel").exists()).toBe(false);
     expect(wrapper.find(".panel-resizer").exists()).toBe(false);
-    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(4);
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
     expect(wrapper.find(".composer-dock .reference-row").exists()).toBe(true);
     expect(wrapper.find(".composer-dock .prompt-row textarea").exists()).toBe(true);
   });
@@ -156,7 +156,7 @@ describe("GenImage workspace", () => {
     await flushPromises();
     expect(wrapper.find("[data-parameter-menu='size']").exists()).toBe(false);
     await wrapper.get("[data-parameter-trigger='model']").trigger("click");
-    await wrapper.get("[data-parameter-option='gpt-image-2']").trigger("click");
+    await wrapper.get("[data-parameter-option='gpt-image-1.5']").trigger("click");
     await flushPromises();
 
     const settingsUpdate = vi.mocked(fetch).mock.calls.find(
@@ -165,7 +165,7 @@ describe("GenImage workspace", () => {
     );
     expect(settingsUpdate).toBeDefined();
     expect(JSON.parse(String(settingsUpdate?.[1]?.body))).toEqual({
-      model: "gpt-image-2",
+      model: "gpt-image-1.5",
       api_key: null,
     });
   });
@@ -366,8 +366,8 @@ describe("GenImage workspace", () => {
 
     const wrapper = mount(App);
     await flushPromises();
-    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("Gemini 绘图");
-    await wrapper.get("[data-parameter-trigger='model']").trigger("click");
+    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gemini-image");
+    await wrapper.get("[data-parameter-trigger='apiKey']").trigger("click");
     await wrapper.get("[data-parameter-option='GPT 主账号']").trigger("click");
     await flushPromises();
     await wrapper.get(".primary-action").trigger("click");
@@ -378,7 +378,7 @@ describe("GenImage workspace", () => {
     expect(JSON.parse(String(generation?.[1]?.body))).not.toHaveProperty("api_key");
   });
 
-  it("adds a key from the model list and tests an existing key without showing models in rows", async () => {
+  it("adds and edits a key without model controls", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
@@ -390,9 +390,11 @@ describe("GenImage workspace", () => {
         api_key_configured: true,
         configs: [{ id: 1, alias: "主 Key", provider_type: "gpt", model: "gpt-image-1.5", api_key_configured: true }],
       });
-      if (url.endsWith("/api/settings/api-keys/models")) return jsonResponse({ models: [{ id: "gemini-3.1-flash-image", provider_type: "gemini" }] });
       if (url.endsWith("/api/settings/api-keys/1/test")) return jsonResponse({ available: true, message: "API Key 可用" });
-      if (url.endsWith("/api/settings/api-keys") && init?.method === "POST") return jsonResponse({ id: 2 });
+      if (url.endsWith("/api/settings/api-keys") && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).not.toHaveProperty("model");
+        return jsonResponse({ id: 2 });
+      }
       if (url.endsWith("/api/projects")) return jsonResponse([]);
       if (url.endsWith("/api/history")) return jsonResponse([]);
       throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
@@ -408,11 +410,49 @@ describe("GenImage workspace", () => {
     expect(wrapper.text()).toContain("API Key 可用");
     await wrapper.get("[data-action='add-api-key']").trigger("click");
     expect(wrapper.find("[data-field='config-provider']").exists()).toBe(false);
+    expect(wrapper.find("[data-field='config-model']").exists()).toBe(false);
+    expect(wrapper.find("[data-action='discover-models']").exists()).toBe(false);
     await wrapper.get("[data-field='config-api-key']").setValue("new-key");
-    await wrapper.get("[data-action='discover-models']").trigger("click");
     await flushPromises();
-    expect(wrapper.get("[data-field='config-model']").element).toBeTruthy();
-    expect(wrapper.text()).toContain("Gemini");
+    await wrapper.get("[data-field='config-alias']").setValue("new-config");
+    await wrapper.get(".api-config-form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.find("[data-field='config-model']").exists()).toBe(false);
+  });
+
+  it("asks for custom confirmation before deleting an API key config", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 1,
+        api_key_configured: true,
+        configs: [
+          { id: 1, alias: "主 Key", provider_type: "gpt", model: "gpt-image-1.5", api_key_configured: true },
+          { id: 2, alias: "备用 Key", provider_type: "gemini", model: "gemini-image", api_key_configured: true },
+        ],
+      });
+      if (url.endsWith("/api/settings/api-keys/2") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.findAll("[data-action='delete-api-key']")[1].trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".confirm-dialog").exists()).toBe(true);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/api/settings/api-keys/2") && init?.method === "DELETE")).toBe(false);
+    await wrapper.get(".confirm-dialog .secondary-action").trigger("click");
+    expect(wrapper.find(".confirm-dialog").exists()).toBe(false);
+    await wrapper.findAll("[data-action='delete-api-key']")[1].trigger("click");
+    await wrapper.get(".confirm-dialog .danger-action").trigger("click");
+    await flushPromises();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/api/settings/api-keys/2") && init?.method === "DELETE")).toBe(true);
   });
 
   it("shows only the provider timeout in the empty canvas", async () => {

@@ -34,7 +34,7 @@ class ImageService:
                 raise ApiKeyConfigNotFoundError(request.api_key_config_id)
             provider = self.provider_factory(config)
             effective_request = request.model_copy(
-                update={"provider": provider.provider_id, "model": config.model}
+                update={"provider": provider.provider_id, "model": request.model.strip() or config.model}
             )
         else:
             provider = self.registry.resolve(request.provider)

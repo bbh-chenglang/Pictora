@@ -81,7 +81,7 @@ const DETAIL_OPTIONS = [
   { label: "原始", value: "original" },
 ] as const;
 const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
-type ParameterMenu = "model" | "size" | "detail" | "count";
+type ParameterMenu = "apiKey" | "model" | "size" | "detail" | "count";
 type GenerationRun = {
   controller: AbortController;
   startedAt: number;
@@ -111,9 +111,10 @@ const selectedProjectId = ref<number | null>(null);
 const projectError = ref("");
 const projectDialogMode = ref<"create" | "rename" | null>(null);
 const projectDialogProject = ref<ProjectSummary | null>(null);
-const confirmAction = ref<"project" | "history" | null>(null);
+const confirmAction = ref<"project" | "history" | "api-key" | null>(null);
 const confirmProject = ref<ProjectSummary | null>(null);
 const confirmHistoryIds = ref<number[]>([]);
+const confirmConfig = ref<ApiKeyConfig | null>(null);
 const actionBusy = ref(false);
 const activeHistoryId = ref<number | null>(null);
 const lightboxUrl = ref("");
@@ -134,6 +135,8 @@ const editingConfigId = ref<number | null>(null);
 const showConfigForm = ref(false);
 const discoveredModels = ref<DiscoveredModel[]>([]);
 const discoveringModels = ref(false);
+const availableModels = ref<DiscoveredModel[]>([]);
+const loadingConfigModels = ref(false);
 const testingConfigId = ref<number | null>(null);
 const apiKeyTestMessage = ref("");
 const settingsConfigError = ref("");
@@ -162,7 +165,21 @@ const activeGenerationElapsedMs = computed(() => {
 });
 const canAnalyze = computed(() => Boolean(imageFile.value) && busy.value !== "analyze");
 const selectedConfig = computed(() => apiKeyConfigs.value.find((item) => item.id === activeApiKeyConfigId.value) ?? null);
-const selectedModelLabel = computed(() => selectedConfig.value?.alias ?? model.value);
+const selectedApiKeyLabel = computed(() => selectedConfig.value?.alias ?? "默认配置");
+const selectedModelLabel = computed(() => model.value);
+const modelOptions = computed(() => {
+  if (selectedConfig.value) {
+    const configured = { id: selectedConfig.value.model, provider_type: selectedConfig.value.provider_type };
+    const options = availableModels.value.filter((item) => item.provider_type === selectedConfig.value?.provider_type);
+    return options.some((item) => item.id === configured.id) ? options : [configured, ...options];
+  }
+  const providerModels = providers.value.find((item) => item.id === provider.value)?.models;
+  const models = providerModels?.length ? providerModels : MODEL_OPTIONS;
+  return models.map((id) => ({
+    id,
+    provider_type: provider.value === "gemini" ? "gemini" : "gpt",
+  })) ?? [];
+});
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 function readableError(data: any, fallback: string) {
@@ -237,22 +254,49 @@ function closeParameterMenu() {
   openParameterMenu.value = null;
 }
 
-async function selectModel(value: string) {
-  const selected = apiKeyConfigs.value.find((item) => item.alias === value || item.model === value);
-  if (selected && !legacySettingsMode.value) {
-    activeApiKeyConfigId.value = selected.id;
-    model.value = selected.model;
-    provider.value = selected.provider_type === "gemini" ? "gemini" : "compatible";
-    await fetch(`${API_BASE}/api/settings/active`, {
-      method: "PUT",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config_id: selected.id }),
-    });
-  } else {
-    model.value = value;
-    await applyRuntimeSettings();
+async function loadConfigModels(config: ApiKeyConfig) {
+  availableModels.value = [{ id: config.model, provider_type: config.provider_type }];
+  if (!config.api_key_configured) return;
+  loadingConfigModels.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}/models`, { credentials: "include" });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "无法获取模型列表"));
+    const models = (data?.models ?? []) as DiscoveredModel[];
+    availableModels.value = models.filter((item) => item.provider_type === config.provider_type);
+    if (!availableModels.value.some((item) => item.id === config.model)) {
+      availableModels.value.unshift({ id: config.model, provider_type: config.provider_type });
+    }
+  } catch {
+    // Keep the saved model available when model discovery is temporarily unavailable.
+  } finally {
+    loadingConfigModels.value = false;
   }
+}
+
+async function selectApiKeyConfig(selected: ApiKeyConfig) {
+  if (legacySettingsMode.value) return;
+  activeApiKeyConfigId.value = selected.id;
+  model.value = selected.model;
+  provider.value = selected.provider_type === "gemini" ? "gemini" : "compatible";
+  await fetch(`${API_BASE}/api/settings/active`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config_id: selected.id }),
+  });
+  await loadConfigModels(selected);
+  closeParameterMenu();
+}
+
+async function selectModel(value: string) {
+  const selectedConfig = apiKeyConfigs.value.find((item) => item.alias === value);
+  if (selectedConfig && !legacySettingsMode.value) {
+    await selectApiKeyConfig(selectedConfig);
+    return;
+  }
+  model.value = value;
+  if (legacySettingsMode.value) await applyRuntimeSettings();
   closeParameterMenu();
 }
 
@@ -330,14 +374,18 @@ async function loadRuntimeSettings() {
   activeApiKeyConfigId.value = configs.length ? (data.active_config_id ?? configs[0].id) : null;
   const active = configs.find((item) => item.id === activeApiKeyConfigId.value);
   model.value = active?.model ?? ((MODEL_OPTIONS as readonly string[]).includes(data.model) ? data.model : DEFAULT_MODEL);
-  if (active) provider.value = active.provider_type === "gemini" ? "gemini" : "compatible";
+  if (active) {
+    provider.value = active.provider_type === "gemini" ? "gemini" : "compatible";
+    availableModels.value = [{ id: active.model, provider_type: active.provider_type }];
+  } else {
+    availableModels.value = [];
+  }
   apiKeyConfigured.value = Boolean(data.api_key_configured);
 }
 
 function resetConfigForm() {
   editingConfigId.value = null;
   showConfigForm.value = false;
-  discoveredModels.value = [];
   configForm.value = { alias: "", api_key: "", provider_type: "gpt", model: DEFAULT_MODEL };
   settingsConfigError.value = "";
 }
@@ -350,7 +398,6 @@ function beginAddConfig() {
 function editConfig(config: ApiKeyConfig) {
   editingConfigId.value = config.id;
   showConfigForm.value = true;
-  discoveredModels.value = [];
   configForm.value = { alias: config.alias, api_key: "", provider_type: config.provider_type, model: config.model };
   settingsConfigError.value = "";
 }
@@ -405,18 +452,16 @@ async function refreshRuntimeSettings() {
 
 async function saveConfig() {
   const form = configForm.value;
-  if (!form.alias.trim() || !form.model.trim() || (!editingConfigId.value && !form.api_key.trim())) {
-    settingsConfigError.value = "请填写别名、API Key 和模型名称";
+  if (!form.alias.trim() || (!editingConfigId.value && !form.api_key.trim())) {
+    settingsConfigError.value = "请填写别名和 API Key";
     return;
   }
   const editing = editingConfigId.value !== null;
-  const detectedType = discoveredModels.value.find((item) => item.id === form.model)?.provider_type
-    ?? (form.model.toLowerCase().includes("gemini") ? "gemini" : form.provider_type);
   const response = await fetch(`${API_BASE}/api/settings/api-keys${editing ? `/${editingConfigId.value}` : ""}`, {
     method: editing ? "PATCH" : "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...form, provider_type: detectedType }),
+    body: JSON.stringify({ alias: form.alias, api_key: form.api_key, provider_type: form.provider_type }),
   });
   const data = await parseJsonResponse(response);
   if (!response.ok) {
@@ -428,6 +473,11 @@ async function saveConfig() {
 
 async function deleteConfig(config: ApiKeyConfig) {
   if (apiKeyConfigs.value.length <= 1) return;
+  confirmConfig.value = config;
+  confirmAction.value = "api-key";
+}
+
+async function deleteConfigNow(config: ApiKeyConfig) {
   const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}`, { method: "DELETE", credentials: "include" });
   if (!response.ok) {
     settingsConfigError.value = readableError(await parseJsonResponse(response), "删除配置失败");
@@ -603,10 +653,23 @@ function cancelConfirm() {
   confirmAction.value = null;
   confirmProject.value = null;
   confirmHistoryIds.value = [];
+  confirmConfig.value = null;
 }
 
 async function confirmDeletion() {
-  if (actionBusy.value || !confirmProject.value) return;
+  if (actionBusy.value || !confirmAction.value) return;
+  if (confirmAction.value === "api-key") {
+    if (!confirmConfig.value) return;
+    actionBusy.value = true;
+    try {
+      await deleteConfigNow(confirmConfig.value);
+    } finally {
+      actionBusy.value = false;
+      cancelConfirm();
+    }
+    return;
+  }
+  if (!confirmProject.value) return;
   const project = confirmProject.value;
   const action = confirmAction.value;
   const ids = confirmHistoryIds.value;
@@ -911,15 +974,14 @@ onUnmounted(() => {
         <div v-else class="api-config-list">
           <div v-for="config in apiKeyConfigs" :key="config.id" class="api-config-row" :class="{ active: config.id === activeApiKeyConfigId }">
             <div><strong>{{ config.alias }}</strong><span>{{ config.provider_type === 'gemini' ? 'Gemini' : 'GPT' }}</span></div>
-            <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" data-action="test-api-key" @click="testConfig(config)">{{ testingConfigId === config.id ? '测试中...' : '测试' }}</button><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" :disabled="apiKeyConfigs.length <= 1" @click="deleteConfig(config)">删除</button></div>
+            <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" data-action="test-api-key" @click="testConfig(config)">{{ testingConfigId === config.id ? '测试中...' : '测试' }}</button><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" data-action="delete-api-key" :disabled="apiKeyConfigs.length <= 1" @click="deleteConfig(config)">删除</button></div>
           </div>
           <p v-if="apiKeyTestMessage" class="api-key-test-message" role="status">{{ apiKeyTestMessage }}</p>
           <form v-if="showConfigForm" class="api-config-form" @submit.prevent="saveConfig">
             <label>别名<input v-model="configForm.alias" data-field="config-alias" maxlength="80" required /></label>
             <label>API Key<input v-model="configForm.api_key" data-field="config-api-key" type="password" autocomplete="off" :placeholder="editingConfigId ? '留空以保留现有 Key' : ''" /></label>
-            <label>模型<select v-if="discoveredModels.length" v-model="configForm.model" data-field="config-model"><option v-for="item in discoveredModels" :key="item.id" :value="item.id">{{ item.id }}</option></select><input v-else v-model="configForm.model" data-field="config-model" maxlength="120" required /></label>
             <div class="config-type-display"><span>类型</span><strong>{{ configForm.provider_type === 'gemini' ? 'Gemini' : 'GPT' }}</strong></div>
-            <div class="api-config-form-actions"><button v-if="!editingConfigId || configForm.api_key" type="button" class="secondary-action" data-action="discover-models" :disabled="discoveringModels" @click="discoverConfigModels">{{ discoveringModels ? '获取中...' : '获取模型列表' }}</button><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button v-if="editingConfigId" type="button" class="secondary-action" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
+            <div class="api-config-form-actions"><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button v-if="editingConfigId" type="button" class="secondary-action" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
           </form>
         </div>
       </section>
@@ -945,6 +1007,14 @@ onUnmounted(() => {
           <div class="logout-panel"><h3>退出登录</h3><p>结束当前账号会话，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></div>
         </div>
       </section>
+      <ConfirmDialog
+        :open="confirmAction === 'api-key'"
+        title="删除 API Key 配置"
+        :message="`确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
+        :busy="actionBusy"
+        @confirm="confirmDeletion"
+        @cancel="cancelConfirm"
+      />
     </section>
     <template v-else>
     <div class="studio-grid">
@@ -1008,7 +1078,8 @@ onUnmounted(() => {
             <div class="prompt-row">
             <label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label>
               <div class="parameter-toolbar">
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectModel(option.alias)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="apiKey" :aria-expanded="openParameterMenu === 'apiKey'" @click="toggleParameterMenu('apiKey')">API Key <strong>{{ selectedApiKeyLabel }}</strong></button><div v-if="openParameterMenu === 'apiKey'" class="parameter-menu" data-parameter-menu="apiKey"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectApiKeyConfig(option)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in modelOptions" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === model }" :data-parameter-option="option.id" @click="selectModel(option.id)"><span>{{ option.id }}</span><Check v-if="option.id === model" :size="15" /></button><span v-if="loadingConfigModels" class="parameter-option-description">获取模型列表中...</span></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }} {{ option.description }} {{ option.value }}</strong></span><Check v-if="option.value === size" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="detail" :aria-expanded="openParameterMenu === 'detail'" @click="toggleParameterMenu('detail')">细节级别 <strong>{{ DETAIL_OPTIONS.find((option) => option.value === detail)?.label }}</strong></button><div v-if="openParameterMenu === 'detail'" class="parameter-menu" data-parameter-menu="detail"><button v-for="option in DETAIL_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === detail }" :data-parameter-option="option.value" @click="selectDetail(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === detail" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
@@ -1052,8 +1123,8 @@ onUnmounted(() => {
     />
     <ConfirmDialog
       :open="confirmAction !== null"
-      :title="confirmAction === 'project' ? '删除项目' : '删除历史记录'"
-      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？`"
+      :title="confirmAction === 'project' ? '删除项目' : confirmAction === 'history' ? '删除历史记录' : '删除 API Key 配置'"
+      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
       :busy="actionBusy"
       @confirm="confirmDeletion"
       @cancel="cancelConfirm"

@@ -62,7 +62,6 @@ def test_can_create_activate_update_and_delete_config(client: TestClient) -> Non
             "alias": "Gemini 1K",
             "api_key": "gemini-secret",
             "provider_type": "gemini",
-            "model": "gemini-3.1-flash-image-1K",
         },
     )
 
@@ -70,6 +69,7 @@ def test_can_create_activate_update_and_delete_config(client: TestClient) -> Non
     config = created.json()
     assert config["api_key_configured"] is True
     assert "api_key" not in config
+    assert config["model"] == "gemini-3.1-flash-image"
 
     config_id = config["id"]
     active = client.put("/api/settings/active", json={"config_id": config_id})
@@ -78,11 +78,11 @@ def test_can_create_activate_update_and_delete_config(client: TestClient) -> Non
 
     updated = client.patch(
         f"/api/settings/api-keys/{config_id}",
-        json={"alias": "Gemini Final", "api_key": "", "model": "gemini-3.1-flash-image-2K"},
+        json={"alias": "Gemini Final", "api_key": ""},
     )
     assert updated.status_code == 200
     assert updated.json()["alias"] == "Gemini Final"
-    assert updated.json()["model"] == "gemini-3.1-flash-image-2K"
+    assert updated.json()["model"] == "gemini-3.1-flash-image"
     assert updated.json()["api_key_configured"] is True
 
     deleted = client.delete(f"/api/settings/api-keys/{config_id}")
@@ -95,7 +95,6 @@ def test_rejects_duplicate_alias_and_deleting_last_config(client: TestClient) ->
         "alias": "工作 Key",
         "api_key": "secret",
         "provider_type": "gpt",
-        "model": "gpt-image-2",
     }
     assert client.post("/api/settings/api-keys", json=payload).status_code == 201
     duplicate = client.post("/api/settings/api-keys", json=payload)
@@ -109,6 +108,34 @@ def test_rejects_duplicate_alias_and_deleting_last_config(client: TestClient) ->
     response = client.delete(f"/api/settings/api-keys/{last['id']}")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "last_api_key_config"
+
+
+def test_tests_key_as_unavailable_when_no_model_matches_provider_type(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register(client)
+
+    class FakeModels:
+        async def list(self):
+            return type("Response", (), {"data": [type("Model", (), {"id": "gpt-image-2"})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.api.settings.AsyncOpenAI", FakeClient)
+    created = client.post(
+        "/api/settings/api-keys",
+        json={"alias": "Gemini", "api_key": "secret", "provider_type": "gemini", "model": "gemini-image"},
+    )
+
+    tested = client.post(f"/api/settings/api-keys/{created.json()['id']}/test")
+
+    assert tested.status_code == 200
+    assert tested.json() == {"available": False, "message": "API Key \u4e0d\u53ef\u7528"}
 
 
 def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,8 +162,14 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
 
     created = client.post(
         "/api/settings/api-keys",
-        json={"alias": "Gemini", "api_key": "secret", "provider_type": "gemini", "model": "gemini-3.1-flash-image"},
+        json={"alias": "Gemini", "api_key": "secret", "provider_type": "gemini"},
     )
+    config_id = created.json()["id"]
+    configured_models = client.get(f"/api/settings/api-keys/{config_id}/models")
+    assert configured_models.status_code == 200
+    assert configured_models.json() == {
+        "models": [{"id": "gemini-3.1-flash-image", "provider_type": "gemini"}]
+    }
     tested = client.post(f"/api/settings/api-keys/{created.json()['id']}/test")
     assert tested.status_code == 200
     assert tested.json() == {"available": True, "message": "API Key 可用"}
