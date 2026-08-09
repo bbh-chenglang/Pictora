@@ -871,8 +871,8 @@ onUnmounted(() => {
       <section class="settings-section feedback-section settings-feedback">
         <div><p class="settings-eyebrow">用户反馈</p><h2>给 GenImage 留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
         <form class="feedback-form" @submit.prevent="submitFeedback">
-          <label>留言<span class="required-mark">必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
           <label>联系方式<span class="optional-mark">选填</span><input v-model="feedbackContact" data-field="feedback-contact" maxlength="200" placeholder="微信、邮箱或其他联系方式" /></label>
+          <label>留言<span class="required-mark">必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
           <div class="feedback-actions"><button type="submit" class="primary-action" :disabled="feedbackSubmitting || !feedbackMessage.trim()">{{ feedbackSubmitting ? '提交中...' : '提交留言' }}</button><p v-if="feedbackStatus" class="feedback-status" role="status">{{ feedbackStatus }}</p></div>
         </form>
       </section>
