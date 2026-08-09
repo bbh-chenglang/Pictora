@@ -758,18 +758,18 @@ onUnmounted(() => {
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
-      <section class="settings-section">
+      <section class="settings-section settings-interface">
         <div class="settings-heading"><h1>接口配置</h1><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div>
         <p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p>
         <label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
       </section>
 
-      <section class="settings-section community-section">
+      <section class="settings-section community-section settings-community">
         <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>群号</dt><dd>1043879357</dd></div></dl></div>
         <img class="community-qr" :src="groupQrUrl" alt="GenImage 交流群二维码" />
       </section>
 
-      <section class="settings-section feedback-section">
+      <section class="settings-section feedback-section settings-feedback">
         <div><p class="settings-eyebrow">用户反馈</p><h2>给 GenImage 留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
         <form class="feedback-form" @submit.prevent="submitFeedback">
           <label>留言<span class="required-mark">必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
@@ -778,7 +778,7 @@ onUnmounted(() => {
         </form>
       </section>
 
-      <section class="settings-section security-section">
+      <section class="settings-section security-section settings-security">
         <div class="security-heading"><p class="settings-eyebrow">账号与安全</p><h2>管理账号</h2></div>
         <div class="security-grid">
           <form class="password-form" @submit.prevent="changePassword"><h3>修改密码</h3><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password">修改密码</button></form>
