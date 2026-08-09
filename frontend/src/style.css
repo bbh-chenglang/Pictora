@@ -1084,7 +1084,7 @@ select { cursor: pointer; }
 .auth-link { border: 0; padding: 0 0 0 5px; background: transparent; color: #256aa5; cursor: pointer; font-weight: 700; }
 .auth-link:hover { text-decoration: underline; }
 .auth-loading { color: #4b7092; font-size: 14px; }
-.settings-page{height:calc(100dvh - 64px);max-width:1080px;margin:0 auto;padding:20px 48px 24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"interface community" "security feedback";align-content:start;align-items:start;gap:14px;overflow-y:auto}
+.settings-page{height:calc(100dvh - 64px);max-width:1080px;margin:0 auto;padding:20px 48px 24px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"interface security" "community feedback";align-content:start;align-items:start;gap:14px;overflow-y:auto}
 .settings-interface{grid-area:interface}.settings-community{grid-area:community}.settings-feedback{grid-area:feedback}.settings-security{grid-area:security}
 .settings-section{display:grid;gap:8px;border:1px solid #d7d3cb;border-radius:8px;background:#fffdf8;padding:14px 24px;box-shadow:0 2px 8px rgba(25,24,23,.06)}
 .settings-section h1,.settings-section h2,.settings-section p{margin:0}
@@ -1145,7 +1145,7 @@ select { cursor: pointer; }
 .logout-panel{padding-left:28px;border-left:1px solid #e1e7ec}
 .logout-panel .logout-action{width:max-content}
 @media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:18px}}
-@media (max-width:680px){.settings-page{grid-template-columns:1fr;grid-template-areas:"interface" "community" "feedback" "security"}.community-section{grid-template-columns:1fr}.community-qr{width:min(100%,190px);margin-inline:auto}.security-grid{grid-template-columns:1fr}.logout-panel{padding:16px 0 0;border-top:1px solid #e1e7ec;border-left:0}.feedback-form textarea{width:100%}}
+@media (max-width:680px){.settings-page{grid-template-columns:1fr;grid-template-areas:"interface" "security" "community" "feedback"}.community-section{grid-template-columns:1fr}.community-qr{width:min(100%,190px);margin-inline:auto}.security-grid{grid-template-columns:1fr}.logout-panel{padding:16px 0 0;border-top:1px solid #e1e7ec;border-left:0}.feedback-form textarea{width:100%}}
 @media (max-width:520px){.settings-page{padding-inline:16px;padding-top:14px}.settings-section{padding-inline:14px}.community-copy dl{gap:18px}.feedback-actions{align-items:flex-start;flex-direction:column}}
 
 @media (max-width: 680px) {
