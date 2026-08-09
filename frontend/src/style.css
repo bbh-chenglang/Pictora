@@ -1096,6 +1096,17 @@ select { cursor: pointer; }
 .settings-section input:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
 .settings-section .primary-action{border-width:1px;border-radius:6px}
 .settings-heading .api-key-link{min-height:34px;margin-top:0;padding:0 12px;white-space:nowrap}
+.api-config-list{display:grid;gap:10px}
+.api-config-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 12px;border:1px solid #d7d3cb;border-radius:6px;background:#fff}
+.api-config-row.active{border-color:#486884;box-shadow:inset 3px 0 #486884}
+.api-config-row strong,.api-config-row span{display:block}
+.api-config-row>div:first-child span{margin-top:3px;color:#718096;font-size:12px;font-weight:500}
+.api-config-actions{display:flex;align-items:center;gap:8px;color:#5d7e99;font-size:12px;white-space:nowrap}
+.api-config-actions .secondary-action{min-height:30px;padding-inline:9px}
+.api-config-form{display:grid;grid-template-columns:1fr 1.4fr .65fr 1fr;gap:10px;padding-top:4px;border-top:1px solid #e5e1d9}
+.api-config-form select{min-height:38px;border:1px solid #c9c5bd;border-radius:6px;padding:6px 10px;font:inherit;background:#fff}
+.api-config-form-actions{grid-column:1 / -1;display:flex;align-items:center;gap:10px}
+.settings-error{color:#a33b32;font-size:13px}
 .settings-account-actions{margin-top:4px}
 .settings-account-actions p{color:var(--muted)}
 .settings-account-actions .logout-action{width:max-content;border-color:#e4b8b3;color:#a33b32;background:#fffafa}

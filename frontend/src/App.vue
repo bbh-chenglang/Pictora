@@ -16,6 +16,13 @@ import ProjectDialog from "./components/ProjectDialog.vue";
 import groupQrUrl from "./assets/genimage-group.png";
 
 type Provider = { id: string; label: string; models: string[] };
+type ApiKeyConfig = {
+  id: number;
+  alias: string;
+  provider_type: "gpt" | "gemini";
+  model: string;
+  api_key_configured: boolean;
+};
 type ImageResult = {
   url?: string | null;
   base64_data?: string | null;
@@ -117,7 +124,13 @@ const passwordConfirmation = ref("");
 const currentUsername = ref("");
 const authError = ref("");
 const currentView = ref<"workspace" | "settings">(window.location.pathname === "/settings" ? "settings" : "workspace");
+const apiKeyConfigs = ref<ApiKeyConfig[]>([]);
+const activeApiKeyConfigId = ref<number | null>(null);
+const legacySettingsMode = ref(false);
 const settingsApiKey = ref("");
+const configForm = ref({ alias: "", api_key: "", provider_type: "gpt" as "gpt" | "gemini", model: DEFAULT_MODEL });
+const editingConfigId = ref<number | null>(null);
+const settingsConfigError = ref("");
 const oldPassword = ref("");
 const newPassword = ref("");
 const newPasswordConfirmation = ref("");
@@ -142,6 +155,8 @@ const activeGenerationElapsedMs = computed(() => {
   return generationRuns.get(activeGenerationRunId.value)?.elapsedMs ?? 0;
 });
 const canAnalyze = computed(() => Boolean(imageFile.value) && busy.value !== "analyze");
+const selectedConfig = computed(() => apiKeyConfigs.value.find((item) => item.id === activeApiKeyConfigId.value) ?? null);
+const selectedModelLabel = computed(() => selectedConfig.value?.alias ?? model.value);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 function readableError(data: any, fallback: string) {
@@ -217,9 +232,22 @@ function closeParameterMenu() {
 }
 
 async function selectModel(value: string) {
-  model.value = value;
+  const selected = apiKeyConfigs.value.find((item) => item.alias === value || item.model === value);
+  if (selected && !legacySettingsMode.value) {
+    activeApiKeyConfigId.value = selected.id;
+    model.value = selected.model;
+    provider.value = selected.provider_type === "gemini" ? "gemini" : "compatible";
+    await fetch(`${API_BASE}/api/settings/active`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config_id: selected.id }),
+    });
+  } else {
+    model.value = value;
+    await applyRuntimeSettings();
+  }
   closeParameterMenu();
-  await applyRuntimeSettings();
 }
 
 function selectSize(value: string) {
@@ -238,6 +266,7 @@ function selectImageCount(value: number) {
 }
 
 async function saveSettingsApiKey() {
+  if (!legacySettingsMode.value) return;
   const apiKey = settingsApiKey.value.trim() || null;
   const response = await fetch(`${API_BASE}/api/settings`, {
     method: "PUT",
@@ -287,10 +316,64 @@ async function loadRuntimeSettings() {
   const response = await fetch(`${API_BASE}/api/settings`);
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载运行时配置"));
-  model.value = (MODEL_OPTIONS as readonly string[]).includes(data.model)
-    ? data.model
-    : DEFAULT_MODEL;
+  const configs = Array.isArray(data.configs) ? data.configs as ApiKeyConfig[] : [];
+  legacySettingsMode.value = configs.length === 0;
+  apiKeyConfigs.value = configs.length
+    ? configs
+    : MODEL_OPTIONS.map((item, index) => ({ id: 0 - index, alias: item, provider_type: "gpt", model: item, api_key_configured: Boolean(data.api_key_configured) }));
+  activeApiKeyConfigId.value = configs.length ? (data.active_config_id ?? configs[0].id) : null;
+  const active = configs.find((item) => item.id === activeApiKeyConfigId.value);
+  model.value = active?.model ?? ((MODEL_OPTIONS as readonly string[]).includes(data.model) ? data.model : DEFAULT_MODEL);
+  if (active) provider.value = active.provider_type === "gemini" ? "gemini" : "compatible";
   apiKeyConfigured.value = Boolean(data.api_key_configured);
+}
+
+function resetConfigForm() {
+  editingConfigId.value = null;
+  configForm.value = { alias: "", api_key: "", provider_type: "gpt", model: DEFAULT_MODEL };
+  settingsConfigError.value = "";
+}
+
+function editConfig(config: ApiKeyConfig) {
+  editingConfigId.value = config.id;
+  configForm.value = { alias: config.alias, api_key: "", provider_type: config.provider_type, model: config.model };
+  settingsConfigError.value = "";
+}
+
+async function refreshRuntimeSettings() {
+  await loadRuntimeSettings();
+  resetConfigForm();
+}
+
+async function saveConfig() {
+  const form = configForm.value;
+  if (!form.alias.trim() || !form.model.trim() || (!editingConfigId.value && !form.api_key.trim())) {
+    settingsConfigError.value = "请填写别名、API Key 和模型名称";
+    return;
+  }
+  const editing = editingConfigId.value !== null;
+  const response = await fetch(`${API_BASE}/api/settings/api-keys${editing ? `/${editingConfigId.value}` : ""}`, {
+    method: editing ? "PATCH" : "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(form),
+  });
+  const data = await parseJsonResponse(response);
+  if (!response.ok) {
+    settingsConfigError.value = readableError(data, "保存配置失败");
+    return;
+  }
+  await refreshRuntimeSettings();
+}
+
+async function deleteConfig(config: ApiKeyConfig) {
+  if (apiKeyConfigs.value.length <= 1) return;
+  const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}`, { method: "DELETE", credentials: "include" });
+  if (!response.ok) {
+    settingsConfigError.value = readableError(await parseJsonResponse(response), "删除配置失败");
+    return;
+  }
+  await refreshRuntimeSettings();
 }
 
 async function loadProviders() {
@@ -298,7 +381,9 @@ async function loadProviders() {
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载服务商"));
   providers.value = data.providers ?? [];
-  provider.value = providers.value[0]?.id ?? "compatible";
+  provider.value = selectedConfig.value?.provider_type === "gemini"
+    ? "gemini"
+    : providers.value[0]?.id ?? "compatible";
 }
 
 async function loadHistory() {
@@ -580,6 +665,7 @@ async function generateImage() {
       body: JSON.stringify({
         provider: provider.value,
         model: model.value,
+        ...(activeApiKeyConfigId.value !== null ? { api_key_config_id: activeApiKeyConfigId.value } : {}),
         prompt: requestPrompt,
         prompts: prompts.length ? prompts : null,
         count: imageCount.value,
@@ -760,8 +846,21 @@ onUnmounted(() => {
     <section v-if="currentView === 'settings'" class="settings-page">
       <section class="settings-section settings-interface">
         <div class="settings-heading"><h1>接口配置</h1><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div>
-        <p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p>
-        <label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
+        <p>{{ apiKeyConfigured ? '已有可用配置' : '尚未配置 API Key' }}</p>
+        <label v-if="legacySettingsMode">API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
+        <div v-else class="api-config-list">
+          <div v-for="config in apiKeyConfigs" :key="config.id" class="api-config-row" :class="{ active: config.id === activeApiKeyConfigId }">
+            <div><strong>{{ config.alias }}</strong><span>{{ config.provider_type === 'gemini' ? 'Gemini' : 'GPT' }} · {{ config.model }}</span></div>
+            <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" :disabled="apiKeyConfigs.length <= 1" @click="deleteConfig(config)">删除</button></div>
+          </div>
+          <form class="api-config-form" @submit.prevent="saveConfig">
+            <label>别名<input v-model="configForm.alias" data-field="config-alias" maxlength="80" required /></label>
+            <label>API Key<input v-model="configForm.api_key" data-field="config-api-key" type="password" autocomplete="off" :placeholder="editingConfigId ? '留空以保留现有 Key' : ''" /></label>
+            <label>类型<select v-model="configForm.provider_type" data-field="config-provider"><option value="gpt">GPT</option><option value="gemini">Gemini</option></select></label>
+            <label>模型<input v-model="configForm.model" data-field="config-model" maxlength="120" required /></label>
+            <div class="api-config-form-actions"><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button v-if="editingConfigId" type="button" class="secondary-action" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
+          </form>
+        </div>
       </section>
 
       <section class="settings-section community-section settings-community">
@@ -781,7 +880,7 @@ onUnmounted(() => {
       <section class="settings-section security-section settings-security">
         <div class="security-heading"><p class="settings-eyebrow">账号与安全</p><h2>管理账号</h2></div>
         <div class="security-grid">
-          <form class="password-form" @submit.prevent="changePassword"><h3>修改密码</h3><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password">修改密码</button></form>
+          <form class="password-form" @submit.prevent="changePassword"><h3>修改密码</h3><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password" @click.prevent="changePassword">修改密码</button></form>
           <div class="logout-panel"><h3>退出登录</h3><p>结束当前账号会话，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></div>
         </div>
       </section>
@@ -848,7 +947,7 @@ onUnmounted(() => {
             <div class="prompt-row">
             <label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label>
               <div class="parameter-toolbar">
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ model }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in MODEL_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === model }" :data-parameter-option="option" @click="selectModel(option)"><span>{{ option }}</span><Check v-if="option === model" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectModel(option.alias)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }} {{ option.description }} {{ option.value }}</strong></span><Check v-if="option.value === size" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="detail" :aria-expanded="openParameterMenu === 'detail'" @click="toggleParameterMenu('detail')">细节级别 <strong>{{ DETAIL_OPTIONS.find((option) => option.value === detail)?.label }}</strong></button><div v-if="openParameterMenu === 'detail'" class="parameter-menu" data-parameter-menu="detail"><button v-for="option in DETAIL_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === detail }" :data-parameter-option="option.value" @click="selectDetail(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === detail" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>

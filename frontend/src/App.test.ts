@@ -327,6 +327,46 @@ describe("GenImage workspace", () => {
     expect(wrapper.get(".error-message").text()).toBe("生成失败（HTTP 504）");
   });
 
+  it("shows API key aliases and sends only the selected config id", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({
+          provider_name: "北海AI",
+          base_url: "https://sub.beibeihai.xyz/v1",
+          active_config_id: 2,
+          model: "gemini-image",
+          api_key_configured: true,
+          configs: [
+            { id: 1, alias: "GPT 主账号", provider_type: "gpt", model: "gpt-image-1.5", api_key_configured: true },
+            { id: 2, alias: "Gemini 绘图", provider_type: "gemini", model: "gemini-image", api_key_configured: true },
+          ],
+        });
+      }
+      if (url.endsWith("/api/settings/active")) return jsonResponse({ active_config_id: 1 });
+      if (url.endsWith("/api/projects")) return jsonResponse([{ id: 1, name: "项目", history: [], history_count: 0 }]);
+      if (url.endsWith("/api/generate")) return jsonResponse({ provider: "gemini", model: "gemini-image", images: [] });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("Gemini 绘图");
+    await wrapper.get("[data-parameter-trigger='model']").trigger("click");
+    await wrapper.get("[data-parameter-option='GPT 主账号']").trigger("click");
+    await flushPromises();
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    const generation = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/api/generate"));
+    expect(JSON.parse(String(generation?.[1]?.body))).toMatchObject({ api_key_config_id: 1 });
+    expect(JSON.parse(String(generation?.[1]?.body))).not.toHaveProperty("api_key");
+  });
+
   it("shows only the provider timeout in the empty canvas", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
