@@ -869,18 +869,18 @@ onUnmounted(() => {
       </section>
 
       <section class="settings-section feedback-section settings-feedback">
-        <div><p class="settings-eyebrow">用户反馈</p><h2>给 GenImage 留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
+        <div><h2>留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
         <form class="feedback-form" @submit.prevent="submitFeedback">
           <label>联系方式<span class="optional-mark">选填</span><input v-model="feedbackContact" data-field="feedback-contact" maxlength="200" placeholder="微信、邮箱或其他联系方式" /></label>
-          <label>留言<span class="required-mark">必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
+          <label>留言<span class="required-mark">*必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
           <div class="feedback-actions"><button type="submit" class="primary-action" :disabled="feedbackSubmitting || !feedbackMessage.trim()">{{ feedbackSubmitting ? '提交中...' : '提交留言' }}</button><p v-if="feedbackStatus" class="feedback-status" role="status">{{ feedbackStatus }}</p></div>
         </form>
       </section>
 
       <section class="settings-section security-section settings-security">
-        <div class="security-heading"><p class="settings-eyebrow">账号与安全</p><h2>管理账号</h2></div>
+        <div class="security-heading"><h2>修改密码</h2></div>
         <div class="security-grid">
-          <form class="password-form" @submit.prevent="changePassword"><h3>修改密码</h3><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password" @click.prevent="changePassword">修改密码</button></form>
+          <form class="password-form" @submit.prevent="changePassword"><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password" @click.prevent="changePassword">修改密码</button></form>
           <div class="logout-panel"><h3>退出登录</h3><p>结束当前账号会话，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></div>
         </div>
       </section>
