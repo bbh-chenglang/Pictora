@@ -6,6 +6,7 @@ from time import perf_counter
 from app.providers.base import ProviderTimeoutError
 from app.observability import log_context
 from app.providers.registry import ProviderRegistry
+from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.generate import GenerateRequest, GenerateResponse
 
@@ -14,22 +15,37 @@ logger = logging.getLogger(__name__)
 
 
 class ImageService:
-    def __init__(self, registry: ProviderRegistry) -> None:
+    def __init__(self, registry: ProviderRegistry, config_repository=None, user_id: int | None = None, provider_factory=None) -> None:
         self.registry = registry
+        self.config_repository = config_repository
+        self.user_id = user_id
+        self.provider_factory = provider_factory or ProviderRegistry.from_api_key_config
 
     async def list_providers(self):
         return self.registry.list_models()
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
-        provider = self.registry.resolve(request.provider)
-        prompts = request.prompts or [request.prompt]
-        count = request.count if request.count > 1 else max(
-            request.count, *(self._prompt_count(prompt) for prompt in prompts)
+        effective_request = request
+        if request.api_key_config_id is not None:
+            if self.config_repository is None or self.user_id is None:
+                raise ApiKeyConfigNotFoundError(request.api_key_config_id)
+            config = await self.config_repository.get_owned(self.user_id, request.api_key_config_id)
+            if config is None:
+                raise ApiKeyConfigNotFoundError(request.api_key_config_id)
+            provider = self.provider_factory(config)
+            effective_request = request.model_copy(
+                update={"provider": provider.provider_id, "model": config.model}
+            )
+        else:
+            provider = self.registry.resolve(request.provider)
+        prompts = effective_request.prompts or [effective_request.prompt]
+        count = effective_request.count if effective_request.count > 1 else max(
+            effective_request.count, *(self._prompt_count(prompt) for prompt in prompts)
         )
         try:
             async with asyncio.timeout(count * 300):
                 jobs = [
-                    self._generate_one(provider, request, prompt)
+                    self._generate_one(provider, effective_request, prompt)
                     for prompt in prompts
                     for _ in range(count)
                 ]
@@ -37,8 +53,8 @@ class ImageService:
         except TimeoutError:
             raise ProviderTimeoutError() from None
         return GenerateResponse(
-            provider=request.provider,
-            model=request.model,
+            provider=effective_request.provider,
+            model=effective_request.model,
             images=[image for response in responses for image in response.images],
         )
 

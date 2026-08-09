@@ -6,6 +6,7 @@ from app.schemas.common import ImageResult
 
 class GenerateRequest(BaseModel):
     project_id: int | None = None
+    api_key_config_id: int | None = Field(default=None, gt=0)
     provider: str
     model: str
     prompt: str = Field(min_length=1, max_length=4000)

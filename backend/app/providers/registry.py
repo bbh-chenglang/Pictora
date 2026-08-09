@@ -6,9 +6,12 @@ from pydantic import SecretStr
 from app.config import Settings
 from app.providers.base import ImageProvider, ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
+from app.providers.gemini_provider import GeminiProvider
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.common import ProviderModel
 from app.repositories.settings_repository import StoredProviderSettings
+from app.schemas.api_key_config import StoredApiKeyConfig
+from app.database import FIXED_BASE_URL, FIXED_PROVIDER_NAME
 
 
 def _secret_value(value: Any) -> str:
@@ -51,6 +54,17 @@ class ProviderRegistry:
                 settings.provider_name,
             )
         return cls(providers)
+
+    @classmethod
+    def from_api_key_config(cls, config: StoredApiKeyConfig) -> ImageProvider:
+        if config.provider_type == "gemini":
+            return GeminiProvider(SecretStr(config.api_key), FIXED_BASE_URL, config.model)
+        return CompatibleProvider(
+            SecretStr(config.api_key),
+            FIXED_BASE_URL,
+            config.model,
+            FIXED_PROVIDER_NAME,
+        )
 
     def resolve(self, provider_id: str) -> ImageProvider:
         try:

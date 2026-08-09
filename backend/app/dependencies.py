@@ -87,8 +87,10 @@ async def get_provider_registry(
 
 async def get_image_service(
     registry: ProviderRegistry = Depends(get_provider_registry),
+    repository: ApiKeyConfigRepository = Depends(get_api_key_config_repository),
+    user: StoredSessionUser = Depends(get_current_user),
 ) -> ImageService:
-    return ImageService(registry)
+    return ImageService(registry, repository, user.id)
 
 
 def get_history_service(

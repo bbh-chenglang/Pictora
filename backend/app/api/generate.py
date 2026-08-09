@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.dependencies import get_current_user, get_history_service, get_image_service
+from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
 from app.schemas.generate import GenerateRequest, GenerateResponse
 from app.services.image_service import ImageService
 from app.services.history_service import HistoryService
@@ -23,4 +24,7 @@ async def generate_image(
         if isinstance(exc, ProjectNotFoundError):
             from fastapi import HTTPException
             raise HTTPException(404, {"error": {"code": "project_not_found", "message": "项目不存在"}}) from None
+        if isinstance(exc, ApiKeyConfigNotFoundError):
+            from fastapi import HTTPException
+            raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}}) from None
         raise
