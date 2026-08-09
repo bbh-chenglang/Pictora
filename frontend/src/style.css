@@ -1114,8 +1114,9 @@ select { cursor: pointer; }
 .feedback-form{display:grid;gap:12px}
 .feedback-form label{display:grid;grid-template-columns:max-content max-content;align-items:center;gap:5px 8px}
 .feedback-form label textarea,.feedback-form label input{grid-column:1 / -1}
-.feedback-form textarea{width:100%;min-height:92px;resize:vertical;border:1px solid #c9c5bd;border-radius:6px;padding:8px 10px;font:inherit;background:#fff}
-.feedback-form textarea:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
+.feedback-form input,.feedback-form textarea{border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text);padding:10px 11px;outline:0;transition:border-color 140ms ease,box-shadow 140ms ease}
+.feedback-form textarea{min-height:92px;resize:vertical}
+.feedback-form input:focus,.feedback-form textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,47,167,.1)}
 .required-mark,.optional-mark{font-size:11px;font-weight:500}
 .required-mark{color:#b42318}.optional-mark{color:#8b9aaa}
 .feedback-actions{display:flex;align-items:center;gap:12px}
