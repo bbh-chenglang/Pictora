@@ -20,6 +20,8 @@ from app.schemas.generate import GenerateRequest, GenerateResponse
 
 logger = logging.getLogger(__name__)
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
+DATA_IMAGE_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
+HTTP_IMAGE_RE = re.compile(r"https?://[^\s)]+")
 
 
 def _value(value: Any, name: str, default: Any = None) -> Any:
@@ -35,20 +37,44 @@ def _image_results(response: Any) -> list[ImageResult]:
     content = _value(_value(choices[0], "message", {}), "content", "")
     parts = content if isinstance(content, Sequence) and not isinstance(content, str) else [content]
     images: list[ImageResult] = []
+    seen: set[str] = set()
+
+    def add(source: str) -> None:
+        if not source or source in seen:
+            return
+        seen.add(source)
+        if source.startswith("data:"):
+            images.append(ImageResult(base64_data=source))
+        else:
+            images.append(ImageResult(url=source))
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            for source in DATA_IMAGE_RE.findall(value):
+                add(source)
+            for source in MARKDOWN_IMAGE_RE.findall(value):
+                add(source)
+            for source in HTTP_IMAGE_RE.findall(value):
+                add(source.rstrip(".,"))
+            return
+        if isinstance(value, Mapping):
+            for key in ("b64_json", "base64_data", "url"):
+                source = value.get(key)
+                if isinstance(source, str):
+                    add(source if key != "b64_json" else f"data:image/png;base64,{source}")
+            for child in value.values():
+                visit(child)
+            return
+        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            for child in value:
+                visit(child)
+            return
+        image_url = _value(value, "image_url")
+        if image_url is not None:
+            visit(image_url)
+
     for part in parts:
-        if isinstance(part, str):
-            images.extend(ImageResult(url=url) for url in MARKDOWN_IMAGE_RE.findall(part))
-            continue
-        text = _value(part, "text")
-        if isinstance(text, str):
-            images.extend(ImageResult(url=url) for url in MARKDOWN_IMAGE_RE.findall(text))
-        image_url = _value(part, "image_url")
-        url = _value(image_url, "url") if image_url is not None else None
-        if isinstance(url, str) and url:
-            if url.startswith("data:"):
-                images.append(ImageResult(base64_data=url))
-            else:
-                images.append(ImageResult(url=url))
+        visit(part)
     return images
 
 

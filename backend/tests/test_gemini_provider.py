@@ -27,6 +27,7 @@ async def test_gemini_provider_extracts_data_url_and_markdown_images():
                         content=[
                             {"type": "text", "text": "generated"},
                             {"type": "image_url", "image_url": {"url": "data:image/png;base64,YWJj"}},
+                            {"b64_json": "ZGVm"},
                             {"type": "text", "text": "![image](https://cdn.example/cat.png)"},
                         ]
                     )
@@ -45,9 +46,10 @@ async def test_gemini_provider_extracts_data_url_and_markdown_images():
         GenerateRequest(provider="gemini", model="gemini-2.5-flash-image", prompt="生成两只小猫")
     )
 
-    assert len(response.images) == 2
+    assert len(response.images) == 3
     assert response.images[0].base64_data == "data:image/png;base64,YWJj"
-    assert response.images[1].url == "https://cdn.example/cat.png"
+    assert response.images[1].base64_data == "data:image/png;base64,ZGVm"
+    assert response.images[2].url == "https://cdn.example/cat.png"
     assert completions.request == {
         "model": "gemini-2.5-flash-image",
         "messages": [{"role": "user", "content": "生成两只小猫"}],
