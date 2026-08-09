@@ -53,7 +53,7 @@ def test_feedback_sends_message_and_optional_contact_to_wecom(monkeypatch) -> No
     assert fake_client.payload == {
         "msgtype": "text",
         "text": {
-            "content": "GenImage 留言反馈\n用户：alice\n留言：希望增加更多图片尺寸\n联系方式：alice@example.com",
+            "content": "GenImage 留言反馈\n用户：alice\n联系方式：alice@example.com\n留言：希望增加更多图片尺寸",
         },
     }
 

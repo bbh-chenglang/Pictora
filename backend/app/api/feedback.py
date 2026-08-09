@@ -26,8 +26,8 @@ async def submit_feedback(
         [
             "GenImage 留言反馈",
             f"用户：{user.username}",
-            f"留言：{request.message}",
             f"联系方式：{request.contact or '未提供'}",
+            f"留言：{request.message}",
         ]
     )
     payload = {"msgtype": "text", "text": {"content": content}}

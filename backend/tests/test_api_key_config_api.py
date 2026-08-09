@@ -109,3 +109,34 @@ def test_rejects_duplicate_alias_and_deleting_last_config(client: TestClient) ->
     response = client.delete(f"/api/settings/api-keys/{last['id']}")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "last_api_key_config"
+
+
+def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    register(client)
+
+    class FakeModels:
+        async def list(self):
+            return type("Response", (), {"data": [type("Model", (), {"id": "gemini-3.1-flash-image"})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.api.settings.AsyncOpenAI", FakeClient)
+
+    discovered = client.post("/api/settings/api-keys/models", json={"api_key": "secret"})
+    assert discovered.status_code == 200
+    assert discovered.json() == {
+        "models": [{"id": "gemini-3.1-flash-image", "provider_type": "gemini"}]
+    }
+
+    created = client.post(
+        "/api/settings/api-keys",
+        json={"alias": "Gemini", "api_key": "secret", "provider_type": "gemini", "model": "gemini-3.1-flash-image"},
+    )
+    tested = client.post(f"/api/settings/api-keys/{created.json()['id']}/test")
+    assert tested.status_code == 200
+    assert tested.json() == {"available": True, "message": "API Key 可用"}

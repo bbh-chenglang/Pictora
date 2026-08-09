@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from openai import APIError
+from openai import AsyncOpenAI
 
 from app.database import FIXED_BASE_URL, FIXED_PROVIDER_NAME
+from app.providers.compatible_provider import COMPATIBLE_USER_AGENT
 from app.dependencies import (
     clear_dependency_caches,
     get_api_key_config_repository,
@@ -25,10 +28,34 @@ from app.schemas.api_key_config import (
     ApiKeyConfigCreate,
     ApiKeyConfigSummary,
     ApiKeyConfigUpdate,
+    ApiKeyDiscoveryRequest,
+    ApiKeyDiscoveryResponse,
+    DiscoveredModel,
 )
 from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def _provider_type_for_model(model_id: str) -> str:
+    return "gemini" if "gemini" in model_id.lower() else "gpt"
+
+
+async def _list_remote_models(api_key: str) -> list[DiscoveredModel]:
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=FIXED_BASE_URL,
+        default_headers={"User-Agent": COMPATIBLE_USER_AGENT},
+    )
+    try:
+        response = await client.models.list()
+        return [
+            DiscoveredModel(id=model_id, provider_type=_provider_type_for_model(model_id))
+            for model in (getattr(response, "data", []) or [])
+            if (model_id := getattr(model, "id", None))
+        ]
+    finally:
+        await client.close()
 
 
 def _summary(config) -> ApiKeyConfigSummary:
@@ -100,6 +127,30 @@ async def create_api_key_config(
     except ApiKeyConfigAliasTakenError:
         raise HTTPException(409, {"error": {"code": "api_key_alias_taken", "message": "别名已存在"}}) from None
     return _summary(config)
+
+
+@router.post("/api-keys/models", response_model=ApiKeyDiscoveryResponse)
+async def discover_api_key_models(request: ApiKeyDiscoveryRequest) -> ApiKeyDiscoveryResponse:
+    try:
+        return ApiKeyDiscoveryResponse(models=await _list_remote_models(request.api_key.strip()))
+    except APIError:
+        raise HTTPException(502, {"error": {"code": "api_key_model_discovery_failed", "message": "无法获取模型列表"}}) from None
+
+
+@router.post("/api-keys/{config_id}/test")
+async def test_api_key_config(
+    config_id: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: ApiKeyConfigRepository = Depends(get_api_key_config_repository),
+):
+    config = await repository.get_owned(user.id, config_id)
+    if config is None:
+        raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}})
+    try:
+        await _list_remote_models(config.api_key)
+    except APIError:
+        return {"available": False, "message": "API Key 不可用"}
+    return {"available": True, "message": "API Key 可用"}
 
 
 @router.patch("/api-keys/{config_id}")

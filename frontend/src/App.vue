@@ -23,6 +23,7 @@ type ApiKeyConfig = {
   model: string;
   api_key_configured: boolean;
 };
+type DiscoveredModel = { id: string; provider_type: "gpt" | "gemini" };
 type ImageResult = {
   url?: string | null;
   base64_data?: string | null;
@@ -130,6 +131,11 @@ const legacySettingsMode = ref(false);
 const settingsApiKey = ref("");
 const configForm = ref({ alias: "", api_key: "", provider_type: "gpt" as "gpt" | "gemini", model: DEFAULT_MODEL });
 const editingConfigId = ref<number | null>(null);
+const showConfigForm = ref(false);
+const discoveredModels = ref<DiscoveredModel[]>([]);
+const discoveringModels = ref(false);
+const testingConfigId = ref<number | null>(null);
+const apiKeyTestMessage = ref("");
 const settingsConfigError = ref("");
 const oldPassword = ref("");
 const newPassword = ref("");
@@ -330,14 +336,66 @@ async function loadRuntimeSettings() {
 
 function resetConfigForm() {
   editingConfigId.value = null;
+  showConfigForm.value = false;
+  discoveredModels.value = [];
   configForm.value = { alias: "", api_key: "", provider_type: "gpt", model: DEFAULT_MODEL };
   settingsConfigError.value = "";
 }
 
+function beginAddConfig() {
+  resetConfigForm();
+  showConfigForm.value = true;
+}
+
 function editConfig(config: ApiKeyConfig) {
   editingConfigId.value = config.id;
+  showConfigForm.value = true;
+  discoveredModels.value = [];
   configForm.value = { alias: config.alias, api_key: "", provider_type: config.provider_type, model: config.model };
   settingsConfigError.value = "";
+}
+
+async function discoverConfigModels() {
+  const apiKey = configForm.value.api_key.trim();
+  if (!apiKey) {
+    settingsConfigError.value = "请先输入 API Key";
+    return;
+  }
+  discoveringModels.value = true;
+  settingsConfigError.value = "";
+  try {
+    const response = await fetch(`${API_BASE}/api/settings/api-keys/models`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "无法获取模型列表"));
+    discoveredModels.value = (data?.models ?? []) as DiscoveredModel[];
+    const first = discoveredModels.value[0];
+    if (!first) throw new Error("未获取到可用模型");
+    configForm.value.model = first.id;
+    configForm.value.provider_type = first.provider_type;
+  } catch (exception) {
+    settingsConfigError.value = exception instanceof Error ? exception.message : "无法获取模型列表";
+  } finally {
+    discoveringModels.value = false;
+  }
+}
+
+async function testConfig(config: ApiKeyConfig) {
+  testingConfigId.value = config.id;
+  apiKeyTestMessage.value = "正在测试 API Key...";
+  try {
+    const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}/test`, { method: "POST", credentials: "include" });
+    const data = await parseJsonResponse(response);
+    apiKeyTestMessage.value = response.ok ? (data?.message ?? "测试完成") : readableError(data, "测试失败");
+  } catch {
+    apiKeyTestMessage.value = "测试失败，请稍后重试";
+  } finally {
+    testingConfigId.value = null;
+  }
 }
 
 async function refreshRuntimeSettings() {
@@ -352,11 +410,13 @@ async function saveConfig() {
     return;
   }
   const editing = editingConfigId.value !== null;
+  const detectedType = discoveredModels.value.find((item) => item.id === form.model)?.provider_type
+    ?? (form.model.toLowerCase().includes("gemini") ? "gemini" : form.provider_type);
   const response = await fetch(`${API_BASE}/api/settings/api-keys${editing ? `/${editingConfigId.value}` : ""}`, {
     method: editing ? "PATCH" : "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(form),
+    body: JSON.stringify({ ...form, provider_type: detectedType }),
   });
   const data = await parseJsonResponse(response);
   if (!response.ok) {
@@ -845,26 +905,27 @@ onUnmounted(() => {
 
     <section v-if="currentView === 'settings'" class="settings-page">
       <section class="settings-section settings-interface">
-        <div class="settings-heading"><h1>接口配置</h1><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div>
+        <div class="settings-heading"><h1>接口配置</h1><div class="settings-heading-actions"><button type="button" class="secondary-action" data-action="add-api-key" @click="beginAddConfig">添加 API Key</button><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div></div>
         <p>{{ apiKeyConfigured ? '已有可用配置' : '尚未配置 API Key' }}</p>
         <label v-if="legacySettingsMode">API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
         <div v-else class="api-config-list">
           <div v-for="config in apiKeyConfigs" :key="config.id" class="api-config-row" :class="{ active: config.id === activeApiKeyConfigId }">
-            <div><strong>{{ config.alias }}</strong><span>{{ config.provider_type === 'gemini' ? 'Gemini' : 'GPT' }} · {{ config.model }}</span></div>
-            <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" :disabled="apiKeyConfigs.length <= 1" @click="deleteConfig(config)">删除</button></div>
+            <div><strong>{{ config.alias }}</strong><span>{{ config.provider_type === 'gemini' ? 'Gemini' : 'GPT' }}</span></div>
+            <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" data-action="test-api-key" @click="testConfig(config)">{{ testingConfigId === config.id ? '测试中...' : '测试' }}</button><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" :disabled="apiKeyConfigs.length <= 1" @click="deleteConfig(config)">删除</button></div>
           </div>
-          <form class="api-config-form" @submit.prevent="saveConfig">
+          <p v-if="apiKeyTestMessage" class="api-key-test-message" role="status">{{ apiKeyTestMessage }}</p>
+          <form v-if="showConfigForm" class="api-config-form" @submit.prevent="saveConfig">
             <label>别名<input v-model="configForm.alias" data-field="config-alias" maxlength="80" required /></label>
             <label>API Key<input v-model="configForm.api_key" data-field="config-api-key" type="password" autocomplete="off" :placeholder="editingConfigId ? '留空以保留现有 Key' : ''" /></label>
-            <label>类型<select v-model="configForm.provider_type" data-field="config-provider"><option value="gpt">GPT</option><option value="gemini">Gemini</option></select></label>
-            <label>模型<input v-model="configForm.model" data-field="config-model" maxlength="120" required /></label>
-            <div class="api-config-form-actions"><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button v-if="editingConfigId" type="button" class="secondary-action" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
+            <label>模型<select v-if="discoveredModels.length" v-model="configForm.model" data-field="config-model"><option v-for="item in discoveredModels" :key="item.id" :value="item.id">{{ item.id }}</option></select><input v-else v-model="configForm.model" data-field="config-model" maxlength="120" required /></label>
+            <div class="config-type-display"><span>类型</span><strong>{{ configForm.provider_type === 'gemini' ? 'Gemini' : 'GPT' }}</strong></div>
+            <div class="api-config-form-actions"><button v-if="!editingConfigId || configForm.api_key" type="button" class="secondary-action" data-action="discover-models" :disabled="discoveringModels" @click="discoverConfigModels">{{ discoveringModels ? '获取中...' : '获取模型列表' }}</button><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button v-if="editingConfigId" type="button" class="secondary-action" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
           </form>
         </div>
       </section>
 
       <section class="settings-section community-section settings-community">
-        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>群号</dt><dd>1043879357</dd></div></dl></div>
+        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
         <img class="community-qr" :src="groupQrUrl" alt="GenImage 交流群二维码" />
       </section>
 

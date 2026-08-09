@@ -62,3 +62,16 @@ class ApiKeyConfigSummary(BaseModel):
 
 class ActiveApiKeyConfigRequest(BaseModel):
     config_id: int = Field(gt=0)
+
+
+class ApiKeyDiscoveryRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=500)
+
+
+class DiscoveredModel(BaseModel):
+    id: str
+    provider_type: ProviderType
+
+
+class ApiKeyDiscoveryResponse(BaseModel):
+    models: list[DiscoveredModel]

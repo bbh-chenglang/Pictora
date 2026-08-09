@@ -61,6 +61,17 @@ describe("GenImage workspace", () => {
     expect(wrapper.text()).not.toContain("暂不支持");
   });
 
+  it("labels the community number as a QQ group number", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+
+    const communityLabels = wrapper.get(".settings-community").findAll("dt").map((label) => label.text());
+    expect(communityLabels).toContain("QQ群号");
+    expect(communityLabels).not.toContain("群号");
+  });
+
   it("saves an API key from settings when editing finishes and returns to login after changing password", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
@@ -365,6 +376,43 @@ describe("GenImage workspace", () => {
     const generation = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/api/generate"));
     expect(JSON.parse(String(generation?.[1]?.body))).toMatchObject({ api_key_config_id: 1 });
     expect(JSON.parse(String(generation?.[1]?.body))).not.toHaveProperty("api_key");
+  });
+
+  it("adds a key from the model list and tests an existing key without showing models in rows", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 1,
+        model: "gpt-image-1.5",
+        api_key_configured: true,
+        configs: [{ id: 1, alias: "主 Key", provider_type: "gpt", model: "gpt-image-1.5", api_key_configured: true }],
+      });
+      if (url.endsWith("/api/settings/api-keys/models")) return jsonResponse({ models: [{ id: "gemini-3.1-flash-image", provider_type: "gemini" }] });
+      if (url.endsWith("/api/settings/api-keys/1/test")) return jsonResponse({ available: true, message: "API Key 可用" });
+      if (url.endsWith("/api/settings/api-keys") && init?.method === "POST") return jsonResponse({ id: 2 });
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-action='settings']").trigger("click");
+    expect(wrapper.get("[data-action='add-api-key']").text()).toContain("添加 API Key");
+    expect(wrapper.get(".api-config-row").text()).not.toContain("gpt-image-1.5");
+    await wrapper.get("[data-action='test-api-key']").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("API Key 可用");
+    await wrapper.get("[data-action='add-api-key']").trigger("click");
+    expect(wrapper.find("[data-field='config-provider']").exists()).toBe(false);
+    await wrapper.get("[data-field='config-api-key']").setValue("new-key");
+    await wrapper.get("[data-action='discover-models']").trigger("click");
+    await flushPromises();
+    expect(wrapper.get("[data-field='config-model']").element).toBeTruthy();
+    expect(wrapper.text()).toContain("Gemini");
   });
 
   it("shows only the provider timeout in the empty canvas", async () => {
