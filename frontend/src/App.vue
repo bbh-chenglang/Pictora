@@ -725,7 +725,6 @@ onUnmounted(() => {
         <span>{{ currentUsername }}</span>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
         <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
-        <button type="button" class="secondary-action" @click="logout">退出登录</button>
       </div>
     </header>
 
