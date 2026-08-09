@@ -5,7 +5,7 @@ import aiosqlite
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "genimage.db"
 FIXED_PROVIDER_NAME = "北海AI"
 FIXED_BASE_URL = "https://sub.beibeihai.xyz/v1"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -15,8 +15,20 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT 'gpt-image-1.5',
+    active_api_key_config_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS api_key_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini')),
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, alias)
 );
 CREATE TABLE IF NOT EXISTS user_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,6 +196,57 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 END;
                 """
             )
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 4:
+            await connection.execute("BEGIN")
+            user_columns = {
+                row[1]
+                for row in await (await connection.execute("PRAGMA table_info(users)")).fetchall()
+            }
+            if "active_api_key_config_id" not in user_columns:
+                await connection.execute(
+                    "ALTER TABLE users ADD COLUMN active_api_key_config_id INTEGER"
+                )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_key_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    alias TEXT NOT NULL,
+                    api_key TEXT NOT NULL DEFAULT '',
+                    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini')),
+                    model TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, alias)
+                )
+                """
+            )
+            users = await (await connection.execute(
+                "SELECT id, api_key, model FROM users"
+            )).fetchall()
+            for user_id, api_key, model in users:
+                active = await (await connection.execute(
+                    "SELECT id FROM api_key_configs WHERE user_id = ? ORDER BY id LIMIT 1",
+                    (user_id,),
+                )).fetchone()
+                if active is None:
+                    cursor = await connection.execute(
+                        """
+                        INSERT INTO api_key_configs (user_id, alias, api_key, provider_type, model)
+                        VALUES (?, '默认配置', ?, 'gpt', ?)
+                        """,
+                        (user_id, api_key, model),
+                    )
+                    active_id = cursor.lastrowid
+                else:
+                    active_id = active[0]
+                await connection.execute(
+                    "UPDATE users SET active_api_key_config_id = ? WHERE id = ?",
+                    (active_id, user_id),
+                )
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return

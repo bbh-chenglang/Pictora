@@ -45,7 +45,8 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
     assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 3
+    assert version == 4
+    assert "api_key_configs" in tables
     async with aiosqlite.connect(database_path) as connection:
         columns = {
             row[1]
