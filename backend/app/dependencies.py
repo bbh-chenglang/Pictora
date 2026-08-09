@@ -13,6 +13,7 @@ from app.repositories.settings_repository import (
     SettingsRepository,
     StoredProviderSettings,
 )
+from app.repositories.api_key_config_repository import ApiKeyConfigRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
@@ -24,6 +25,11 @@ from app.services.image_service import ImageService
 @lru_cache
 def get_settings_repository() -> SettingsRepository:
     return SettingsRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_api_key_config_repository() -> ApiKeyConfigRepository:
+    return ApiKeyConfigRepository(DATABASE_PATH)
 
 
 @lru_cache
@@ -95,6 +101,7 @@ def get_history_service(
 def clear_dependency_caches() -> None:
     _registry_for.cache_clear()
     get_settings_repository.cache_clear()
+    get_api_key_config_repository.cache_clear()
     get_history_repository.cache_clear()
     get_project_repository.cache_clear()
     get_user_repository.cache_clear()

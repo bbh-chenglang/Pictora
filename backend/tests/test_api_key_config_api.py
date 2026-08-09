@@ -1,0 +1,111 @@
+import asyncio
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.database import initialize_database
+from app.dependencies import (
+    get_api_key_config_repository,
+    get_settings_repository,
+    get_user_repository,
+)
+from app.main import app
+from app.repositories.api_key_config_repository import ApiKeyConfigRepository
+from app.repositories.settings_repository import SettingsRepository
+from app.repositories.user_repository import UserRepository
+
+
+@pytest.fixture
+def client(tmp_path: Path):
+    database_path = tmp_path / "api-key-configs.db"
+    asyncio.run(initialize_database(database_path))
+    app.dependency_overrides[get_user_repository] = lambda: UserRepository(database_path)
+    app.dependency_overrides[get_settings_repository] = lambda: SettingsRepository(database_path)
+    app.dependency_overrides[get_api_key_config_repository] = lambda: ApiKeyConfigRepository(database_path)
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+
+
+def register(client: TestClient) -> None:
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "username": "alice",
+            "password": "secret6",
+            "password_confirmation": "secret6",
+        },
+    )
+    assert response.status_code == 201
+
+
+def test_settings_lists_sanitized_configs(client: TestClient) -> None:
+    register(client)
+
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configs"][0]["alias"] == "默认配置"
+    assert payload["configs"][0]["api_key_configured"] is False
+    assert "api_key" not in payload["configs"][0]
+
+
+def test_can_create_activate_update_and_delete_config(client: TestClient) -> None:
+    register(client)
+    created = client.post(
+        "/api/settings/api-keys",
+        json={
+            "alias": "Gemini 1K",
+            "api_key": "gemini-secret",
+            "provider_type": "gemini",
+            "model": "gemini-3.1-flash-image-1K",
+        },
+    )
+
+    assert created.status_code == 201
+    config = created.json()
+    assert config["api_key_configured"] is True
+    assert "api_key" not in config
+
+    config_id = config["id"]
+    active = client.put("/api/settings/active", json={"config_id": config_id})
+    assert active.status_code == 200
+    assert active.json()["active_config_id"] == config_id
+
+    updated = client.patch(
+        f"/api/settings/api-keys/{config_id}",
+        json={"alias": "Gemini Final", "api_key": "", "model": "gemini-3.1-flash-image-2K"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["alias"] == "Gemini Final"
+    assert updated.json()["model"] == "gemini-3.1-flash-image-2K"
+    assert updated.json()["api_key_configured"] is True
+
+    deleted = client.delete(f"/api/settings/api-keys/{config_id}")
+    assert deleted.status_code == 204
+
+
+def test_rejects_duplicate_alias_and_deleting_last_config(client: TestClient) -> None:
+    register(client)
+    payload = {
+        "alias": "工作 Key",
+        "api_key": "secret",
+        "provider_type": "gpt",
+        "model": "gpt-image-2",
+    }
+    assert client.post("/api/settings/api-keys", json=payload).status_code == 201
+    duplicate = client.post("/api/settings/api-keys", json=payload)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "api_key_alias_taken"
+
+    configs = client.get("/api/settings").json()["configs"]
+    for config in configs[:-1]:
+        assert client.delete(f"/api/settings/api-keys/{config['id']}").status_code == 204
+    last = configs[-1]
+    response = client.delete(f"/api/settings/api-keys/{last['id']}")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "last_api_key_config"
