@@ -13,6 +13,7 @@ import {
 import ProjectSidebar, { type ProjectSummary } from "./components/ProjectSidebar.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ProjectDialog from "./components/ProjectDialog.vue";
+import groupQrUrl from "./assets/genimage-group.png";
 
 type Provider = { id: string; label: string; models: string[] };
 type ImageResult = {
@@ -120,6 +121,10 @@ const settingsApiKey = ref("");
 const oldPassword = ref("");
 const newPassword = ref("");
 const newPasswordConfirmation = ref("");
+const feedbackMessage = ref("");
+const feedbackContact = ref("");
+const feedbackStatus = ref("");
+const feedbackSubmitting = ref(false);
 let settingsSaveQueue: Promise<void> = Promise.resolve();
 
 const generationRuns = new Map<number, GenerationRun>();
@@ -252,6 +257,30 @@ async function changePassword() {
   if (!response.ok) { authError.value = readableError(await parseJsonResponse(response), "修改密码失败"); return; }
   oldPassword.value = newPassword.value = newPasswordConfirmation.value = "";
   authView.value = "login";
+}
+
+async function submitFeedback() {
+  const message = feedbackMessage.value.trim();
+  if (!message || feedbackSubmitting.value) return;
+  feedbackStatus.value = "正在提交留言...";
+  feedbackSubmitting.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/feedback`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, contact: feedbackContact.value.trim() }),
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "留言提交失败，请稍后重试"));
+    feedbackMessage.value = "";
+    feedbackContact.value = "";
+    feedbackStatus.value = data?.message ?? "留言已提交";
+  } catch (exception) {
+    feedbackStatus.value = exception instanceof Error ? exception.message : "留言提交失败，请稍后重试";
+  } finally {
+    feedbackSubmitting.value = false;
+  }
 }
 
 async function loadRuntimeSettings() {
@@ -729,9 +758,33 @@ onUnmounted(() => {
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
-      <section class="settings-section"><div class="settings-heading"><h1>接口配置</h1><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div><p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p><label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label></section>
-      <section class="settings-section settings-account-actions"><h2>账号</h2><p>退出当前账号，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></section>
-      <section class="settings-section"><h2>修改密码</h2><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="button" class="primary-action" data-action="change-password" @click="changePassword">修改密码</button></section>
+      <section class="settings-section">
+        <div class="settings-heading"><h1>接口配置</h1><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div>
+        <p>{{ apiKeyConfigured ? 'API Key 已配置' : '尚未配置 API Key' }}</p>
+        <label>API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
+      </section>
+
+      <section class="settings-section community-section">
+        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>群号</dt><dd>1043879357</dd></div></dl></div>
+        <img class="community-qr" :src="groupQrUrl" alt="GenImage 交流群二维码" />
+      </section>
+
+      <section class="settings-section feedback-section">
+        <div><p class="settings-eyebrow">用户反馈</p><h2>给 GenImage 留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
+        <form class="feedback-form" @submit.prevent="submitFeedback">
+          <label>留言<span class="required-mark">必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
+          <label>联系方式<span class="optional-mark">选填</span><input v-model="feedbackContact" data-field="feedback-contact" maxlength="200" placeholder="微信、邮箱或其他联系方式" /></label>
+          <div class="feedback-actions"><button type="submit" class="primary-action" :disabled="feedbackSubmitting || !feedbackMessage.trim()">{{ feedbackSubmitting ? '提交中...' : '提交留言' }}</button><p v-if="feedbackStatus" class="feedback-status" role="status">{{ feedbackStatus }}</p></div>
+        </form>
+      </section>
+
+      <section class="settings-section security-section">
+        <div class="security-heading"><p class="settings-eyebrow">账号与安全</p><h2>管理账号</h2></div>
+        <div class="security-grid">
+          <form class="password-form" @submit.prevent="changePassword"><h3>修改密码</h3><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password">修改密码</button></form>
+          <div class="logout-panel"><h3>退出登录</h3><p>结束当前账号会话，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></div>
+        </div>
+      </section>
     </section>
     <template v-else>
     <div class="studio-grid">

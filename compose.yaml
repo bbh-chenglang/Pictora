@@ -5,6 +5,8 @@ services:
       dockerfile: backend/Dockerfile
     expose:
       - "8002"
+    environment:
+      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
     volumes:
       - genimage_data:/app/backend/data
     restart: unless-stopped

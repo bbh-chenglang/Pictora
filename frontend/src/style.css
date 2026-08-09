@@ -1099,8 +1099,41 @@ select { cursor: pointer; }
 .settings-account-actions p{color:var(--muted)}
 .settings-account-actions .logout-action{width:max-content;border-color:#e4b8b3;color:#a33b32;background:#fffafa}
 .settings-account-actions .logout-action:hover{border-color:#b42318;color:#b42318;background:#fff3f1}
+.settings-eyebrow{margin:0 0 4px!important;color:#5f84a2;font-size:11px;font-weight:800;letter-spacing:.04em}
+.settings-heading h1{margin:0}
+.community-section{grid-template-columns:minmax(0,1fr) 178px;align-items:center;gap:28px;background:#f7fbff}
+.community-copy h2,.feedback-section h2,.security-section h2{margin:0;color:#234965;font-size:18px}
+.community-copy>p:not(.settings-eyebrow),.feedback-section>div>p:not(.settings-eyebrow),.logout-panel p{margin:6px 0 0;color:#69839a;font-size:13px;line-height:1.6}
+.community-copy dl{display:flex;gap:26px;margin:20px 0 0}
+.community-copy dl div{display:grid;gap:3px}
+.community-copy dt{color:#7892a7;font-size:11px}
+.community-copy dd{margin:0;color:#234965;font-size:14px;font-weight:700}
+.community-qr{width:178px;aspect-ratio:980 / 1324;display:block;object-fit:cover;border:1px solid #cfe2f1;border-radius:8px;background:#fff}
+.feedback-section{gap:16px}
+.feedback-form{display:grid;gap:12px}
+.feedback-form label{display:grid;grid-template-columns:max-content max-content;align-items:center;gap:5px 8px}
+.feedback-form label textarea,.feedback-form label input{grid-column:1 / -1}
+.feedback-form textarea{width:100%;min-height:92px;resize:vertical;border:1px solid #c9c5bd;border-radius:6px;padding:8px 10px;font:inherit;background:#fff}
+.feedback-form textarea:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
+.required-mark,.optional-mark{font-size:11px;font-weight:500}
+.required-mark{color:#b42318}.optional-mark{color:#8b9aaa}
+.feedback-actions{display:flex;align-items:center;gap:12px}
+.feedback-actions .primary-action{min-width:96px}
+.feedback-status{margin:0;color:#4c7894;font-size:12px}
+.security-section{gap:16px}
+.security-heading h2{font-size:18px}
+.security-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.65fr);gap:28px}
+.password-form,.logout-panel{display:grid;align-content:start;gap:8px}
+.password-form h3,.logout-panel h3{margin:0 0 2px;color:#33546f;font-size:14px}
+.password-form label{display:grid;gap:5px;font-size:13px;font-weight:700}
+.password-form input{min-height:38px;border:1px solid #c9c5bd;border-radius:6px;padding:6px 10px;font:inherit;background:#fff}
+.password-form input:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
+.password-form .primary-action{width:max-content;margin-top:2px}
+.logout-panel{padding-left:28px;border-left:1px solid #e1e7ec}
+.logout-panel .logout-action{width:max-content}
 @media (max-width:860px){.settings-page{padding-inline:24px}.settings-section{padding-inline:18px}}
-@media (max-width:520px){.settings-page{padding-inline:16px;padding-top:14px}.settings-section{padding-inline:14px}}
+@media (max-width:680px){.community-section{grid-template-columns:1fr}.community-qr{width:min(100%,190px);margin-inline:auto}.security-grid{grid-template-columns:1fr}.logout-panel{padding:16px 0 0;border-top:1px solid #e1e7ec;border-left:0}}
+@media (max-width:520px){.settings-page{padding-inline:16px;padding-top:14px}.settings-section{padding-inline:14px}.community-copy dl{gap:18px}.feedback-actions{align-items:flex-start;flex-direction:column}}
 
 @media (max-width: 680px) {
   .auth-page { padding: 16px; }

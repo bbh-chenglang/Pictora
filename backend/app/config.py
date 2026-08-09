@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     custom_provider_name: str = "北海AI"
     custom_base_url: str = "https://sub.beibeihai.xyz/v1"
     custom_model: str = "gpt-image-1.5"
+    wecom_webhook_url: SecretStr = SecretStr("")
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[1] / ".env",
