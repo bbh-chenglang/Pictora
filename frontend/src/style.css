@@ -1089,10 +1089,12 @@ select { cursor: pointer; }
 .settings-section h1,.settings-section h2,.settings-section p{margin:0}
 .settings-section h1{font-size:20px}
 .settings-section h2{font-size:16px}
+.settings-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .settings-section label{display:grid;gap:5px;font-size:13px;font-weight:700}
 .settings-section input{min-height:38px;border:1px solid #c9c5bd;border-radius:6px;padding:6px 10px;font:inherit;background:#fff}
 .settings-section input:focus{outline:2px solid rgba(72,104,132,.2);border-color:#486884}
 .settings-section .primary-action{border-width:1px;border-radius:6px}
+.settings-heading .api-key-link{min-height:34px;margin-top:0;padding:0 12px;white-space:nowrap}
 .settings-account-actions{margin-top:4px}
 .settings-account-actions p{color:var(--muted)}
 .settings-account-actions .logout-action{width:max-content;border-color:#e4b8b3;color:#a33b32;background:#fffafa}
