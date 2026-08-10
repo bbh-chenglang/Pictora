@@ -24,17 +24,6 @@ class UserRepository:
                     "INSERT INTO users (username, password_hash) VALUES (?, ?)",
                     (username, password_hash),
                 )
-                await connection.execute(
-                    """
-                    INSERT INTO api_key_configs (user_id, alias, api_key, provider_type, model)
-                    VALUES (?, '默认配置', '', 'gpt', 'gpt-image-1.5')
-                    """,
-                    (cursor.lastrowid,),
-                )
-                await connection.execute(
-                    "UPDATE users SET active_api_key_config_id = last_insert_rowid() WHERE id = ?",
-                    (cursor.lastrowid,),
-                )
                 await connection.commit()
             except aiosqlite.IntegrityError as exc:
                 raise UserAlreadyExistsError(username) from exc

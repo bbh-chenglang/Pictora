@@ -4,8 +4,12 @@ import aiosqlite
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "genimage.db"
 FIXED_PROVIDER_NAME = "北海AI"
-FIXED_BASE_URL = "https://sub.beibeihai.xyz/v1"
-SCHEMA_VERSION = 4
+RELAY_BASE_URL = "https://sub.beibeihai.xyz"
+OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
+GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
+# Kept for the legacy single-key settings API.
+FIXED_BASE_URL = OPENAI_BASE_URL
+SCHEMA_VERSION = 6
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -57,6 +61,7 @@ CREATE TABLE IF NOT EXISTS history (
     detail TEXT NOT NULL,
     image_count INTEGER NOT NULL DEFAULT 1,
     size TEXT,
+    resolution TEXT,
     analysis_text TEXT,
     elapsed_ms INTEGER,
     error_code TEXT,
@@ -83,6 +88,44 @@ BEGIN
     INSERT INTO projects (user_id, name) VALUES (NEW.id, '第一个项目');
 END;
 """
+
+
+async def _remove_empty_default_api_key_configs(connection: aiosqlite.Connection) -> None:
+    tables = {
+        row[0]
+        for row in await (await connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )).fetchall()
+    }
+    if not {"users", "api_key_configs"}.issubset(tables):
+        return
+    await connection.execute(
+        """
+        DELETE FROM api_key_configs
+        WHERE alias = '默认配置'
+          AND provider_type = 'gpt'
+          AND trim(api_key) = ''
+        """
+    )
+    await connection.execute(
+        """
+        UPDATE users
+        SET active_api_key_config_id = (
+            SELECT id
+            FROM api_key_configs
+            WHERE api_key_configs.user_id = users.id
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+        )
+        WHERE active_api_key_config_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM api_key_configs
+              WHERE api_key_configs.id = users.active_api_key_config_id
+                AND api_key_configs.user_id = users.id
+          )
+        """
+    )
 
 
 async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
@@ -135,6 +178,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                     detail TEXT NOT NULL,
                     image_count INTEGER NOT NULL DEFAULT 1,
                     size TEXT,
+                    resolution TEXT,
                     analysis_text TEXT,
                     elapsed_ms INTEGER,
                     error_code TEXT,
@@ -148,11 +192,11 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 """
                 INSERT INTO history (
                     id, user_id, project_id, kind, status, prompt, provider, model,
-                    detail, image_count, size, analysis_text, elapsed_ms, error_code,
+                    detail, image_count, size, resolution, analysis_text, elapsed_ms, error_code,
                     error_message, created_at, completed_at
                 )
                 SELECT h.id, h.user_id, p.id, h.kind, h.status, h.prompt, h.provider,
-                       h.model, h.detail, h.image_count, h.size, h.analysis_text,
+                       h.model, h.detail, h.image_count, h.size, NULL, h.analysis_text,
                        h.elapsed_ms, h.error_code, h.error_message, h.created_at,
                        h.completed_at
                 FROM history_old AS h
@@ -209,6 +253,12 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 await connection.execute(
                     "ALTER TABLE users ADD COLUMN active_api_key_config_id INTEGER"
                 )
+            history_columns = {
+                row[1]
+                for row in await (await connection.execute("PRAGMA table_info(history)")).fetchall()
+            }
+            if "resolution" not in history_columns:
+                await connection.execute("ALTER TABLE history ADD COLUMN resolution TEXT")
             await connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS api_key_configs (
@@ -232,7 +282,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                     "SELECT id FROM api_key_configs WHERE user_id = ? ORDER BY id LIMIT 1",
                     (user_id,),
                 )).fetchone()
-                if active is None:
+                if active is None and str(api_key or "").strip():
                     cursor = await connection.execute(
                         """
                         INSERT INTO api_key_configs (user_id, alias, api_key, provider_type, model)
@@ -242,11 +292,30 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                     )
                     active_id = cursor.lastrowid
                 else:
-                    active_id = active[0]
+                    active_id = active[0] if active else None
                 await connection.execute(
                     "UPDATE users SET active_api_key_config_id = ? WHERE id = ?",
                     (active_id, user_id),
                 )
+            await _remove_empty_default_api_key_configs(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 5:
+            await connection.execute("BEGIN")
+            history_columns = {
+                row[1]
+                for row in await (await connection.execute("PRAGMA table_info(history)")).fetchall()
+            }
+            if "resolution" not in history_columns:
+                await connection.execute("ALTER TABLE history ADD COLUMN resolution TEXT")
+            await _remove_empty_default_api_key_configs(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 6:
+            await connection.execute("BEGIN")
+            await _remove_empty_default_api_key_configs(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return

@@ -44,7 +44,7 @@ class ProjectRepository:
             histories_cursor = await connection.execute(
                 """
                 SELECT id, project_id, kind, status, prompt, provider, model, detail,
-                       image_count, size, elapsed_ms, error_code, error_message, created_at
+                       image_count, size, resolution, elapsed_ms, error_code, error_message, created_at
                 FROM history
                 WHERE user_id = ?
                 ORDER BY created_at DESC, id DESC

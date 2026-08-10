@@ -20,6 +20,7 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.auth import StoredSessionUser
 from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
+from app.services.generation_task_manager import GenerationTaskManager
 
 
 @lru_cache
@@ -98,6 +99,11 @@ def get_history_service(
     project_repository: ProjectRepository = Depends(get_project_repository),
 ) -> HistoryService:
     return HistoryService(repository, project_repository=project_repository)
+
+
+@lru_cache
+def get_generation_task_manager() -> GenerationTaskManager:
+    return GenerationTaskManager()
 
 
 def clear_dependency_caches() -> None:

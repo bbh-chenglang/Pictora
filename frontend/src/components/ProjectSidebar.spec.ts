@@ -5,13 +5,27 @@ import "../style.css";
 
 const history = (count: number) => Array.from({ length: count }, (_, index) => ({
   id: index + 1,
+  kind: "generate" as const,
   prompt: `提示词 ${index + 1}`,
+  provider: "compatible",
   model: "gpt-image-1.5",
   status: "completed",
+  image_count: 2,
+  size: "16:9",
+  resolution: "4K",
   created_at: "2026-08-01T00:00:00",
 }));
 
 describe("ProjectSidebar", () => {
+  it("shows model, aspect ratio, resolution, and count for every history item", () => {
+    const wrapper = mount(ProjectSidebar, {
+      props: { projects: [{ id: 1, name: "第一个项目", history: history(1), history_count: 1 }], selectedProjectId: 1 },
+    });
+
+    expect(wrapper.get(".history-provider-model").text()).toBe("OpenAI · gpt-image-1.5");
+    expect(wrapper.get(".history-generation-meta").text()).toBe("比例 16:9 · 分辨率 4K · 2张");
+  });
+
   it("defaults to five history items and expands the rest", async () => {
     const wrapper = mount(ProjectSidebar, {
       props: { projects: [{ id: 1, name: "第一个项目", history: history(6), history_count: 6 }], selectedProjectId: 1 },

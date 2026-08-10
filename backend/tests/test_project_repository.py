@@ -62,6 +62,35 @@ async def test_default_project_name_can_be_filled_from_prompt(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_project_history_includes_generation_metadata(tmp_path: Path) -> None:
+    database_path = tmp_path / "projects.db"
+    await initialize_database(database_path)
+    user = await UserRepository(database_path).create("alice", hash_password("secret6"))
+    projects = ProjectRepository(database_path)
+    project = (await projects.list_with_history(user.id))[0]
+    history = HistoryRepository(database_path)
+    await history.create(
+        user_id=user.id,
+        project_id=project.id,
+        kind="generate",
+        prompt="宽屏海报",
+        provider="compatible",
+        model="gpt-image-2",
+        detail="high",
+        image_count=2,
+        size="16:9",
+        resolution="4K",
+    )
+
+    item = (await projects.list_with_history(user.id))[0].history[0]
+
+    assert item.model == "gpt-image-2"
+    assert item.size == "16:9"
+    assert item.resolution == "4K"
+    assert item.image_count == 2
+
+
+@pytest.mark.asyncio
 async def test_deleting_last_project_replaces_it_and_cascades_history_images(tmp_path: Path) -> None:
     database_path = tmp_path / "projects.db"
     await initialize_database(database_path)

@@ -54,4 +54,8 @@ async def read_history_image(
                 }
             },
         )
-    return Response(content=image.data, media_type=image.mime_type)
+    return Response(
+        content=image.data,
+        media_type=image.mime_type,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )

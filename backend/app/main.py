@@ -15,6 +15,7 @@ from app.api.feedback import router as feedback_router
 from app.providers.base import ProviderError, ProviderRequestError
 from app.config import Settings
 from app.database import initialize_database
+from app.dependencies import get_generation_task_manager, get_history_repository
 
 
 @asynccontextmanager
@@ -24,7 +25,11 @@ async def lifespan(_: FastAPI):
         default_model=defaults.custom_model,
         default_api_key=defaults.custom_api_key.get_secret_value(),
     )
-    yield
+    await get_history_repository().fail_pending_generations()
+    try:
+        yield
+    finally:
+        await get_generation_task_manager().shutdown()
 
 
 app = FastAPI(title="GenImage API", lifespan=lifespan)

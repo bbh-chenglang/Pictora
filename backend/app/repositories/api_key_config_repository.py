@@ -132,15 +132,26 @@ class ApiKeyConfigRepository:
     async def delete(self, user_id: int, config_id: int) -> None:
         async with aiosqlite.connect(self.database_path) as connection:
             cursor = await connection.execute(
-                "SELECT COUNT(*) FROM api_key_configs WHERE user_id = ?", (user_id,)
-            )
-            count = (await cursor.fetchone())[0]
-            if count <= 1:
-                raise ValueError("Cannot delete the last API key config")
-            cursor = await connection.execute(
                 "DELETE FROM api_key_configs WHERE id = ? AND user_id = ?",
                 (config_id, user_id),
             )
             if cursor.rowcount == 0:
                 raise ApiKeyConfigNotFoundError(config_id)
+            fallback = await (await connection.execute(
+                """
+                SELECT id FROM api_key_configs
+                WHERE user_id = ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (user_id,),
+            )).fetchone()
+            await connection.execute(
+                """
+                UPDATE users
+                SET active_api_key_config_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND active_api_key_config_id = ?
+                """,
+                (fallback[0] if fallback else None, user_id, config_id),
+            )
             await connection.commit()

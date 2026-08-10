@@ -10,13 +10,14 @@ from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/analyze", tags=["analyze"])
 SUPPORTED_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-Detail = Literal["low", "high", "original", "auto"]
+Detail = Literal["low", "medium", "high", "original", "auto"]
 
 
 @router.post("", response_model=AnalyzeResponse)
 async def analyze_image(
     provider: Annotated[str, Form()],
     model: Annotated[str, Form()],
+    api_key_config_id: Annotated[int | None, Form()] = None,
     project_id: Annotated[int | None, Form()] = None,
     prompt: Annotated[str, Form()] = "Describe this image",
     detail: Annotated[Detail, Form()] = "auto",
@@ -43,10 +44,15 @@ async def analyze_image(
     )
     if project_id is not None:
         analyze_kwargs["project_id"] = project_id
+    if api_key_config_id is not None:
+        analyze_kwargs["api_key_config_id"] = api_key_config_id
     try:
         return await history_service.analyze(**analyze_kwargs)
     except Exception as exc:
+        from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
         from app.repositories.project_repository import ProjectNotFoundError
         if isinstance(exc, ProjectNotFoundError):
             raise HTTPException(404, {"error": {"code": "project_not_found", "message": "项目不存在"}}) from None
+        if isinstance(exc, ApiKeyConfigNotFoundError):
+            raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}}) from None
         raise

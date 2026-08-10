@@ -39,6 +39,7 @@ class HistoryRepository:
         detail: str,
         image_count: int,
         size: str | None = None,
+        resolution: str | None = None,
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
             if project_id is None:
@@ -58,10 +59,10 @@ class HistoryRepository:
             cursor = await connection.execute(
                 """
                 INSERT INTO history
-                    (user_id, project_id, kind, status, prompt, provider, model, detail, image_count, size)
-                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+                    (user_id, project_id, kind, status, prompt, provider, model, detail, image_count, size, resolution)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, project_id, kind, prompt, provider, model, detail, image_count, size),
+                (user_id, project_id, kind, prompt, provider, model, detail, image_count, size, resolution),
             )
             await connection.commit()
             if cursor.lastrowid is None:
@@ -108,7 +109,7 @@ class HistoryRepository:
                     elapsed_ms = ?,
                     analysis_text = ?,
                     completed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
                 """,
                 (elapsed_ms, analysis_text, history_id),
             )
@@ -129,11 +130,32 @@ class HistoryRepository:
                     error_code = ?,
                     error_message = ?,
                     completed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
                 """,
                 (error_code, error_message, history_id),
             )
             await connection.commit()
+
+    async def fail_pending_generations(
+        self,
+        *,
+        error_code: str = "generation_interrupted",
+        error_message: str = "服务重启导致任务中断，请重新生成",
+    ) -> int:
+        async with aiosqlite.connect(self.database_path) as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE history
+                SET status = 'failed',
+                    error_code = ?,
+                    error_message = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE kind = 'generate' AND status = 'pending'
+                """,
+                (error_code, error_message),
+            )
+            await connection.commit()
+        return cursor.rowcount
 
     async def list(self, *, user_id: int, limit: int = 50) -> list[HistorySummary]:
         async with aiosqlite.connect(self.database_path) as connection:
@@ -141,7 +163,7 @@ class HistoryRepository:
             cursor = await connection.execute(
                 """
                 SELECT id, kind, status, prompt, provider, model, detail,
-                       image_count, size, elapsed_ms, error_code, error_message,
+                       image_count, size, resolution, elapsed_ms, error_code, error_message,
                        created_at
                 FROM history
                 WHERE user_id = ?
@@ -153,13 +175,22 @@ class HistoryRepository:
             rows = await cursor.fetchall()
         return [HistorySummary.model_validate(dict(row)) for row in rows]
 
+    async def get_project_id(self, user_id: int, history_id: int) -> int | None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            cursor = await connection.execute(
+                "SELECT project_id FROM history WHERE id = ? AND user_id = ?",
+                (history_id, user_id),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row is not None else None
+
     async def get(self, user_id: int, history_id: int) -> HistoryDetail | None:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
                 """
                 SELECT id, kind, status, prompt, provider, model, detail,
-                       image_count, size, analysis_text, elapsed_ms, error_code,
+                       image_count, size, resolution, analysis_text, elapsed_ms, error_code,
                        error_message, created_at, completed_at
                 FROM history
                 WHERE id = ? AND user_id = ?

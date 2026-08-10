@@ -62,25 +62,26 @@ async def test_alias_is_unique_per_user_but_not_globally(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_cannot_delete_last_config(tmp_path: Path) -> None:
+async def test_deleting_last_config_clears_active_config(tmp_path: Path) -> None:
     database_path = tmp_path / "delete.db"
     await initialize_database(database_path)
     user_id = await create_user(database_path, "alice")
     repository = ApiKeyConfigRepository(database_path)
     config = await repository.create(user_id, "唯一配置", "key", "gpt", "gpt-image-2")
+    await repository.set_active(user_id, config.id)
 
-    with pytest.raises(ValueError, match="last"):
-        await repository.delete(user_id, config.id)
+    await repository.delete(user_id, config.id)
+
+    assert await repository.list_for_user(user_id) == []
+    assert await repository.get_active_id(user_id) is None
 
 
 @pytest.mark.asyncio
-async def test_new_user_receives_default_config(tmp_path: Path) -> None:
+async def test_new_user_starts_without_api_key_config(tmp_path: Path) -> None:
     database_path = tmp_path / "new-user.db"
     await initialize_database(database_path)
     user = await UserRepository(database_path).create("alice", "hash")
 
     configs = await ApiKeyConfigRepository(database_path).list_for_user(user.id)
 
-    assert [(item.alias, item.provider_type, item.model) for item in configs] == [
-        ("默认配置", "gpt", "gpt-image-1.5")
-    ]
+    assert configs == []

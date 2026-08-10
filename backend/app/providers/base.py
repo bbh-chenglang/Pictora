@@ -4,11 +4,15 @@ from typing import Any, Protocol
 
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 
 
 class ImageProvider(Protocol):
-    async def generate_image(self, request: GenerateRequest) -> GenerateResponse:
+    async def generate_image(
+        self,
+        request: GenerateRequest,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
         ...
 
     async def analyze_image(

@@ -11,7 +11,7 @@ from app.providers.openai_provider import OpenAIProvider
 from app.schemas.common import ProviderModel
 from app.repositories.settings_repository import StoredProviderSettings
 from app.schemas.api_key_config import StoredApiKeyConfig
-from app.database import FIXED_BASE_URL, FIXED_PROVIDER_NAME
+from app.database import GEMINI_BASE_URL, OPENAI_BASE_URL, FIXED_PROVIDER_NAME
 
 
 def _secret_value(value: Any) -> str:
@@ -58,10 +58,10 @@ class ProviderRegistry:
     @classmethod
     def from_api_key_config(cls, config: StoredApiKeyConfig) -> ImageProvider:
         if config.provider_type == "gemini":
-            return GeminiProvider(SecretStr(config.api_key), FIXED_BASE_URL, config.model)
+            return GeminiProvider(SecretStr(config.api_key), GEMINI_BASE_URL, config.model)
         return CompatibleProvider(
             SecretStr(config.api_key),
-            FIXED_BASE_URL,
+            OPENAI_BASE_URL,
             config.model,
             FIXED_PROVIDER_NAME,
         )

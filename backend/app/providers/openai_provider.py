@@ -1,4 +1,5 @@
 import logging
+from io import BytesIO
 from collections.abc import Mapping
 from time import perf_counter
 from typing import Any
@@ -11,6 +12,7 @@ from openai import (
 )
 from pydantic import SecretStr
 
+from app.image_dimensions import output_size
 from app.observability import log_context
 from app.schemas.analyze import AnalyzeResponse
 from app.providers.base import (
@@ -21,10 +23,18 @@ from app.providers.base import (
     normalize_image_results,
     normalize_text,
 )
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _output_size(request: GenerateRequest) -> str:
+    return output_size(
+        getattr(request, "aspect_ratio", None),
+        getattr(request, "resolution", None),
+        request.size,
+    )
 
 
 class OpenAIProvider(ImageProvider):
@@ -51,25 +61,36 @@ class OpenAIProvider(ImageProvider):
             )
         )
 
-    async def generate_image(self, request: GenerateRequest) -> GenerateResponse:
+    async def generate_image(
+        self,
+        request: GenerateRequest,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
+        output_size = _output_size(request)
         arguments: dict[str, Any] = {
             "model": request.model,
             "prompt": request.prompt,
-            "size": request.size,
+            "size": output_size,
         }
-        if request.detail in {"low", "high"}:
+        if request.detail in {"low", "medium", "high"}:
             arguments["quality"] = request.detail
         started_at = perf_counter()
         context = " ".join(f"{key}={value}" for key, value in log_context().items())
         logger.info(
-            "image_generation step=provider_api_started provider=%s model=%s size=%s %s",
+            "image_generation step=provider_api_started provider=%s model=%s requested_resolution=%s size=%s %s",
             self.provider_id,
             request.model,
-            request.size,
+            getattr(request, "resolution", None) or "legacy",
+            output_size,
             context,
         )
         try:
-            response = await self.client.images.generate(**arguments)
+            if reference_image is None:
+                response = await self.client.images.generate(**arguments)
+            else:
+                image_file = BytesIO(reference_image.data)
+                image_file.name = reference_image.filename or "reference-image"
+                response = await self.client.images.edit(image=image_file, **arguments)
         except APIStatusError as exc:
             self._log_generation_failure(request, started_at, "api_status_error")
             raise ProviderRequestError(

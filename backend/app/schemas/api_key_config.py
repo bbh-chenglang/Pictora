@@ -38,8 +38,9 @@ class ApiKeyConfigUpdate(BaseModel):
     alias: str | None = Field(default=None, min_length=1, max_length=80)
     api_key: str | None = Field(default=None, max_length=500)
     provider_type: ProviderType | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=160)
 
-    @field_validator("alias")
+    @field_validator("alias", "model")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -64,6 +65,7 @@ class ActiveApiKeyConfigRequest(BaseModel):
 
 class ApiKeyDiscoveryRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=500)
+    provider_type: ProviderType
 
 
 class DiscoveredModel(BaseModel):

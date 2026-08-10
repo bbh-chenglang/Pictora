@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 from time import perf_counter
@@ -12,7 +13,7 @@ from app.repositories.history_repository import HistoryRepository
 from app.repositories.project_repository import ProjectNotFoundError, ProjectRepository
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 from app.services.image_service import ImageService
 
 
@@ -57,20 +58,31 @@ class HistoryService:
         request: GenerateRequest,
         image_service: ImageService,
         user_id: int = 1,
+        reference_image: ReferenceImage | None = None,
     ) -> GenerateResponse:
-        generation_token = generation_id.set(uuid4().hex)
-        started_at = perf_counter()
-        logger.info(
-            "image_generation step=generation_started duration_ms=0 generation_id=%s provider=%s model=%s requested_count=%d",
-            generation_id.get(),
-            request.provider,
-            request.model,
-            request.count,
+        history_id = await self.create_generation(
+            request,
+            user_id,
+            reference_image=reference_image,
         )
-        create_started_at = perf_counter()
+        return await self.execute_generation(
+            history_id,
+            request,
+            image_service,
+            user_id,
+            reference_image=reference_image,
+        )
+
+    async def create_generation(
+        self,
+        request: GenerateRequest,
+        user_id: int = 1,
+        reference_image: ReferenceImage | None = None,
+    ) -> int:
         project_id = await self._resolve_project(request.project_id, user_id)
         history_id = await self.repository.create(
-            user_id=user_id, kind="generate",
+            user_id=user_id,
+            kind="generate",
             project_id=project_id,
             prompt=request.prompt,
             provider=request.provider,
@@ -78,11 +90,56 @@ class HistoryService:
             detail=request.detail,
             image_count=request.count,
             size=request.size,
+            resolution=request.resolution,
         )
-        _log_step("history_created", create_started_at, history_id=history_id)
+        try:
+            if reference_image is not None:
+                await self.repository.add_image(
+                    history_id=history_id,
+                    user_id=user_id,
+                    role="reference",
+                    mime_type=reference_image.content_type,
+                    filename=reference_image.filename,
+                    position=0,
+                    data=reference_image.data,
+                )
+        except Exception:
+            await self.repository.fail(
+                history_id,
+                error_code="internal_error",
+                error_message="参考图保存失败",
+            )
+            raise
+        return history_id
+
+    async def execute_generation(
+        self,
+        history_id: int,
+        request: GenerateRequest,
+        image_service: ImageService,
+        user_id: int = 1,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
+        generation_token = generation_id.set(uuid4().hex)
+        started_at = perf_counter()
+        logger.info(
+            "image_generation step=generation_started duration_ms=0 generation_id=%s provider=%s model=%s "
+            "requested_count=%d aspect_ratio=%s requested_resolution=%s history_id=%d",
+            generation_id.get(),
+            request.provider,
+            request.model,
+            request.count,
+            request.aspect_ratio or "legacy",
+            request.resolution or "legacy",
+            history_id,
+        )
         try:
             image_service_started_at = perf_counter()
-            response = await image_service.generate(request)
+            response = (
+                await image_service.generate(request, reference_image)
+                if reference_image is not None
+                else await image_service.generate(request)
+            )
             _log_step(
                 "image_service_completed",
                 image_service_started_at,
@@ -126,11 +183,13 @@ class HistoryService:
                 history_id,
                 elapsed_ms=_duration_ms(started_at),
             )
-            await self.project_repository.rename_if_empty(
-                project_id,
-                user_id,
-                request.prompt[:5],
-            )
+            project_id = await self.repository.get_project_id(user_id, history_id)
+            if project_id is not None:
+                await self.project_repository.rename_if_empty(
+                    project_id,
+                    user_id,
+                    request.prompt[:5],
+                )
             _log_step("history_completed", complete_started_at, history_id=history_id)
             _log_step(
                 "generation_completed",
@@ -139,6 +198,14 @@ class HistoryService:
                 image_count=len(response.images),
             )
             return response
+        except asyncio.CancelledError:
+            _log_step("generation_cancelled", started_at, history_id=history_id)
+            await self.repository.fail(
+                history_id,
+                error_code="generation_cancelled",
+                error_message="生成任务已取消",
+            )
+            raise
         except ProviderError as exc:
             _log_step("generation_failed", started_at, history_id=history_id, error_code=exc.code)
             await self.repository.fail(
@@ -158,6 +225,13 @@ class HistoryService:
         finally:
             generation_id.reset(generation_token)
 
+    async def cancel_generation(self, history_id: int) -> None:
+        await self.repository.fail(
+            history_id,
+            error_code="generation_cancelled",
+            error_message="生成任务已取消",
+        )
+
     async def analyze(
         self,
         *,
@@ -166,6 +240,7 @@ class HistoryService:
         image_service: ImageService,
         provider: str,
         model: str,
+        api_key_config_id: int | None = None,
         prompt: str,
         detail: str,
         image_bytes: bytes,
@@ -194,7 +269,7 @@ class HistoryService:
                 position=0,
                 data=image_bytes,
             )
-            response = await image_service.analyze(
+            analyze_args = (
                 provider,
                 model,
                 prompt,
@@ -202,6 +277,12 @@ class HistoryService:
                 image_bytes,
                 content_type,
             )
+            if api_key_config_id is None:
+                response = await image_service.analyze(*analyze_args)
+            else:
+                response = await image_service.analyze(
+                    *analyze_args, api_key_config_id=api_key_config_id
+                )
             await self.repository.complete(
                 history_id,
                 elapsed_ms=max(1, round((perf_counter() - started_at) * 1000)),
@@ -228,8 +309,15 @@ class HistoryService:
         image: ImageResult,
     ) -> tuple[str, bytes] | None:
         if image.base64_data:
-            encoded = image.base64_data.split(",", 1)[-1]
-            return "image/png", base64.b64decode(encoded, validate=True)
+            source = image.base64_data.strip()
+            mime_type = "image/png"
+            encoded = source
+            if source.startswith("data:") and "," in source:
+                metadata, encoded = source.split(",", 1)
+                declared_type = metadata[5:].split(";", 1)[0].strip().lower()
+                if declared_type.startswith("image/"):
+                    mime_type = declared_type
+            return mime_type, base64.b64decode(encoded, validate=True)
         if not image.url:
             return None
 

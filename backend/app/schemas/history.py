@@ -27,6 +27,7 @@ class HistorySummary(BaseModel):
     detail: str
     image_count: int
     size: str | None = None
+    resolution: str | None = None
     elapsed_ms: int | None = None
     error_code: str | None = None
     error_message: str | None = None

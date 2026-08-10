@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import aiosqlite
@@ -11,7 +12,7 @@ from app.repositories.history_repository import HistoryRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 from app.services.history_service import HistoryService
 
 
@@ -31,7 +32,12 @@ class FakeImageService:
             images=[],
         )
 
-    async def generate(self, request: GenerateRequest) -> GenerateResponse:
+    async def generate(
+        self,
+        request: GenerateRequest,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
+        self.reference_image = reference_image
         return self.generate_response
 
     async def analyze(
@@ -77,6 +83,104 @@ class FailingImageService(FakeImageService):
         raise self.error
 
 
+class BlockingImageService(FakeImageService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_generation_can_be_created_and_executed_as_separate_task(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="compatible",
+            model="custom-model",
+            images=[ImageResult(base64_data="cG5nLWJ5dGVz")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    request = GenerateRequest(
+        provider="compatible",
+        model="custom-model",
+        prompt="异步生成",
+    )
+
+    task_id = await service.create_generation(request, user_id=1)
+    pending = await history_repository.get(1, task_id)
+
+    assert pending is not None
+    assert pending.status == "pending"
+    assert pending.images == []
+
+    await service.execute_generation(task_id, request, image_service, user_id=1)
+    completed = await history_repository.get(1, task_id)
+
+    assert completed is not None
+    assert completed.status == "completed"
+    assert [image.role for image in completed.images] == ["generated"]
+
+
+@pytest.mark.asyncio
+async def test_pending_generation_is_failed_during_restart_recovery(
+    history_repository: HistoryRepository,
+) -> None:
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    task_id = await service.create_generation(
+        GenerateRequest(
+            provider="compatible",
+            model="custom-model",
+            prompt="等待重启",
+        ),
+        user_id=1,
+    )
+
+    changed = await history_repository.fail_pending_generations()
+    detail = await history_repository.get(1, task_id)
+
+    assert changed == 1
+    assert detail is not None
+    assert detail.status == "failed"
+    assert detail.error_code == "generation_interrupted"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_background_generation_marks_task_failed(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = BlockingImageService()
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    request = GenerateRequest(
+        provider="compatible",
+        model="custom-model",
+        prompt="取消测试",
+    )
+    task_id = await service.create_generation(request, user_id=1)
+    operation = asyncio.create_task(
+        service.execute_generation(task_id, request, image_service, user_id=1)
+    )
+    await image_service.started.wait()
+
+    operation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    detail = await history_repository.get(1, task_id)
+
+    assert detail is not None
+    assert detail.status == "failed"
+    assert detail.error_code == "generation_cancelled"
+
+
 @pytest.mark.asyncio
 async def test_generation_history_decodes_base64_into_blob(
     history_repository: HistoryRepository,
@@ -108,6 +212,80 @@ async def test_generation_history_decodes_base64_into_blob(
     assert blob is not None
     assert blob.data == b"png-bytes"
     assert blob.mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_generation_history_preserves_data_url_image_type(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="gemini",
+            model="gemini-image",
+            images=[ImageResult(base64_data="data:image/jpeg;base64,anBlZy1ieXRlcw==")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+
+    await service.generate(
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-image",
+            prompt="JPEG 图片",
+        ),
+        image_service,
+        1,
+    )
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+    assert detail is not None
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
+
+    assert blob is not None
+    assert blob.data == b"jpeg-bytes"
+    assert blob.mime_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_generation_history_stores_and_forwards_reference_image(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="gemini",
+            model="gemini-image",
+            images=[ImageResult(base64_data="cG5nLWJ5dGVz")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    reference = ReferenceImage(
+        data=b"reference-bytes",
+        content_type="image/jpeg",
+        filename="room.jpg",
+    )
+
+    await service.generate(
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-image",
+            prompt="根据参考图调整光线",
+        ),
+        image_service,
+        1,
+        reference_image=reference,
+    )
+
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+    assert image_service.reference_image == reference
+    assert detail is not None
+    assert [image.role for image in detail.images] == ["reference", "generated"]
+    reference_blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
+    assert reference_blob is not None
+    assert reference_blob.data == b"reference-bytes"
+    assert reference_blob.filename == "room.jpg"
 
 
 @pytest.mark.asyncio
@@ -165,6 +343,41 @@ async def test_generation_history_downloads_remote_images(
     assert blob is not None
     assert blob.data == b"downloaded-image"
     assert blob.mime_type == "image/webp"
+
+
+@pytest.mark.asyncio
+async def test_generation_keeps_upstream_image_without_cropping(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="compatible",
+            model="custom-model",
+            images=[ImageResult(base64_data="cG5nLWJ5dGVz")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+
+    response = await service.generate(
+        GenerateRequest(
+            provider="compatible",
+            model="custom-model",
+            prompt="构图测试",
+            aspect_ratio="16:9",
+            resolution="4K",
+        ),
+        image_service,
+        1,
+    )
+    history_id = (await history_repository.list(user_id=1, limit=1))[0].id
+    detail = await history_repository.get(1, history_id)
+    assert detail is not None
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
+
+    assert blob is not None
+    assert blob.data == b"png-bytes"
+    assert response.images[0].base64_data == "cG5nLWJ5dGVz"
+    assert response.images[0].url is None
 
 
 @pytest.mark.asyncio

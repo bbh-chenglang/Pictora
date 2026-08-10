@@ -11,13 +11,14 @@ from app.providers.base import ProviderRequestError, ProviderTimeoutError
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 from app.services.image_service import ImageService
 
 
 class FakeImages:
     def __init__(self) -> None:
         self.request = None
+        self.edit_request = None
 
     async def generate(self, **kwargs):
         self.request = kwargs
@@ -29,6 +30,12 @@ class FakeImages:
                     revised_prompt="A revised prompt",
                 )
             ]
+        )
+
+    async def edit(self, **kwargs):
+        self.edit_request = kwargs
+        return SimpleNamespace(
+            data=[SimpleNamespace(url=None, b64_json="cmVzdWx0", revised_prompt=None)]
         )
 
 
@@ -85,6 +92,86 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
     }
     image_url = client.chat.completions.request["messages"][0]["content"][1]["image_url"]["url"]
     assert image_url == "data:image/png;base64,YWJj"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_uses_image_edit_for_reference_generation() -> None:
+    client = FakeClient()
+    provider = OpenAIProvider(
+        api_key=SecretStr("do-not-leak"),
+        base_url="https://api.example/v1",
+        model="gpt-image-2",
+        client=client,
+    )
+
+    response = await provider.generate_image(
+        GenerateRequest(
+            provider="openai",
+            model="gpt-image-2",
+            prompt="保留构图并增加自然光",
+            detail="high",
+            aspect_ratio="16:9",
+            resolution="2K",
+        ),
+        ReferenceImage(
+            data=b"reference-bytes",
+            content_type="image/jpeg",
+            filename="room.jpg",
+        ),
+    )
+
+    assert client.images.request is None
+    edit_request = client.images.edit_request
+    assert edit_request["model"] == "gpt-image-2"
+    assert edit_request["prompt"] == "保留构图并增加自然光"
+    assert edit_request["quality"] == "high"
+    assert edit_request["size"] == "2048x1152"
+    assert edit_request["image"].name == "room.jpg"
+    assert edit_request["image"].read() == b"reference-bytes"
+    assert response.images[0].base64_data == "cmVzdWx0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("aspect_ratio", "resolution", "expected_size"),
+    [
+        ("16:9", "1K", "1280x720"),
+        ("9:16", "1K", "720x1280"),
+        ("16:9", "2K", "2048x1152"),
+        ("9:16", "4K", "2160x3840"),
+        ("3:2", "2K", "2016x1344"),
+        ("3:2", "4K", "3504x2336"),
+    ],
+)
+async def test_openai_provider_combines_aspect_ratio_and_resolution(
+    aspect_ratio: str,
+    resolution: str,
+    expected_size: str,
+) -> None:
+    client = FakeClient()
+    provider = OpenAIProvider(
+        api_key=SecretStr("do-not-leak"),
+        base_url="https://api.example/v1",
+        model="gpt-image-2",
+        client=client,
+    )
+
+    await provider.generate_image(
+        GenerateRequest(
+            provider="openai",
+            model="gpt-image-2",
+            prompt="draw a wallpaper",
+            size=aspect_ratio,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+        )
+    )
+
+    assert client.images.request == {
+        "model": "gpt-image-2",
+        "prompt": "draw a wallpaper",
+        "size": expected_size,
+    }
 
 
 @pytest.mark.asyncio

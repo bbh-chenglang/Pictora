@@ -71,3 +71,41 @@ async def test_image_service_rejects_config_owned_by_another_user():
                 prompt="draw",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_image_service_routes_analysis_by_owned_api_key_config():
+    calls = []
+
+    class Provider:
+        provider_id = "gemini"
+        model = "gemini-image"
+
+        async def analyze_image(self, model, prompt, image_bytes, content_type):
+            calls.append((model, prompt, image_bytes, content_type))
+            return SimpleNamespace(provider="gemini", model=model, text="分析完成")
+
+    class ConfigRepository:
+        async def get_owned(self, user_id, config_id):
+            assert (user_id, config_id) == (7, 12)
+            return SimpleNamespace(provider_type="gemini")
+
+    class Registry:
+        def resolve(self, provider):
+            raise AssertionError("configured analysis must not use the legacy registry")
+
+    service = ImageService(
+        Registry(), ConfigRepository(), user_id=7, provider_factory=lambda config: Provider()
+    )
+    response = await service.analyze(
+        "gemini",
+        "gemini-image",
+        "描述图片",
+        "auto",
+        b"image",
+        "image/png",
+        api_key_config_id=12,
+    )
+
+    assert response.text == "分析完成"
+    assert calls == [("gemini-image", "描述图片", b"image", "image/png")]

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,7 @@ from app.providers.base import (
 )
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult, ProviderModel
-from app.schemas.generate import GenerateResponse
+from app.schemas.generate import GenerateResponse, ReferenceImage
 from app.repositories.settings_repository import SettingsRepository
 from app.repositories.history_repository import HistoryRepository
 
@@ -41,13 +42,15 @@ class FakeImageService:
             provider="openai", model="vision-model", text="A red boat."
         )
         self.generate_calls = []
+        self.reference_images: list[ReferenceImage | None] = []
         self.analyze_calls = []
 
     async def list_providers(self):
         return [ProviderModel(id="openai", label="OpenAI", models=["gpt-image-1"])]
 
-    async def generate(self, request):
+    async def generate(self, request, reference_image=None):
         self.generate_calls.append(request)
+        self.reference_images.append(reference_image)
         return self.generate_response
 
     async def analyze(self, provider, model, prompt, detail, image_bytes, content_type):
@@ -57,9 +60,28 @@ class FakeImageService:
         return self.analyze_response
 
 
+def wait_for_generation(service: FakeImageService) -> None:
+    deadline = time.monotonic() + 1
+    while not service.generate_calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert service.generate_calls
+
+
 class PassthroughHistoryService:
-    async def generate(self, request, image_service, user_id):
+    async def create_generation(self, request, user_id, reference_image=None):
+        self.request = request
+        self.reference_image = reference_image
+        return 101
+
+    async def execute_generation(
+        self, history_id, request, image_service, user_id, reference_image=None
+    ):
+        if reference_image is not None:
+            return await image_service.generate(request, reference_image)
         return await image_service.generate(request)
+
+    async def cancel_generation(self, history_id):
+        return None
 
     async def analyze(
         self,
@@ -177,10 +199,43 @@ def test_generate_returns_service_response(service: FakeImageService) -> None:
                 "detail": "high",
             },
         )
+        wait_for_generation(service)
 
-    assert response.status_code == 200
-    assert response.json()["provider"] == "openai"
+    assert response.status_code == 202
+    assert response.json() == {
+        "task_id": 101,
+        "status": "pending",
+        "status_url": "/api/history/101",
+    }
     assert service.generate_calls[0].prompt == "draw a boat"
+
+
+def test_generate_with_reference_uploads_image_and_parameters(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate/reference",
+            data={
+                "provider": "gemini",
+                "model": "gemini-3.1-flash-image",
+                "prompt": "保留参考图构图并调整光线",
+                "count": "1",
+                "size": "16:9",
+                "aspect_ratio": "16:9",
+                "resolution": "4K",
+            },
+            files={"image": ("room.jpg", b"reference-bytes", "image/jpeg")},
+        )
+        wait_for_generation(service)
+
+    assert response.status_code == 202
+    assert service.generate_calls[-1].prompt == "保留参考图构图并调整光线"
+    assert service.generate_calls[-1].aspect_ratio == "16:9"
+    assert service.generate_calls[-1].resolution == "4K"
+    reference = service.reference_images[-1]
+    assert reference is not None
+    assert reference.data == b"reference-bytes"
+    assert reference.content_type == "image/jpeg"
+    assert reference.filename == "room.jpg"
 
 
 def test_generate_apple_image_prompt(service: FakeImageService) -> None:
@@ -193,16 +248,21 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
                 "prompt": "帮我生成一个苹果的图片",
                 "detail": "auto",
                 "count": 2,
-                "size": "1024x1536",
+                "size": "2:3",
+                "aspect_ratio": "2:3",
+                "resolution": "2K",
             },
         )
+        wait_for_generation(service)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert service.generate_calls[-1].provider == "openai"
     assert service.generate_calls[-1].model == "gpt-image-2"
     assert service.generate_calls[-1].prompt == "帮我生成一个苹果的图片"
     assert service.generate_calls[-1].count == 2
-    assert service.generate_calls[-1].size == "1024x1536"
+    assert service.generate_calls[-1].size == "2:3"
+    assert service.generate_calls[-1].aspect_ratio == "2:3"
+    assert service.generate_calls[-1].resolution == "2K"
 
 
 def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
@@ -226,8 +286,9 @@ def test_generate_accepts_custom_size(service: FakeImageService) -> None:
                 "size": "1000x1000",
             },
         )
+        wait_for_generation(service)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert service.generate_calls[-1].size == "1000x1000"
 
 
@@ -242,8 +303,9 @@ def test_generate_accepts_nonstandard_landscape_size(service: FakeImageService) 
                 "size": "1536x864",
             },
         )
+        wait_for_generation(service)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert service.generate_calls[-1].size == "1536x864"
 
 
@@ -258,8 +320,9 @@ def test_generate_accepts_square_size(service: FakeImageService) -> None:
                 "size": "1024x1024",
             },
         )
+        wait_for_generation(service)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert service.generate_calls[-1].size == "1024x1024"
 
 
@@ -317,7 +380,7 @@ def test_provider_errors_use_strict_error_response(
     error, status_code: int, code: str
 ) -> None:
     class ErrorService(FakeImageService):
-        async def generate(self, request):
+        async def analyze(self, *args, **kwargs):
             raise error
 
     app.dependency_overrides[get_image_service] = ErrorService
@@ -325,8 +388,9 @@ def test_provider_errors_use_strict_error_response(
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/generate",
-                json={"provider": "openai", "model": "gpt-image-1", "prompt": "draw"},
+                "/api/analyze",
+                data={"provider": "openai", "model": "vision-model", "prompt": "describe"},
+                files={"image": ("input.png", b"png", "image/png")},
             )
     finally:
         app.dependency_overrides.clear()
@@ -345,7 +409,7 @@ def test_provider_request_error_forwards_upstream_response() -> None:
     )
 
     class ErrorService(FakeImageService):
-        async def generate(self, request):
+        async def analyze(self, *args, **kwargs):
             raise error
 
     app.dependency_overrides[get_image_service] = ErrorService
@@ -353,8 +417,9 @@ def test_provider_request_error_forwards_upstream_response() -> None:
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/generate",
-                json={"provider": "openai", "model": "gpt-image-1", "prompt": "draw"},
+                "/api/analyze",
+                data={"provider": "openai", "model": "vision-model", "prompt": "describe"},
+                files={"image": ("input.png", b"png", "image/png")},
             )
     finally:
         app.dependency_overrides.clear()
@@ -443,6 +508,7 @@ def test_history_detail_and_image_routes(
     assert detail.json()["images"][0]["url"] == "/api/history/1/images/1"
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
+    assert image.headers["cache-control"] == "private, max-age=31536000, immutable"
     assert image.content == b"png-bytes"
 
 

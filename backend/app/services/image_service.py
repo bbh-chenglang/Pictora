@@ -8,7 +8,7 @@ from app.observability import log_context
 from app.providers.registry import ProviderRegistry
 from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
 from app.schemas.analyze import AnalyzeResponse
-from app.schemas.generate import GenerateRequest, GenerateResponse
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
 
 
 logger = logging.getLogger(__name__)
@@ -24,17 +24,16 @@ class ImageService:
     async def list_providers(self):
         return self.registry.list_models()
 
-    async def generate(self, request: GenerateRequest) -> GenerateResponse:
+    async def generate(
+        self,
+        request: GenerateRequest,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
         effective_request = request
         if request.api_key_config_id is not None:
-            if self.config_repository is None or self.user_id is None:
-                raise ApiKeyConfigNotFoundError(request.api_key_config_id)
-            config = await self.config_repository.get_owned(self.user_id, request.api_key_config_id)
-            if config is None:
-                raise ApiKeyConfigNotFoundError(request.api_key_config_id)
-            provider = self.provider_factory(config)
+            provider = await self._provider_for_config(request.api_key_config_id)
             effective_request = request.model_copy(
-                update={"provider": provider.provider_id, "model": request.model.strip() or config.model}
+                update={"provider": provider.provider_id, "model": request.model.strip() or provider.model}
             )
         else:
             provider = self.registry.resolve(request.provider)
@@ -45,7 +44,7 @@ class ImageService:
         try:
             async with asyncio.timeout(count * 300):
                 jobs = [
-                    self._generate_one(provider, effective_request, prompt)
+                    self._generate_one(provider, effective_request, prompt, reference_image)
                     for prompt in prompts
                     for _ in range(count)
                 ]
@@ -58,6 +57,14 @@ class ImageService:
             images=[image for response in responses for image in response.images],
         )
 
+    async def _provider_for_config(self, config_id: int):
+        if self.config_repository is None or self.user_id is None:
+            raise ApiKeyConfigNotFoundError(config_id)
+        config = await self.config_repository.get_owned(self.user_id, config_id)
+        if config is None:
+            raise ApiKeyConfigNotFoundError(config_id)
+        return self.provider_factory(config)
+
     @staticmethod
     def _prompt_count(prompt: str) -> int:
         matches = re.findall(r"(?:生成|绘制|输出|创建)[^\n]{0,8}?(\d+|一|两|二|三|四)\s*(?:张|幅|个)", prompt)
@@ -66,7 +73,13 @@ class ImageService:
         chinese_counts = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4}
         return chinese_counts[matches[0]] if matches[0] in chinese_counts else int(matches[0])
 
-    async def _generate_one(self, provider, request: GenerateRequest, prompt: str) -> GenerateResponse:
+    async def _generate_one(
+        self,
+        provider,
+        request: GenerateRequest,
+        prompt: str,
+        reference_image: ReferenceImage | None = None,
+    ) -> GenerateResponse:
         started_at = perf_counter()
         logger.info(
             "image_generation step=provider_call_started provider=%s model=%s %s",
@@ -75,8 +88,11 @@ class ImageService:
             " ".join(f"{key}={value}" for key, value in log_context().items()),
         )
         try:
-            response = await provider.generate_image(
-                request.model_copy(update={"prompt": prompt, "count": 1})
+            generation_request = request.model_copy(update={"prompt": prompt, "count": 1})
+            response = (
+                await provider.generate_image(generation_request, reference_image)
+                if reference_image is not None
+                else await provider.generate_image(generation_request)
             )
         except Exception:
             logger.error(
@@ -110,7 +126,13 @@ class ImageService:
         detail: str,
         image_bytes: bytes,
         content_type: str,
+        api_key_config_id: int | None = None,
     ) -> AnalyzeResponse:
-        return await self.registry.resolve(provider).analyze_image(
+        resolved_provider = (
+            await self._provider_for_config(api_key_config_id)
+            if api_key_config_id is not None
+            else self.registry.resolve(provider)
+        )
+        return await resolved_provider.analyze_image(
             model, prompt, image_bytes, content_type
         )
