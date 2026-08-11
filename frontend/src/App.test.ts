@@ -51,6 +51,88 @@ describe("GenImage workspace", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  it("requests an email verification code before registration", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return Promise.resolve(new Response(null, { status: 401 }));
+      if (url.endsWith("/api/auth/verification-code")) {
+        expect(init?.method).toBe("POST");
+        return jsonResponse({ message: "验证码已发送", retry_after_seconds: 60 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.findAll(".auth-mode button")[1].trigger("click");
+    await wrapper.get("input[type='email']").setValue("alice@example.com");
+    await wrapper.get(".verification-action").trigger("click");
+    await flushPromises();
+
+    const request = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/auth/verification-code"),
+    );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ email: "alice@example.com" });
+    expect(wrapper.get(".verification-action").text()).toContain("秒");
+    expect(wrapper.find("input[autocomplete='one-time-code']").exists()).toBe(true);
+  });
+
+  it("shows administrator user and model usage data without sensitive values", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({
+        username: "admin", email: "admin@example.com", is_admin: true, api_key_configured: false,
+      });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/admin/users")) return jsonResponse([{
+        id: 2,
+        username: "alice",
+        email: "alice@example.com",
+        is_admin: false,
+        password_status: "bcrypt 已加密",
+        created_at: "2026-08-12T01:00:00Z",
+        last_login_at: "2026-08-12T02:00:00Z",
+        last_activity_at: "2026-08-12T03:00:00Z",
+        last_used_at: "2026-08-12T03:00:00Z",
+        usage_count: 1,
+        generation_count: 1,
+        analysis_count: 0,
+        total_elapsed_ms: 1250,
+        models_used: ["gpt-image-1.5"],
+      }]);
+      if (url.endsWith("/api/admin/users/2/usage")) return jsonResponse([{
+        id: 9,
+        kind: "generate",
+        status: "completed",
+        provider: "openai",
+        model: "gpt-image-1.5",
+        detail: "high",
+        image_count: 2,
+        size: "16:9",
+        resolution: "2K",
+        elapsed_ms: 1250,
+        created_at: "2026-08-12T03:00:00Z",
+        completed_at: "2026-08-12T03:00:02Z",
+      }]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='admin']").trigger("click");
+    await flushPromises();
+
+    expect(window.location.pathname).toBe("/admin");
+    expect(wrapper.get(".admin-page").text()).toContain("alice@example.com");
+    expect(wrapper.get(".admin-page").text()).toContain("gpt-image-1.5");
+    expect(wrapper.get(".admin-page").text()).toContain("bcrypt 已加密");
+    expect(wrapper.get(".admin-page").text()).not.toContain("password_hash");
+    expect(wrapper.get(".admin-page").text()).not.toContain("private prompt");
+  });
+
   it("opens a dedicated settings page without the workspace model selector", async () => {
     const wrapper = mount(App);
     await flushPromises();

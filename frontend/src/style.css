@@ -2050,6 +2050,365 @@ select option {
   background: #0d0d10;
 }
 
+.verification-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+  gap: 8px;
+}
+
+.verification-action {
+  min-width: 118px;
+  min-height: 44px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.verification-action:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
+.admin-page {
+  position: relative;
+  z-index: 2;
+  width: min(1520px, 100%);
+  min-height: calc(100vh - 64px);
+  margin: 0 auto;
+  padding: 42px clamp(20px, 4vw, 56px) 64px;
+  color: var(--text);
+}
+
+.admin-page-heading,
+.admin-section-heading,
+.admin-detail-heading,
+.admin-password-reset,
+.admin-user-facts {
+  display: flex;
+  align-items: center;
+}
+
+.admin-page-heading {
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.admin-page-heading span,
+.admin-detail-heading > div > span {
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.admin-page-heading h1 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--line);
+  margin-bottom: 34px;
+}
+
+.admin-metrics > div {
+  min-width: 0;
+  padding: 20px 24px;
+  border-right: 1px solid var(--line);
+}
+
+.admin-metrics > div:last-child {
+  border-right: 0;
+}
+
+.admin-metrics span,
+.admin-user-facts small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-metrics strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 26px;
+}
+
+.admin-directory,
+.admin-user-detail {
+  margin-top: 30px;
+}
+
+.admin-section-heading {
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 14px;
+}
+
+.admin-section-heading h2,
+.admin-detail-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 19px;
+}
+
+.admin-section-heading input {
+  width: min(320px, 100%);
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.admin-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.admin-table th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-users-table tbody tr:not(:has(.admin-empty)) {
+  cursor: pointer;
+}
+
+.admin-users-table tbody tr:hover,
+.admin-users-table tbody tr.selected {
+  background: var(--blue-soft);
+}
+
+.admin-users-table tbody tr.selected td:first-child {
+  box-shadow: inset 3px 0 var(--blue);
+}
+
+.admin-users-table td:first-child strong,
+.admin-users-table td:first-child span {
+  display: block;
+}
+
+.admin-users-table td:first-child strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.admin-users-table td:first-child span {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.admin-model-list {
+  display: block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-role,
+.admin-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 4px;
+  padding: 0 7px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.admin-role.elevated,
+.admin-status.completed {
+  background: rgba(21, 128, 61, .11);
+  color: var(--green);
+}
+
+.admin-status.pending {
+  background: rgba(180, 83, 9, .11);
+  color: var(--amber);
+}
+
+.admin-status.failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.admin-empty {
+  height: 86px;
+  color: var(--muted) !important;
+  text-align: center !important;
+}
+
+.admin-user-detail {
+  padding-top: 30px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-detail-heading {
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.admin-detail-heading h2 {
+  margin-top: 4px;
+}
+
+.admin-detail-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-password-reset {
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-password-reset label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-password-reset input {
+  width: 190px;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.admin-password-reset > span {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.admin-user-facts {
+  gap: 0;
+  margin-bottom: 16px;
+  border-block: 1px solid var(--line);
+}
+
+.admin-user-facts > span {
+  min-width: 150px;
+  padding: 14px 20px;
+  border-right: 1px solid var(--line);
+}
+
+.admin-user-facts strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+@media (max-width: 760px) {
+  .verification-field {
+    grid-template-columns: minmax(0, 1fr) 106px;
+  }
+
+  .verification-action {
+    min-width: 106px;
+    padding-inline: 8px;
+  }
+
+  .admin-page {
+    padding: 26px 14px 42px;
+  }
+
+  .admin-page-heading,
+  .admin-section-heading,
+  .admin-detail-heading {
+    align-items: flex-start;
+  }
+
+  .admin-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-metrics > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .admin-metrics > div:last-child {
+    border-bottom: 0;
+  }
+
+  .admin-section-heading,
+  .admin-detail-heading {
+    flex-direction: column;
+  }
+
+  .admin-section-heading input,
+  .admin-password-reset {
+    width: 100%;
+  }
+
+  .admin-password-reset {
+    justify-content: flex-start;
+  }
+
+  .admin-password-reset label,
+  .admin-password-reset input {
+    width: 100%;
+  }
+
+  .admin-password-reset label {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .admin-password-reset > span {
+    text-align: left;
+  }
+
+  .admin-user-facts {
+    align-items: stretch;
+    overflow-x: auto;
+  }
+}
+
 .auth-submit {
   width: 100%;
   min-height: 46px;

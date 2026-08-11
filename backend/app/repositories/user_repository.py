@@ -13,19 +13,37 @@ class UserAlreadyExistsError(Exception):
     pass
 
 
+class EmailAlreadyExistsError(Exception):
+    pass
+
+
 class UserRepository:
     def __init__(self, database_path: Path = DATABASE_PATH) -> None:
         self.database_path = database_path
 
-    async def create(self, username: str, password_hash: str) -> StoredUser:
+    async def create(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        email: str | None = None,
+        is_admin: bool = False,
+    ) -> StoredUser:
         async with aiosqlite.connect(self.database_path) as connection:
             try:
                 cursor = await connection.execute(
-                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                    (username, password_hash),
+                    """
+                    INSERT INTO users (
+                        username, email, email_verified_at, is_admin, password_hash
+                    )
+                    VALUES (?, ?, CASE WHEN ? IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END, ?, ?)
+                    """,
+                    (username, email, email, int(is_admin), password_hash),
                 )
                 await connection.commit()
             except aiosqlite.IntegrityError as exc:
+                if "idx_users_email_unique" in str(exc) or "users.email" in str(exc):
+                    raise EmailAlreadyExistsError(email) from exc
                 raise UserAlreadyExistsError(username) from exc
             if cursor.lastrowid is None:
                 raise RuntimeError("Failed to create user")
@@ -40,11 +58,16 @@ class UserRepository:
     async def get_by_username(self, username: str) -> StoredUser | None:
         return await self._get_user("username = ?", (username,))
 
+    async def get_by_email(self, email: str) -> StoredUser | None:
+        return await self._get_user("lower(email) = lower(?)", (email,))
+
     async def _get_user(self, predicate: str, parameters: tuple[object, ...]) -> StoredUser | None:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
-                f"SELECT id, username, password_hash, api_key, model, created_at, updated_at FROM users WHERE {predicate}",
+                f"""SELECT id, username, email, email_verified_at, is_admin, password_hash,
+                           api_key, model, created_at, updated_at, last_login_at, last_activity_at
+                    FROM users WHERE {predicate}""",
                 parameters,
             )
             row = await cursor.fetchone()
@@ -55,10 +78,10 @@ class UserRepository:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
                 """
-                SELECT u.id, u.username, u.api_key, u.model
+                SELECT u.id, u.username, u.email, u.is_admin, u.api_key, u.model
                 FROM user_sessions AS s
                 JOIN users AS u ON u.id = s.user_id
-                WHERE s.token_hash = ? AND s.expires_at > ?
+                WHERE s.token_hash = ? AND s.expires_at > ? AND u.email IS NOT NULL
                 """,
                 (token_hash, datetime.now(timezone.utc).isoformat()),
             )
@@ -72,8 +95,59 @@ class UserRepository:
                 "INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
                 (user_id, token_hash, expires_at.isoformat()),
             )
+            await connection.execute(
+                """
+                UPDATE users
+                SET last_login_at = CURRENT_TIMESTAMP,
+                    last_activity_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (user_id,),
+            )
             await connection.commit()
         return expires_at
+
+    async def touch_activity(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute(
+                """
+                UPDATE users SET last_activity_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND (
+                    last_activity_at IS NULL
+                    OR last_activity_at < datetime('now', '-1 minute')
+                  )
+                """,
+                (user_id,),
+            )
+            await connection.commit()
+
+    async def set_admin(self, user_id: int, is_admin: bool) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute(
+                "UPDATE users SET is_admin = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (int(is_admin), user_id),
+            )
+            await connection.commit()
+
+    async def bind_verified_email(self, user_id: int, email: str, is_admin: bool) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            try:
+                await connection.execute(
+                    """
+                    UPDATE users
+                    SET email = ?, email_verified_at = CURRENT_TIMESTAMP, is_admin = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND email IS NULL
+                    """,
+                    (email, int(is_admin), user_id),
+                )
+                await connection.commit()
+            except aiosqlite.IntegrityError as exc:
+                if "idx_users_email_unique" in str(exc) or "users.email" in str(exc):
+                    raise EmailAlreadyExistsError(email) from exc
+                raise
 
     async def delete_session(self, token_hash: str) -> None:
         async with aiosqlite.connect(self.database_path) as connection:

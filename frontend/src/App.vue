@@ -14,7 +14,9 @@ import {
   PanelLeftClose,
   Pencil,
   RefreshCw,
+  KeyRound,
   Settings,
+  ShieldCheck,
   Snowflake,
   Sparkles,
   Trash2,
@@ -35,12 +37,43 @@ type Provider = { id: string; label: string; models: string[] };
 type ApiKeyProvider = "gpt" | "gemini";
 type BackgroundEffect = "gravity-grid" | "snowfall";
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
+type CurrentView = "workspace" | "settings" | "admin";
 type ApiKeyConfig = {
   id: number;
   alias: string;
   provider_type: ApiKeyProvider;
   model: string;
   api_key_configured: boolean;
+};
+type AdminUser = {
+  id: number;
+  username: string;
+  email: string;
+  is_admin: boolean;
+  password_status: string;
+  created_at: string;
+  last_login_at: string | null;
+  last_activity_at: string | null;
+  last_used_at: string | null;
+  usage_count: number;
+  generation_count: number;
+  analysis_count: number;
+  total_elapsed_ms: number;
+  models_used: string[];
+};
+type AdminUsage = {
+  id: number;
+  kind: "generate" | "analyze";
+  status: "pending" | "completed" | "failed";
+  provider: string;
+  model: string;
+  detail: string;
+  image_count: number;
+  size: string | null;
+  resolution: string | null;
+  elapsed_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
 };
 type DiscoveredModel = { id: string; provider_type: ApiKeyProvider };
 type ApiKeyTestResult = {
@@ -225,11 +258,18 @@ const lightboxUrl = ref("");
 const openParameterMenu = ref<ParameterMenu | null>(null);
 const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
 const username = ref("");
+const email = ref("");
+const verificationCode = ref("");
 const password = ref("");
 const passwordConfirmation = ref("");
 const currentUsername = ref("");
+const currentEmail = ref("");
+const currentIsAdmin = ref(false);
 const authError = ref("");
-const currentView = ref<"workspace" | "settings">(window.location.pathname === "/settings" ? "settings" : "workspace");
+const authSubmitting = ref(false);
+const verificationSending = ref(false);
+const verificationCooldown = ref(0);
+const currentView = ref<CurrentView>(resolveCurrentView());
 const projectDrawerOpen = ref(false);
 const apiKeyConfigs = ref<ApiKeyConfig[]>([]);
 const activeApiKeyConfigId = ref<number | null>(null);
@@ -253,12 +293,22 @@ const feedbackMessage = ref("");
 const feedbackContact = ref("");
 const feedbackStatus = ref("");
 const feedbackSubmitting = ref(false);
+const adminUsers = ref<AdminUser[]>([]);
+const adminUsage = ref<AdminUsage[]>([]);
+const adminSearch = ref("");
+const selectedAdminUserId = ref<number | null>(null);
+const adminLoading = ref(false);
+const adminError = ref("");
+const adminResetPassword = ref("");
+const adminResetStatus = ref("");
+const adminResetting = ref(false);
 const updateStatus = ref<UpdateStatus>("idle");
 const serverVersion = ref("");
 const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
 const backgroundEffect = ref<BackgroundEffect>(loadBackgroundEffect());
 let settingsSaveQueue: Promise<void> = Promise.resolve();
 let referencePreviewSequence = 0;
+let verificationCooldownTimer: number | undefined;
 const referenceDragDepth: Record<ReferenceCategory, number> = {
   person: 0,
   environment: 0,
@@ -280,6 +330,12 @@ function loadBackgroundEffect(): BackgroundEffect {
   }
 }
 
+function resolveCurrentView(): CurrentView {
+  if (window.location.pathname === "/settings") return "settings";
+  if (window.location.pathname === "/admin") return "admin";
+  return "workspace";
+}
+
 function selectBackgroundEffect(effect: BackgroundEffect) {
   backgroundEffect.value = effect;
   try {
@@ -299,6 +355,19 @@ const activeGenerationElapsedMs = computed(() => {
   if (activeGenerationRunId.value === null) return null;
   return generationRuns.get(activeGenerationRunId.value)?.elapsedMs ?? 0;
 });
+const filteredAdminUsers = computed(() => {
+  const query = adminSearch.value.trim().toLowerCase();
+  if (!query) return adminUsers.value;
+  return adminUsers.value.filter((user) =>
+    user.username.toLowerCase().includes(query) || user.email.toLowerCase().includes(query),
+  );
+});
+const selectedAdminUser = computed(() =>
+  adminUsers.value.find((user) => user.id === selectedAdminUserId.value) ?? null,
+);
+const adminUsageTotal = computed(() =>
+  adminUsers.value.reduce((total, user) => total + user.usage_count, 0),
+);
 const activeGenerationImageCount = computed(() => activeGenerationRun.value?.imageCount ?? 1);
 const generationFillPercent = computed(() => {
   const elapsedMs = activeGenerationElapsedMs.value;
@@ -361,6 +430,15 @@ function readableError(data: any, fallback: string) {
     provider_not_found: "找不到所选服务商",
     invalid_image: "图片格式或内容无效",
     history_not_found: "历史记录不存在",
+    invalid_credentials: "邮箱或密码错误",
+    invalid_verification_code: "验证码错误或已失效",
+    email_registered: "该邮箱已注册",
+    username_taken: "用户名已存在",
+    legacy_password_required: "旧账号需使用原密码绑定邮箱",
+    verification_code_cooldown: "验证码发送过于频繁，请稍后重试",
+    smtp_not_configured: "邮件服务尚未配置",
+    email_delivery_failed: "验证码邮件发送失败",
+    admin_required: "需要管理员权限",
   };
   const error = data?.error ?? data?.detail?.error;
   return messages[error?.code] ?? error?.message ?? fallback;
@@ -423,22 +501,90 @@ function promptWithAnalysis(currentPrompt: string, analysisText?: string | null)
 
 async function submitAuth(mode: "login" | "register") {
   authError.value = "";
+  if (authSubmitting.value) return;
   const passwordsMatch = mode === "login" || password.value === passwordConfirmation.value;
-  if (!username.value.trim() || password.value.length < 6 || !passwordsMatch) {
-    authError.value = "请填写用户名，密码至少 6 位且两次输入一致";
+  const registrationValid = mode === "login" || (
+    username.value.trim() && /^\d{6}$/.test(verificationCode.value.trim()) && passwordsMatch
+  );
+  if (!email.value.trim() || password.value.length < 6 || !registrationValid) {
+    authError.value = mode === "register"
+      ? "请填写用户名、邮箱和 6 位验证码，密码至少 6 位且两次输入一致"
+      : "请填写邮箱和密码";
     return;
   }
   const body = mode === "register"
-    ? { username: username.value, password: password.value, password_confirmation: passwordConfirmation.value }
-    : { username: username.value, password: password.value };
-  const response = await fetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const data = await parseJsonResponse(response);
-  if (!response.ok) { authError.value = readableError(data, "登录失败"); return; }
-  currentUsername.value = data.username;
-  password.value = "";
-  passwordConfirmation.value = "";
-  authView.value = "workspace";
-  await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
+    ? {
+        username: username.value.trim(),
+        email: email.value.trim(),
+        verification_code: verificationCode.value.trim(),
+        password: password.value,
+        password_confirmation: passwordConfirmation.value,
+      }
+    : { email: email.value.trim(), password: password.value };
+  authSubmitting.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) { authError.value = readableError(data, "登录失败"); return; }
+    applyCurrentUser(data);
+    password.value = "";
+    passwordConfirmation.value = "";
+    verificationCode.value = "";
+    authView.value = "workspace";
+    if (currentView.value === "admin" && !currentIsAdmin.value) navigateToWorkspace();
+    await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
+    if (currentView.value === "admin") await loadAdminUsers();
+  } catch {
+    authError.value = "无法连接服务器";
+  } finally {
+    authSubmitting.value = false;
+  }
+}
+
+function applyCurrentUser(data: any) {
+  currentUsername.value = String(data?.username ?? "");
+  currentEmail.value = String(data?.email ?? "");
+  currentIsAdmin.value = Boolean(data?.is_admin);
+}
+
+function startVerificationCooldown(seconds: number) {
+  if (verificationCooldownTimer !== undefined) window.clearInterval(verificationCooldownTimer);
+  verificationCooldown.value = Math.max(1, seconds);
+  verificationCooldownTimer = window.setInterval(() => {
+    verificationCooldown.value = Math.max(0, verificationCooldown.value - 1);
+    if (verificationCooldown.value === 0 && verificationCooldownTimer !== undefined) {
+      window.clearInterval(verificationCooldownTimer);
+      verificationCooldownTimer = undefined;
+    }
+  }, 1000);
+}
+
+async function sendVerificationCode() {
+  authError.value = "";
+  if (!email.value.trim() || verificationSending.value || verificationCooldown.value > 0) {
+    if (!email.value.trim()) authError.value = "请先填写邮箱";
+    return;
+  }
+  verificationSending.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/verification-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.value.trim() }),
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) {
+      authError.value = readableError(data, "验证码发送失败");
+      const retryAfter = Number(data?.error?.retry_after_seconds ?? 0);
+      if (retryAfter > 0) startVerificationCooldown(retryAfter);
+      return;
+    }
+    startVerificationCooldown(Number(data?.retry_after_seconds ?? 60));
+  } catch {
+    authError.value = "无法连接邮件服务";
+  } finally {
+    verificationSending.value = false;
+  }
 }
 
 async function logout() {
@@ -446,6 +592,10 @@ async function logout() {
   authView.value = "login";
   history.value = [];
   currentUsername.value = "";
+  currentEmail.value = "";
+  currentIsAdmin.value = false;
+  adminUsers.value = [];
+  adminUsage.value = [];
 }
 
 function navigateToSettings() {
@@ -462,6 +612,99 @@ function navigateToWorkspace() {
   if (activeGenerationRunId.value !== null) {
     restoreGenerationRun(activeGenerationRunId.value);
   }
+}
+
+async function navigateToAdmin() {
+  if (!currentIsAdmin.value) return;
+  projectDrawerOpen.value = false;
+  window.history.pushState({}, "", "/admin");
+  currentView.value = "admin";
+  await loadAdminUsers();
+}
+
+async function loadAdminUsers() {
+  if (!currentIsAdmin.value) return;
+  adminLoading.value = true;
+  adminError.value = "";
+  try {
+    const response = await fetch(`${API_BASE}/api/admin/users`, { credentials: "include" });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "无法加载用户信息"));
+    adminUsers.value = Array.isArray(data) ? data : [];
+    const selectedExists = adminUsers.value.some((user) => user.id === selectedAdminUserId.value);
+    selectedAdminUserId.value = selectedExists
+      ? selectedAdminUserId.value
+      : adminUsers.value[0]?.id ?? null;
+    if (selectedAdminUserId.value !== null) await loadAdminUsage(selectedAdminUserId.value);
+    else adminUsage.value = [];
+  } catch (loadError) {
+    adminError.value = loadError instanceof Error ? loadError.message : "无法加载用户信息";
+  } finally {
+    adminLoading.value = false;
+  }
+}
+
+async function loadAdminUsage(userId: number) {
+  adminError.value = "";
+  const response = await fetch(`${API_BASE}/api/admin/users/${userId}/usage`, { credentials: "include" });
+  const data = await parseJsonResponse(response);
+  if (!response.ok) {
+    adminError.value = readableError(data, "无法加载使用记录");
+    adminUsage.value = [];
+    return;
+  }
+  adminUsage.value = Array.isArray(data) ? data : [];
+}
+
+async function selectAdminUser(userId: number) {
+  selectedAdminUserId.value = userId;
+  adminResetPassword.value = "";
+  adminResetStatus.value = "";
+  await loadAdminUsage(userId);
+}
+
+async function resetAdminUserPassword() {
+  if (selectedAdminUserId.value === null || adminResetPassword.value.length < 8) {
+    adminResetStatus.value = "新密码至少 8 位";
+    return;
+  }
+  adminResetting.value = true;
+  adminResetStatus.value = "";
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/admin/users/${selectedAdminUserId.value}/reset-password`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_password: adminResetPassword.value }),
+      },
+    );
+    const data = await parseJsonResponse(response);
+    if (!response.ok) adminResetStatus.value = readableError(data, "密码重置失败");
+    else {
+      adminResetPassword.value = "";
+      adminResetStatus.value = "密码已重置，用户现有会话已退出";
+    }
+  } catch {
+    adminResetStatus.value = "无法连接服务器";
+  } finally {
+    adminResetting.value = false;
+  }
+}
+
+function formatAdminDate(value: string | null) {
+  if (!value) return "-";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatAdminDuration(milliseconds: number | null) {
+  if (!milliseconds) return "-";
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)} 秒`;
+  return `${(milliseconds / 60_000).toFixed(1)} 分钟`;
 }
 
 function toggleParameterMenu(menu: ParameterMenu) {
@@ -1822,15 +2065,22 @@ onMounted(async () => {
   try {
     const response = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
     if (!response.ok) { authView.value = "login"; return; }
-    currentUsername.value = (await response.json()).username;
+    applyCurrentUser(await response.json());
+    if (currentView.value === "admin" && !currentIsAdmin.value) navigateToWorkspace();
     authView.value = "workspace";
     await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
+    if (currentView.value === "admin") await loadAdminUsers();
   } catch {
     error.value = "无法加载服务商，请先启动后端";
   }
 });
 function handlePopState() {
-  currentView.value = window.location.pathname === "/settings" ? "settings" : "workspace";
+  currentView.value = resolveCurrentView();
+  if (currentView.value === "admin" && !currentIsAdmin.value) {
+    navigateToWorkspace();
+    return;
+  }
+  if (currentView.value === "admin") void loadAdminUsers();
   projectDrawerOpen.value = false;
   if (currentView.value === "workspace" && activeGenerationRunId.value !== null) {
     restoreGenerationRun(activeGenerationRunId.value);
@@ -1841,6 +2091,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("popstate", handlePopState);
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  if (verificationCooldownTimer !== undefined) window.clearInterval(verificationCooldownTimer);
   for (const run of generationRuns.values()) {
     if (run.timer !== undefined) window.clearInterval(run.timer);
     run.controller.abort();
@@ -1884,12 +2135,14 @@ onUnmounted(() => {
           </div>
 
           <div class="auth-fields">
-            <label>用户名<input v-model="username" autocomplete="username" placeholder="输入用户名" required /></label>
+            <label v-if="authView === 'register'">用户名<input v-model="username" autocomplete="username" placeholder="输入用户名" required /></label>
+            <label>邮箱<input v-model="email" type="email" autocomplete="email" placeholder="name@gmail.com" required /></label>
+            <label v-if="authView === 'register'">邮箱验证码<span class="verification-field"><input v-model="verificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="6 位验证码" required /><button type="button" class="secondary-action verification-action" :disabled="verificationSending || verificationCooldown > 0" @click="sendVerificationCode">{{ verificationSending ? '发送中' : verificationCooldown > 0 ? `${verificationCooldown} 秒` : '获取验证码' }}</button></span></label>
             <label>密码<input v-model="password" type="password" :autocomplete="authView === 'register' ? 'new-password' : 'current-password'" placeholder="至少 6 位字符" minlength="6" required /></label>
             <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" autocomplete="new-password" placeholder="再次输入密码" minlength="6" required /></label>
           </div>
           <p v-if="authError" class="error-message" role="alert">{{ authError }}</p>
-          <button type="submit" class="primary-action auth-submit">{{ authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
+          <button type="submit" class="primary-action auth-submit" :disabled="authSubmitting">{{ authSubmitting ? '提交中...' : authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
           <p class="auth-footnote">{{ authView === 'register' ? '已有账号？' : '还没有账号？' }}<button type="button" class="auth-link" @click="authView = authView === 'register' ? 'login' : 'register'">{{ authView === 'register' ? '返回登录' : '立即注册' }}</button></p>
         </form>
       </div>
@@ -1916,9 +2169,10 @@ onUnmounted(() => {
         <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
           <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
-        <span class="user-chip"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
+        <span class="user-chip" :title="currentEmail"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="settings" title="设置" @click="navigateToSettings"><Settings :size="16" />设置</button>
-        <button v-else type="button" class="secondary-action topbar-command" data-action="back-to-workspace" title="返回工作台" @click="navigateToWorkspace"><ArrowLeft :size="16" />返回工作台</button>
+        <button v-if="currentIsAdmin && currentView !== 'admin'" type="button" class="secondary-action topbar-command" data-action="admin" title="用户管理" @click="navigateToAdmin"><ShieldCheck :size="16" />管理</button>
+        <button v-if="currentView !== 'workspace'" type="button" class="secondary-action topbar-command" data-action="back-to-workspace" title="返回工作台" @click="navigateToWorkspace"><ArrowLeft :size="16" />返回工作台</button>
       </div>
     </header>
 
@@ -2042,6 +2296,76 @@ onUnmounted(() => {
         @confirm="confirmDeletion"
         @cancel="cancelConfirm"
       />
+    </section>
+    <section v-else-if="currentView === 'admin'" class="admin-page">
+      <header class="admin-page-heading">
+        <div><span>GenImage</span><h1>用户管理</h1></div>
+        <button type="button" class="secondary-action" :disabled="adminLoading" @click="loadAdminUsers"><RefreshCw :class="{ spin: adminLoading }" :size="16" />刷新</button>
+      </header>
+
+      <div class="admin-metrics" aria-label="用户统计">
+        <div><span>已验证用户</span><strong>{{ adminUsers.length }}</strong></div>
+        <div><span>管理员</span><strong>{{ adminUsers.filter((user) => user.is_admin).length }}</strong></div>
+        <div><span>累计任务</span><strong>{{ adminUsageTotal }}</strong></div>
+      </div>
+
+      <section class="admin-directory" aria-labelledby="admin-users-title">
+        <div class="admin-section-heading">
+          <h2 id="admin-users-title">用户</h2>
+          <input v-model="adminSearch" type="search" placeholder="搜索用户名或邮箱" aria-label="搜索用户" />
+        </div>
+        <p v-if="adminError" class="error-message" role="alert">{{ adminError }}</p>
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-users-table">
+            <thead><tr><th>用户</th><th>权限</th><th>密码</th><th>注册时间</th><th>最后登录</th><th>最后活动</th><th>任务</th><th>模型</th></tr></thead>
+            <tbody>
+              <tr v-for="user in filteredAdminUsers" :key="user.id" :class="{ selected: user.id === selectedAdminUserId }" tabindex="0" @click="selectAdminUser(user.id)" @keydown.enter="selectAdminUser(user.id)">
+                <td><strong>{{ user.username }}</strong><span>{{ user.email }}</span></td>
+                <td><span class="admin-role" :class="{ elevated: user.is_admin }">{{ user.is_admin ? '管理员' : '用户' }}</span></td>
+                <td>{{ user.password_status }}</td>
+                <td>{{ formatAdminDate(user.created_at) }}</td>
+                <td>{{ formatAdminDate(user.last_login_at) }}</td>
+                <td>{{ formatAdminDate(user.last_activity_at) }}</td>
+                <td>{{ user.usage_count }}</td>
+                <td><span class="admin-model-list">{{ user.models_used.join('、') || '-' }}</span></td>
+              </tr>
+              <tr v-if="!adminLoading && filteredAdminUsers.length === 0"><td colspan="8" class="admin-empty">没有匹配的用户</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section v-if="selectedAdminUser" class="admin-user-detail" aria-labelledby="admin-usage-title">
+        <div class="admin-detail-heading">
+          <div><span>当前用户</span><h2>{{ selectedAdminUser.username }}</h2><p>{{ selectedAdminUser.email }}</p></div>
+          <form class="admin-password-reset" @submit.prevent="resetAdminUserPassword">
+            <label>重置密码<input v-model="adminResetPassword" type="password" minlength="8" autocomplete="new-password" placeholder="至少 8 位" /></label>
+            <button type="submit" class="secondary-action" :disabled="adminResetting"><KeyRound :size="16" />{{ adminResetting ? '重置中' : '重置' }}</button>
+            <span v-if="adminResetStatus" role="status">{{ adminResetStatus }}</span>
+          </form>
+        </div>
+        <div class="admin-user-facts">
+          <span><small>生成</small><strong>{{ selectedAdminUser.generation_count }}</strong></span>
+          <span><small>分析</small><strong>{{ selectedAdminUser.analysis_count }}</strong></span>
+          <span><small>累计耗时</small><strong>{{ formatAdminDuration(selectedAdminUser.total_elapsed_ms) }}</strong></span>
+          <span><small>最后使用</small><strong>{{ formatAdminDate(selectedAdminUser.last_used_at) }}</strong></span>
+        </div>
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-usage-table">
+            <thead><tr><th id="admin-usage-title">时间</th><th>类型</th><th>状态</th><th>服务商</th><th>模型</th><th>清晰度</th><th>比例/尺寸</th><th>分辨率</th><th>图片数</th><th>耗时</th></tr></thead>
+            <tbody>
+              <tr v-for="record in adminUsage" :key="record.id">
+                <td>{{ formatAdminDate(record.created_at) }}</td>
+                <td>{{ record.kind === 'generate' ? '生成' : '分析' }}</td>
+                <td><span class="admin-status" :class="record.status">{{ record.status === 'completed' ? '完成' : record.status === 'pending' ? '进行中' : '失败' }}</span></td>
+                <td>{{ record.provider }}</td><td>{{ record.model }}</td><td>{{ record.detail }}</td>
+                <td>{{ record.size || '-' }}</td><td>{{ record.resolution || '-' }}</td><td>{{ record.image_count }}</td><td>{{ formatAdminDuration(record.elapsed_ms) }}</td>
+              </tr>
+              <tr v-if="adminUsage.length === 0"><td colspan="10" class="admin-empty">暂无使用记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </section>
     <template v-else>
     <div class="studio-grid" :class="{ 'sidebar-open': projectDrawerOpen }">

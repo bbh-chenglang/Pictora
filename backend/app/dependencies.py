@@ -3,6 +3,7 @@ from functools import lru_cache
 from fastapi import Cookie, Depends, HTTPException
 
 from app.auth import SESSION_COOKIE, hash_session_token
+from app.config import Settings
 from app.database import (
     DATABASE_PATH,
     FIXED_BASE_URL,
@@ -17,7 +18,10 @@ from app.repositories.api_key_config_repository import ApiKeyConfigRepository
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.admin_repository import AdminRepository
+from app.repositories.verification_code_repository import VerificationCodeRepository
 from app.schemas.auth import StoredSessionUser
+from app.services.email_sender import EmailSender
 from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
 from app.services.generation_task_manager import GenerationTaskManager
@@ -48,6 +52,21 @@ def get_user_repository() -> UserRepository:
     return UserRepository(DATABASE_PATH)
 
 
+@lru_cache
+def get_verification_code_repository() -> VerificationCodeRepository:
+    return VerificationCodeRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_admin_repository() -> AdminRepository:
+    return AdminRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_email_sender() -> EmailSender:
+    return EmailSender(Settings())
+
+
 async def get_current_user(
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     repository: UserRepository = Depends(get_user_repository),
@@ -62,6 +81,22 @@ async def get_current_user(
         raise HTTPException(
             401,
             {"error": {"code": "authentication_required", "message": "请先登录"}},
+        )
+    should_be_admin = user.email.lower() in Settings().admin_email_set
+    if user.is_admin != should_be_admin:
+        await repository.set_admin(user.id, should_be_admin)
+        user = user.model_copy(update={"is_admin": should_be_admin})
+    await repository.touch_activity(user.id)
+    return user
+
+
+async def get_current_admin(
+    user: StoredSessionUser = Depends(get_current_user),
+) -> StoredSessionUser:
+    if not user.is_admin:
+        raise HTTPException(
+            403,
+            {"error": {"code": "admin_required", "message": "需要管理员权限"}},
         )
     return user
 
@@ -113,3 +148,6 @@ def clear_dependency_caches() -> None:
     get_history_repository.cache_clear()
     get_project_repository.cache_clear()
     get_user_repository.cache_clear()
+    get_verification_code_repository.cache_clear()
+    get_admin_repository.cache_clear()
+    get_email_sender.cache_clear()

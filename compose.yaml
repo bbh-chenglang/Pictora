@@ -8,6 +8,14 @@ services:
     environment:
       APP_VERSION: ${APP_VERSION:-dev}
       WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_APP_PASSWORD: ${SMTP_APP_PASSWORD:-}
+      SMTP_SENDER: ${SMTP_SENDER:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      VERIFICATION_CODE_TTL_SECONDS: ${VERIFICATION_CODE_TTL_SECONDS:-600}
+      VERIFICATION_CODE_COOLDOWN_SECONDS: ${VERIFICATION_CODE_COOLDOWN_SECONDS:-60}
     volumes:
       - genimage_data:/app/backend/data
     restart: unless-stopped

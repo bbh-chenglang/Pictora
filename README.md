@@ -92,3 +92,20 @@ docker run --rm \
 - `genimage_data`：挂载到 `/app/backend/data`，用于持久化 SQLite 数据。
 
 健康检查地址为 `http://SERVER_IP:8083/health`。
+
+## 邮箱注册与管理员
+
+V4 使用邮箱验证码注册，并使用邮箱和密码登录。部署前在项目根目录创建 `.env`，至少配置：
+
+```dotenv
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USERNAME=your-account@gmail.com
+SMTP_APP_PASSWORD=your-google-app-password
+SMTP_SENDER=your-account@gmail.com
+ADMIN_EMAILS=admin@example.com
+```
+
+`SMTP_APP_PASSWORD` 必须是 Google 账号开启两步验证后生成的应用专用密码，不是 Gmail 登录密码。`ADMIN_EMAILS` 可填写多个邮箱并用英文逗号分隔；名单内邮箱完成验证码注册或重新登录后获得管理员权限。
+
+数据库升级会保留旧账号和历史记录，但旧账号没有已验证邮箱，原用户名登录和旧会话将失效。旧用户需要在注册页填写原用户名、原密码、新邮箱和验证码来绑定邮箱，绑定后项目与历史记录保持不变。管理员可以查看用户的注册、登录、活动和模型使用统计，并可重置密码；系统始终只保存 bcrypt 密码哈希，不提供明文密码或哈希查看功能。

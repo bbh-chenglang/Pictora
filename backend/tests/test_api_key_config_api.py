@@ -6,14 +6,25 @@ from fastapi.testclient import TestClient
 
 from app.database import initialize_database
 from app.dependencies import (
+    get_email_sender,
     get_api_key_config_repository,
     get_settings_repository,
     get_user_repository,
+    get_verification_code_repository,
 )
 from app.main import app
 from app.repositories.api_key_config_repository import ApiKeyConfigRepository
 from app.repositories.settings_repository import SettingsRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.verification_code_repository import VerificationCodeRepository
+
+
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.codes: dict[str, str] = {}
+
+    async def send_verification_code(self, email: str, code: str) -> None:
+        self.codes[email] = code
 
 
 @pytest.fixture
@@ -21,20 +32,29 @@ def client(tmp_path: Path):
     database_path = tmp_path / "api-key-configs.db"
     asyncio.run(initialize_database(database_path))
     app.dependency_overrides[get_user_repository] = lambda: UserRepository(database_path)
+    code_repository = VerificationCodeRepository(database_path)
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_verification_code_repository] = lambda: code_repository
+    app.dependency_overrides[get_email_sender] = lambda: sender
     app.dependency_overrides[get_settings_repository] = lambda: SettingsRepository(database_path)
     app.dependency_overrides[get_api_key_config_repository] = lambda: ApiKeyConfigRepository(database_path)
     try:
         with TestClient(app) as test_client:
+            test_client.verification_codes = sender.codes
             yield test_client
     finally:
         app.dependency_overrides.clear()
 
 
 def register(client: TestClient) -> None:
+    email = "alice@example.com"
+    assert client.post("/api/auth/verification-code", json={"email": email}).status_code == 200
     response = client.post(
         "/api/auth/register",
         json={
             "username": "alice",
+            "email": email,
+            "verification_code": client.verification_codes[email],
             "password": "secret6",
             "password_confirmation": "secret6",
         },

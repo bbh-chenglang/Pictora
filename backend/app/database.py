@@ -9,19 +9,33 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
+    email TEXT,
+    email_verified_at TEXT,
+    is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
     password_hash TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT 'gpt-image-1.5',
     active_api_key_config_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT,
+    last_activity_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+ON users(lower(email)) WHERE email IS NOT NULL;
+CREATE TABLE IF NOT EXISTS email_verification_codes (
+    email TEXT PRIMARY KEY COLLATE NOCASE,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_sent_at TEXT NOT NULL,
+    failed_attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS api_key_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -236,6 +250,46 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_email_auth(connection: aiosqlite.Connection) -> None:
+    tables = {
+        row[0]
+        for row in await (await connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )).fetchall()
+    }
+    if "users" not in tables:
+        return
+    user_columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(users)")).fetchall()
+    }
+    additions = {
+        "email": "TEXT",
+        "email_verified_at": "TEXT",
+        "is_admin": "INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))",
+        "last_login_at": "TEXT",
+        "last_activity_at": "TEXT",
+    }
+    for column, definition in additions.items():
+        if column not in user_columns:
+            await connection.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+    await connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique "
+        "ON users(lower(email)) WHERE email IS NOT NULL"
+    )
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS email_verification_codes (
+            email TEXT PRIMARY KEY COLLATE NOCASE,
+            code_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_sent_at TEXT NOT NULL,
+            failed_attempts INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
 async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as connection:
@@ -349,6 +403,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 """
             )
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -408,6 +463,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 )
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -421,6 +477,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 await connection.execute("ALTER TABLE history ADD COLUMN resolution TEXT")
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -428,17 +485,26 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await connection.execute("BEGIN")
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         elif version < 7:
             await connection.execute("BEGIN")
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 8:
+            await connection.execute("BEGIN")
+            await _migrate_email_auth(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         else:
             await connection.executescript(SCHEMA)
             await _migrate_generation_batches(connection)
+            await _migrate_email_auth(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

@@ -45,9 +45,10 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
     assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 7
+    assert version == 8
     assert "api_key_configs" in tables
     assert "generation_batches" in tables
+    assert "email_verification_codes" in tables
     async with aiosqlite.connect(database_path) as connection:
         columns = {
             row[1]
@@ -85,7 +86,7 @@ async def test_database_adds_resolution_to_version_four_history(tmp_path: Path) 
         }
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
     assert "resolution" in columns
-    assert version == 7
+    assert version == 8
 
 
 @pytest.mark.asyncio
@@ -142,7 +143,7 @@ async def test_database_removes_only_empty_generated_default_configs(tmp_path: P
         (preserved, "默认配置", "real-key", "gpt"),
     ]
     assert active_id == replacement
-    assert version == 7
+    assert version == 8
 
 
 @pytest.mark.asyncio
@@ -213,7 +214,7 @@ async def test_database_migrates_version_six_history_images_into_batches(tmp_pat
         )).fetchall()
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
-    assert version == 7
+    assert version == 8
     assert batch == ("旧提示词", "gemini", "gemini-image", "high", 2, "16:9", "2K")
     assert images[0][0:2] == ("reference", "person.jpg")
     assert images[0][2] is not None
