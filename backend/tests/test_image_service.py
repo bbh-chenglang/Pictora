@@ -132,6 +132,35 @@ async def test_openai_provider_uses_image_edit_for_reference_generation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_forwards_multiple_reference_images() -> None:
+    client = FakeClient()
+    provider = OpenAIProvider(
+        api_key=SecretStr("do-not-leak"),
+        base_url="https://api.example/v1",
+        model="gpt-image-2",
+        client=client,
+    )
+    references = [
+        ReferenceImage(data=b"room", content_type="image/jpeg", filename="room.jpg"),
+        ReferenceImage(data=b"material", content_type="image/png", filename="material.png"),
+    ]
+
+    await provider.generate_image(
+        GenerateRequest(provider="openai", model="gpt-image-2", prompt="融合参考图"),
+        references,
+    )
+    await provider.analyze_images("vision-model", "比较图片", references)
+
+    edit_images = client.images.edit_request["image"]
+    assert [image.name for image in edit_images] == ["room.jpg", "material.png"]
+    content = client.chat.completions.request["messages"][0]["content"]
+    assert [part["image_url"]["url"] for part in content[1:]] == [
+        "data:image/jpeg;base64,cm9vbQ==",
+        "data:image/png;base64,bWF0ZXJpYWw=",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("aspect_ratio", "resolution", "expected_size"),
     [

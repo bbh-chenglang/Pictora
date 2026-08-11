@@ -13,7 +13,13 @@ from app.repositories.history_repository import HistoryRepository
 from app.repositories.project_repository import ProjectNotFoundError, ProjectRepository
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
+from app.schemas.generate import (
+    GenerateRequest,
+    GenerateResponse,
+    ReferenceImage,
+    ReferenceImageInput,
+    normalize_reference_images,
+)
 from app.services.image_service import ImageService
 
 
@@ -58,7 +64,7 @@ class HistoryService:
         request: GenerateRequest,
         image_service: ImageService,
         user_id: int = 1,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         history_id = await self.create_generation(
             request,
@@ -77,31 +83,60 @@ class HistoryService:
         self,
         request: GenerateRequest,
         user_id: int = 1,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> int:
         project_id = await self._resolve_project(request.project_id, user_id)
-        history_id = await self.repository.create(
-            user_id=user_id,
-            kind="generate",
-            project_id=project_id,
-            prompt=request.prompt,
-            provider=request.provider,
-            model=request.model,
-            detail=request.detail,
-            image_count=request.count,
-            size=request.size,
-            resolution=request.resolution,
-        )
+        if request.conversation_id is None:
+            history_id = await self.repository.create(
+                user_id=user_id,
+                kind="generate",
+                project_id=project_id,
+                prompt=request.prompt,
+                provider=request.provider,
+                model=request.model,
+                detail=request.detail,
+                image_count=request.count,
+                api_key_config_id=request.api_key_config_id,
+                size=request.size,
+                resolution=request.resolution,
+            )
+            batch_id = await self.repository.latest_generation_batch_id(
+                user_id=user_id,
+                history_id=history_id,
+            )
+        else:
+            history_id = request.conversation_id
+            batch_id = await self.repository.restart_generation(
+                history_id,
+                user_id=user_id,
+                project_id=project_id,
+                prompt=request.prompt,
+                provider=request.provider,
+                model=request.model,
+                detail=request.detail,
+                image_count=request.count,
+                api_key_config_id=request.api_key_config_id,
+                size=request.size,
+                resolution=request.resolution,
+            )
         try:
-            if reference_image is not None:
+            reference_position = await self.repository.next_image_position(
+                user_id=user_id,
+                history_id=history_id,
+                role="reference",
+                batch_id=batch_id,
+            )
+            for position, image in enumerate(normalize_reference_images(reference_image)):
                 await self.repository.add_image(
                     history_id=history_id,
                     user_id=user_id,
                     role="reference",
-                    mime_type=reference_image.content_type,
-                    filename=reference_image.filename,
-                    position=0,
-                    data=reference_image.data,
+                    mime_type=image.content_type,
+                    filename=image.filename,
+                    position=reference_position + position,
+                    data=image.data,
+                    batch_id=batch_id,
+                    reference_category=image.category,
                 )
         except Exception:
             await self.repository.fail(
@@ -118,7 +153,7 @@ class HistoryService:
         request: GenerateRequest,
         image_service: ImageService,
         user_id: int = 1,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         generation_token = generation_id.set(uuid4().hex)
         started_at = perf_counter()
@@ -146,6 +181,15 @@ class HistoryService:
                 history_id=history_id,
                 image_count=len(response.images),
             )
+            batch_id = await self.repository.latest_generation_batch_id(
+                user_id=user_id,
+                history_id=history_id,
+            )
+            generated_position = await self.repository.next_image_position(
+                user_id=user_id,
+                history_id=history_id,
+                role="generated",
+            )
             for position, image in enumerate(response.images):
                 materialize_started_at = perf_counter()
                 materialized = await self._materialize_image(image)
@@ -167,9 +211,10 @@ class HistoryService:
                     user_id=user_id,
                     role="generated",
                     mime_type=mime_type,
-                    filename=f"generated-{position + 1}.{extension}",
-                    position=position,
+                    filename=f"generated-{generated_position + position + 1}.{extension}",
+                    position=generated_position + position,
                     data=data,
+                    batch_id=batch_id,
                 )
                 _log_step(
                     "history_image_saved",
@@ -246,6 +291,7 @@ class HistoryService:
         image_bytes: bytes,
         content_type: str,
         filename: str | None,
+        reference_images: ReferenceImageInput | None = None,
     ) -> AnalyzeResponse:
         project_id = await self._resolve_project(project_id, user_id)
         history_id = await self.repository.create(
@@ -256,19 +302,34 @@ class HistoryService:
             model=model,
             detail=detail,
             image_count=1,
+            api_key_config_id=api_key_config_id,
             size=None,
+        )
+        batch_id = await self.repository.latest_generation_batch_id(
+            user_id=user_id,
+            history_id=history_id,
         )
         started_at = perf_counter()
         try:
-            await self.repository.add_image(
-                history_id=history_id,
-                user_id=user_id,
-                role="reference",
-                mime_type=content_type,
-                filename=filename,
-                position=0,
-                data=image_bytes,
-            )
+            images = normalize_reference_images(reference_images) or [
+                ReferenceImage(
+                    data=image_bytes,
+                    content_type=content_type,
+                    filename=filename,
+                )
+            ]
+            for position, image in enumerate(images):
+                await self.repository.add_image(
+                    history_id=history_id,
+                    user_id=user_id,
+                    role="reference",
+                    mime_type=image.content_type,
+                    filename=image.filename,
+                    position=position,
+                    data=image.data,
+                    batch_id=batch_id,
+                    reference_category=image.category,
+                )
             analyze_args = (
                 provider,
                 model,
@@ -278,10 +339,15 @@ class HistoryService:
                 content_type,
             )
             if api_key_config_id is None:
-                response = await image_service.analyze(*analyze_args)
+                response = await image_service.analyze(
+                    *analyze_args,
+                    **({"reference_images": images} if len(images) > 1 else {}),
+                )
             else:
                 response = await image_service.analyze(
-                    *analyze_args, api_key_config_id=api_key_config_id
+                    *analyze_args,
+                    api_key_config_id=api_key_config_id,
+                    **({"reference_images": images} if len(images) > 1 else {}),
                 )
             await self.repository.complete(
                 history_id,

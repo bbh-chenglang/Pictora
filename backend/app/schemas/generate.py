@@ -1,17 +1,35 @@
-from typing import Literal
+from collections.abc import Sequence
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
 from app.schemas.common import ImageResult
+from app.schemas.history import ReferenceCategory
 
 
 class ReferenceImage(BaseModel):
     data: bytes
     content_type: str
     filename: str | None = None
+    category: ReferenceCategory = "person"
+
+
+ReferenceImageInput: TypeAlias = ReferenceImage | Sequence[ReferenceImage]
+
+
+def normalize_reference_images(
+    reference_image: ReferenceImageInput | None,
+) -> list[ReferenceImage]:
+    if reference_image is None:
+        return []
+    if isinstance(reference_image, ReferenceImage):
+        return [reference_image]
+    return list(reference_image)
+
 
 class GenerateRequest(BaseModel):
     project_id: int | None = None
+    conversation_id: int | None = Field(default=None, gt=0)
     api_key_config_id: int | None = Field(default=None, gt=0)
     provider: str
     model: str

@@ -12,14 +12,20 @@ from app.dependencies import (
     get_image_service,
 )
 from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
-from app.repositories.history_repository import HistoryRepository
+from app.repositories.history_repository import (
+    HistoryConversationBusyError,
+    HistoryConversationNotFoundError,
+    HistoryRepository,
+)
 from app.schemas.auth import StoredSessionUser
 from app.schemas.generate import (
     CancelGenerationResponse,
     GenerateRequest,
     GenerateTaskResponse,
     ReferenceImage,
+    ReferenceImageInput,
 )
+from app.schemas.history import ReferenceCategory
 from app.services.generation_task_manager import GenerationTaskManager
 from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
@@ -27,6 +33,7 @@ from app.services.image_service import ImageService
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 logger = logging.getLogger(__name__)
 SUPPORTED_REFERENCE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+MAX_REFERENCE_IMAGES = 8
 Detail = Literal["low", "medium", "high", "original", "auto"]
 AspectRatio = Literal["1:1", "3:2", "2:3", "9:16", "16:9"]
 Resolution = Literal["1K", "2K", "4K"]
@@ -38,7 +45,7 @@ async def _execute_generation_task(
     service: ImageService,
     history_service: HistoryService,
     user: StoredSessionUser,
-    reference_image: ReferenceImage | None = None,
+    reference_image: ReferenceImageInput | None = None,
 ) -> None:
     try:
         await history_service.execute_generation(
@@ -60,7 +67,7 @@ async def _submit_generation(
     history_service: HistoryService,
     task_manager: GenerationTaskManager,
     user: StoredSessionUser,
-    reference_image: ReferenceImage | None = None,
+    reference_image: ReferenceImageInput | None = None,
 ) -> GenerateTaskResponse:
     try:
         history_id = await history_service.create_generation(
@@ -75,6 +82,10 @@ async def _submit_generation(
             raise HTTPException(404, {"error": {"code": "project_not_found", "message": "项目不存在"}}) from None
         if isinstance(exc, ApiKeyConfigNotFoundError):
             raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}}) from None
+        if isinstance(exc, HistoryConversationNotFoundError):
+            raise HTTPException(404, {"error": {"code": "conversation_not_found", "message": "当前对话不存在"}}) from None
+        if isinstance(exc, HistoryConversationBusyError):
+            raise HTTPException(409, {"error": {"code": "conversation_busy", "message": "当前对话仍在生成中"}}) from None
         raise
     task_manager.start(
         history_id,
@@ -109,9 +120,12 @@ async def generate_image_from_reference(
     provider: Annotated[str, Form()],
     model: Annotated[str, Form()],
     prompt: Annotated[str, Form(min_length=1, max_length=4000)],
-    image: UploadFile = File(...),
+    image: Annotated[UploadFile | None, File()] = None,
+    images: Annotated[list[UploadFile] | None, File()] = None,
     api_key_config_id: Annotated[int | None, Form(gt=0)] = None,
     project_id: Annotated[int | None, Form(gt=0)] = None,
+    conversation_id: Annotated[int | None, Form(gt=0)] = None,
+    image_categories: Annotated[list[ReferenceCategory] | None, Form()] = None,
     prompts: Annotated[list[str] | None, Form()] = None,
     count: Annotated[int, Form(ge=1, le=4)] = 1,
     detail: Annotated[Detail, Form()] = "auto",
@@ -123,22 +137,47 @@ async def generate_image_from_reference(
     task_manager: GenerationTaskManager = Depends(get_generation_task_manager),
     user: StoredSessionUser = Depends(get_current_user),
 ) -> GenerateTaskResponse:
-    if image.content_type not in SUPPORTED_REFERENCE_TYPES:
+    uploads = ([image] if image is not None else []) + (images or [])
+    if not uploads:
         raise HTTPException(
             400,
-            {"error": {"code": "invalid_image", "message": "Unsupported image type"}},
+            {"error": {"code": "invalid_image", "message": "At least one image is required"}},
         )
-    image_bytes = await image.read()
-    if not image_bytes:
+    if len(uploads) > MAX_REFERENCE_IMAGES:
         raise HTTPException(
             400,
-            {"error": {"code": "invalid_image", "message": "Image file is empty"}},
+            {"error": {"code": "invalid_image", "message": f"At most {MAX_REFERENCE_IMAGES} images are allowed"}},
+        )
+
+    reference_images: list[ReferenceImage] = []
+    for index, upload in enumerate(uploads):
+        if upload.content_type not in SUPPORTED_REFERENCE_TYPES:
+            raise HTTPException(
+                400,
+                {"error": {"code": "invalid_image", "message": "Unsupported image type"}},
+            )
+        image_bytes = await upload.read()
+        if not image_bytes:
+            raise HTTPException(
+                400,
+                {"error": {"code": "invalid_image", "message": "Image file is empty"}},
+            )
+        reference_images.append(
+            ReferenceImage(
+                data=image_bytes,
+                content_type=upload.content_type or "application/octet-stream",
+                filename=upload.filename,
+                category=(image_categories or [])[index]
+                if index < len(image_categories or [])
+                else "person",
+            )
         )
     request = GenerateRequest(
         provider=provider,
         model=model,
         api_key_config_id=api_key_config_id,
         project_id=project_id,
+        conversation_id=conversation_id,
         prompt=prompt,
         prompts=prompts,
         count=count,
@@ -147,10 +186,8 @@ async def generate_image_from_reference(
         aspect_ratio=aspect_ratio,
         resolution=resolution,
     )
-    reference_image = ReferenceImage(
-        data=image_bytes,
-        content_type=image.content_type or "application/octet-stream",
-        filename=image.filename,
+    reference_image: ReferenceImageInput = (
+        reference_images[0] if len(reference_images) == 1 else reference_images
     )
     return await _submit_generation(
         request,

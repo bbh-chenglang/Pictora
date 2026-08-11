@@ -8,7 +8,13 @@ from app.observability import log_context
 from app.providers.registry import ProviderRegistry
 from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
 from app.schemas.analyze import AnalyzeResponse
-from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
+from app.schemas.generate import (
+    GenerateRequest,
+    GenerateResponse,
+    ReferenceImage,
+    ReferenceImageInput,
+    normalize_reference_images,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +33,7 @@ class ImageService:
     async def generate(
         self,
         request: GenerateRequest,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         effective_request = request
         if request.api_key_config_id is not None:
@@ -78,7 +84,7 @@ class ImageService:
         provider,
         request: GenerateRequest,
         prompt: str,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         started_at = perf_counter()
         logger.info(
@@ -127,12 +133,14 @@ class ImageService:
         image_bytes: bytes,
         content_type: str,
         api_key_config_id: int | None = None,
+        reference_images: ReferenceImageInput | None = None,
     ) -> AnalyzeResponse:
         resolved_provider = (
             await self._provider_for_config(api_key_config_id)
             if api_key_config_id is not None
             else self.registry.resolve(provider)
         )
-        return await resolved_provider.analyze_image(
-            model, prompt, image_bytes, content_type
-        )
+        images = normalize_reference_images(reference_images)
+        if len(images) > 1:
+            return await resolved_provider.analyze_images(model, prompt, images)
+        return await resolved_provider.analyze_image(model, prompt, image_bytes, content_type)

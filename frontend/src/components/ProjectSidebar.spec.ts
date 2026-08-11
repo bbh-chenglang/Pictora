@@ -67,7 +67,7 @@ describe("ProjectSidebar", () => {
     });
 
     expect(wrapper.find(".new-conversation").exists()).toBe(false);
-    await wrapper.get(".project-row .icon-action").trigger("click");
+    await wrapper.get("[data-project-menu-trigger]").trigger("click");
     expect(wrapper.find(".project-menu").exists()).toBe(true);
     expect(wrapper.findAll(".project-menu button")).toHaveLength(3);
     expect(wrapper.find(".project-menu").element.parentElement?.classList.contains("project-group")).toBe(true);
@@ -75,13 +75,29 @@ describe("ProjectSidebar", () => {
     expect(wrapper.get('[data-project-action="rename"] svg').exists()).toBe(true);
 
     await wrapper.find(".project-menu button").trigger("click");
-    expect(wrapper.emitted("new-conversation")).toHaveLength(1);
+    expect(wrapper.emitted("new-conversation")?.[0]).toEqual([1]);
     expect(wrapper.find(".project-menu").exists()).toBe(false);
 
-    await wrapper.get(".project-row .icon-action").trigger("click");
+    await wrapper.get("[data-project-menu-trigger]").trigger("click");
     await wrapper.get(".sidebar-heading").trigger("click");
     expect(wrapper.find(".project-menu").exists()).toBe(false);
     wrapper.unmount();
+  });
+
+  it("shows a new-conversation button beside every project", async () => {
+    const projects = [
+      { id: 1, name: "项目一", history: history(1), history_count: 1 },
+      { id: 2, name: "项目二", history: [], history_count: 0 },
+    ];
+    const wrapper = mount(ProjectSidebar, { props: { projects, selectedProjectId: 1 } });
+
+    const buttons = wrapper.findAll(".project-new-conversation");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[1].attributes("aria-label")).toBe("在“项目二”中新建对话");
+    await buttons[1].trigger("click");
+
+    expect(wrapper.emitted("new-conversation")?.[0]).toEqual([2]);
+    expect(wrapper.emitted("close")).toHaveLength(1);
   });
 
   it("expands and collapses each project independently", async () => {
@@ -101,5 +117,25 @@ describe("ProjectSidebar", () => {
     await wrapper.get('[data-project-id="1"] .project-toggle').trigger("click");
     expect(wrapper.find('[data-project-id="1"] .project-history').exists()).toBe(false);
     expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(true);
+  });
+
+  it("emits close after mobile navigation choices and from the close control", async () => {
+    const wrapper = mount(ProjectSidebar, {
+      props: {
+        projects: [{ id: 1, name: "项目一", history: history(1), history_count: 1 }],
+        selectedProjectId: 1,
+        runningGenerations: [{ id: 9, projectId: 1, prompt: "生成中", model: "gpt-image-1.5", size: "1:1", resolution: "1K", elapsedMs: 1200 }],
+      },
+    });
+
+    await wrapper.get(".project-select").trigger("click");
+    await wrapper.get(".history-select").trigger("click");
+    await wrapper.get(".running-generation").trigger("click");
+    await wrapper.get(".mobile-sidebar-close").trigger("click");
+
+    expect(wrapper.emitted("select-project")?.[0]).toEqual([1]);
+    expect(wrapper.emitted("open-history")?.[0]).toEqual([1]);
+    expect(wrapper.emitted("open-generation")?.[0]).toEqual([9]);
+    expect(wrapper.emitted("close")).toHaveLength(4);
   });
 });

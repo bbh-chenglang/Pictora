@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import {
+  ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
   Download,
   ExternalLink,
+  Grid3X3,
   ImagePlus,
   LoaderCircle,
+  PanelLeft,
+  PanelLeftClose,
+  Pencil,
+  RefreshCw,
+  Settings,
+  Snowflake,
   Sparkles,
+  Trash2,
   Upload,
+  UserRound,
   X,
 } from "lucide-vue-next";
 import ProjectSidebar, {
@@ -17,11 +27,14 @@ import ProjectSidebar, {
   type RunningGenerationSummary,
 } from "./components/ProjectSidebar.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import FlowingGridBackground from "./components/FlowingGridBackground.vue";
 import ProjectDialog from "./components/ProjectDialog.vue";
-import groupQrUrl from "./assets/genimage-group.png";
+import SnowfallBackground from "./components/SnowfallBackground.vue";
 
 type Provider = { id: string; label: string; models: string[] };
 type ApiKeyProvider = "gpt" | "gemini";
+type BackgroundEffect = "gravity-grid" | "snowfall";
+type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
 type ApiKeyConfig = {
   id: number;
   alias: string;
@@ -45,6 +58,8 @@ type ImageResult = {
   base64_data?: string | null;
   revised_prompt?: string | null;
   generation_time_ms?: number | null;
+  history_id?: number;
+  history_image_id?: number;
 };
 type HistorySummary = {
   id: number;
@@ -69,11 +84,44 @@ type HistoryImage = {
   filename?: string | null;
   position: number;
   url: string;
+  reference_category?: ReferenceCategory | null;
 };
 type HistoryDetail = HistorySummary & {
   analysis_text?: string | null;
   completed_at?: string | null;
   images: HistoryImage[];
+};
+type ReferenceCategory = "person" | "environment" | "object";
+type ReferencePreview = {
+  key: string;
+  category: ReferenceCategory;
+  name: string;
+  url: string;
+  file: File | null;
+};
+type ReferenceFileSnapshot = {
+  file: File;
+  category: ReferenceCategory;
+};
+type HistoryImageEditSnapshot = {
+  history_id: number;
+  image_id: number;
+  api_key_config_id?: number | null;
+  prompt: string;
+  provider: string;
+  model: string;
+  detail: string;
+  image_count: number;
+  size?: string | null;
+  resolution?: string | null;
+  references: Array<{
+    id: number;
+    category: ReferenceCategory;
+    mime_type: string;
+    filename?: string | null;
+    position: number;
+    url: string;
+  }>;
 };
 
 const MODEL_OPTIONS = [
@@ -102,6 +150,14 @@ const LEGACY_SIZE_TO_ASPECT_RATIO: Record<string, string> = {
 };
 const RESOLUTION_OPTIONS = ["1K", "2K", "4K"] as const;
 const DEFAULT_RESOLUTION = "1K";
+const REFERENCE_CATEGORIES: Array<{
+  id: ReferenceCategory;
+  label: string;
+}> = [
+  { id: "person", label: "人物" },
+  { id: "environment", label: "环境" },
+  { id: "object", label: "物品" },
+];
 const QUALITY_OPTIONS = [
   { label: "自动", value: "auto" },
   { label: "低", value: "low" },
@@ -109,6 +165,8 @@ const QUALITY_OPTIONS = [
   { label: "高", value: "high" },
 ] as const;
 const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
+const MAX_REFERENCE_IMAGES = 8;
+const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 type ParameterMenu = "apiKey" | "model" | "size" | "resolution" | "quality" | "count";
 type GenerationRun = {
   controller: AbortController;
@@ -127,8 +185,7 @@ type GenerationRun = {
   quality: string;
   size: string;
   resolution: string;
-  imageFile: File | null;
-  referencePreviewUrl: string;
+  referenceFiles: ReferenceFileSnapshot[];
   images: ImageResult[];
   error: string;
 };
@@ -142,10 +199,11 @@ const imageCount = ref(1);
 const quality = ref("auto");
 const size = ref<string>(DEFAULT_SIZE);
 const resolution = ref<string>(DEFAULT_RESOLUTION);
-const imageFile = ref<File | null>(null);
-const previewUrl = ref("");
+const referencePreviews = ref<ReferencePreview[]>([]);
+const referenceDragActiveCategory = ref<ReferenceCategory | null>(null);
 const generated = ref<ImageResult[]>([]);
-const analysis = ref("");
+const deletingImageIds = ref<number[]>([]);
+const modifyingImageIds = ref<number[]>([]);
 const busy = ref<"generate" | "analyze" | "">("");
 const error = ref("");
 const apiKeyConfigured = ref(false);
@@ -162,6 +220,7 @@ const confirmHistoryIds = ref<number[]>([]);
 const confirmConfig = ref<ApiKeyConfig | null>(null);
 const actionBusy = ref(false);
 const activeHistoryId = ref<number | null>(null);
+const currentConversationId = ref<number | null>(null);
 const lightboxUrl = ref("");
 const openParameterMenu = ref<ParameterMenu | null>(null);
 const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
@@ -171,6 +230,7 @@ const passwordConfirmation = ref("");
 const currentUsername = ref("");
 const authError = ref("");
 const currentView = ref<"workspace" | "settings">(window.location.pathname === "/settings" ? "settings" : "workspace");
+const projectDrawerOpen = ref(false);
 const apiKeyConfigs = ref<ApiKeyConfig[]>([]);
 const activeApiKeyConfigId = ref<number | null>(null);
 const legacySettingsMode = ref(false);
@@ -193,7 +253,17 @@ const feedbackMessage = ref("");
 const feedbackContact = ref("");
 const feedbackStatus = ref("");
 const feedbackSubmitting = ref(false);
+const updateStatus = ref<UpdateStatus>("idle");
+const serverVersion = ref("");
+const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
+const backgroundEffect = ref<BackgroundEffect>(loadBackgroundEffect());
 let settingsSaveQueue: Promise<void> = Promise.resolve();
+let referencePreviewSequence = 0;
+const referenceDragDepth: Record<ReferenceCategory, number> = {
+  person: 0,
+  environment: 0,
+  object: 0,
+};
 
 const generationRuns = new Map<number, GenerationRun>();
 const generationVersion = ref(0);
@@ -201,6 +271,23 @@ const activeGenerationRunId = ref<number | null>(null);
 const historyDetailCache = new Map<number, Promise<HistoryDetail>>();
 const historyImagePreloads = new Map<string, HTMLImageElement>();
 let historyOpenVersion = 0;
+
+function loadBackgroundEffect(): BackgroundEffect {
+  try {
+    return window.localStorage.getItem(BACKGROUND_EFFECT_KEY) === "snowfall" ? "snowfall" : "gravity-grid";
+  } catch {
+    return "gravity-grid";
+  }
+}
+
+function selectBackgroundEffect(effect: BackgroundEffect) {
+  backgroundEffect.value = effect;
+  try {
+    window.localStorage.setItem(BACKGROUND_EFFECT_KEY, effect);
+  } catch {
+    // The selected effect still applies for the current session when storage is unavailable.
+  }
+}
 const activeGenerationRun = computed(() => {
   generationVersion.value;
   return activeGenerationRunId.value === null
@@ -211,6 +298,12 @@ const activeGenerationElapsedMs = computed(() => {
   generationVersion.value;
   if (activeGenerationRunId.value === null) return null;
   return generationRuns.get(activeGenerationRunId.value)?.elapsedMs ?? 0;
+});
+const activeGenerationImageCount = computed(() => activeGenerationRun.value?.imageCount ?? 1);
+const generationFillPercent = computed(() => {
+  const elapsedMs = activeGenerationElapsedMs.value;
+  if (elapsedMs === null) return 0;
+  return Math.min(94, 8 + elapsedMs / 450);
 });
 const runningGenerations = computed<RunningGenerationSummary[]>(() => {
   generationVersion.value;
@@ -224,7 +317,7 @@ const runningGenerations = computed<RunningGenerationSummary[]>(() => {
     elapsedMs: run.elapsedMs,
   }));
 });
-const canAnalyze = computed(() => Boolean(imageFile.value) && busy.value !== "analyze");
+const canAnalyze = computed(() => referencePreviews.value.length > 0 && busy.value !== "analyze");
 const selectedConfig = computed(() => apiKeyConfigs.value.find((item) => item.id === activeApiKeyConfigId.value) ?? null);
 const selectedProviderType = computed<ApiKeyProvider>(() =>
   selectedConfig.value?.provider_type ?? (provider.value === "gemini" ? "gemini" : "gpt"),
@@ -245,6 +338,20 @@ const modelOptions = computed(() => {
   })) ?? [];
 });
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const CLIENT_VERSION = (import.meta.env.VITE_APP_VERSION ?? "dev").trim() || "dev";
+const versionActionLabel = computed(() => {
+  if (updateStatus.value === "checking") return "检查中...";
+  if (updateStatus.value === "current") return "已是最新版本";
+  if (updateStatus.value === "available") return "立即更新";
+  if (updateStatus.value === "error") return "重新检查";
+  return "检查更新";
+});
+const versionStatusMessage = computed(() => {
+  if (updateStatus.value === "current") return "当前版本已是最新版本";
+  if (updateStatus.value === "available") return "发现新版本，可以立即更新";
+  if (updateStatus.value === "error") return "检查更新失败，请确认服务连接后重试";
+  return "";
+});
 
 function readableError(data: any, fallback: string) {
   const messages: Record<string, string> = {
@@ -277,6 +384,43 @@ function resourceUrl(path: string) {
   return /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`;
 }
 
+async function checkForUpdate() {
+  if (updateStatus.value === "checking") return;
+  updateStatus.value = "checking";
+  serverVersion.value = "";
+  try {
+    const response = await fetch(`${API_BASE}/api/version?t=${Date.now()}`, {
+      cache: "no-store",
+    });
+    const data = await parseJsonResponse(response);
+    const deployedVersion = typeof data?.version === "string" ? data.version.trim() : "";
+    if (!response.ok || !deployedVersion) throw new Error("Invalid version response");
+    serverVersion.value = deployedVersion;
+    updateStatus.value = deployedVersion === CLIENT_VERSION ? "current" : "available";
+  } catch {
+    updateStatus.value = "error";
+  }
+}
+
+function applyUpdate() {
+  if (updateStatus.value !== "available" || !serverVersion.value) return;
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set("_app_version", serverVersion.value);
+  window.location.search = nextUrl.search;
+}
+
+function handleVersionAction() {
+  if (updateStatus.value === "available") applyUpdate();
+  else void checkForUpdate();
+}
+
+function promptWithAnalysis(currentPrompt: string, analysisText?: string | null) {
+  const result = analysisText?.trim() ?? "";
+  if (!result) return currentPrompt;
+  if (!currentPrompt.trim()) return result;
+  return `${currentPrompt.trimEnd()}\n\n${result}`;
+}
+
 async function submitAuth(mode: "login" | "register") {
   authError.value = "";
   const passwordsMatch = mode === "login" || password.value === passwordConfirmation.value;
@@ -305,12 +449,14 @@ async function logout() {
 }
 
 function navigateToSettings() {
+  projectDrawerOpen.value = false;
   window.history.pushState({}, "", "/settings");
   currentView.value = "settings";
   settingsApiKey.value = "";
 }
 
 function navigateToWorkspace() {
+  projectDrawerOpen.value = false;
   window.history.pushState({}, "", "/");
   currentView.value = "workspace";
   if (activeGenerationRunId.value !== null) {
@@ -391,7 +537,10 @@ function historyProviderType(item: Pick<HistorySummary, "provider" | "model">): 
     : "gpt";
 }
 
-async function restoreHistoryApiConfig(item: HistoryDetail) {
+async function restoreHistoryApiConfig(
+  item: Pick<HistorySummary, "provider" | "model"> & { api_key_config_id?: number | null },
+  exactModel = false,
+) {
   if (legacySettingsMode.value) {
     provider.value = item.provider;
     model.value = (MODEL_OPTIONS as readonly string[]).includes(item.model)
@@ -402,12 +551,27 @@ async function restoreHistoryApiConfig(item: HistoryDetail) {
 
   const providerType = historyProviderType(item);
   const current = selectedConfig.value;
-  const matchingConfig = apiKeyConfigs.value.find(
+  const exactConfig = item.api_key_config_id == null
+    ? undefined
+    : apiKeyConfigs.value.find((config) => config.id === item.api_key_config_id);
+  const matchingConfig = exactConfig ?? apiKeyConfigs.value.find(
     (config) => config.provider_type === providerType && config.model === item.model,
   ) ?? (current?.provider_type === providerType ? current : undefined)
     ?? apiKeyConfigs.value.find((config) => config.provider_type === providerType);
 
-  if (matchingConfig) await selectApiKeyConfig(matchingConfig);
+  if (matchingConfig) {
+    await selectApiKeyConfig(matchingConfig);
+  } else if (exactModel) {
+    activeApiKeyConfigId.value = null;
+    provider.value = item.provider;
+  }
+  if (exactModel) model.value = item.model;
+  if (exactModel && !availableModels.value.some((option) => option.id === item.model)) {
+    availableModels.value = [
+      ...availableModels.value,
+      { id: item.model, provider_type: providerType },
+    ];
+  }
 }
 
 async function selectModel(value: string) {
@@ -750,7 +914,8 @@ async function openHistory(historyId: number) {
     if (openVersion !== historyOpenVersion) return;
 
     activeHistoryId.value = historyId;
-    prompt.value = data.prompt;
+    currentConversationId.value = data.kind === "generate" ? historyId : null;
+    prompt.value = promptWithAnalysis(data.prompt, data.analysis_text);
     if (QUALITY_OPTIONS.some((option) => option.value === data.detail)) {
       quality.value = data.detail;
     }
@@ -762,13 +927,19 @@ async function openHistory(historyId: number) {
       ? data.resolution ?? DEFAULT_RESOLUTION
       : DEFAULT_RESOLUTION;
     imageCount.value = data.image_count;
-    analysis.value = data.analysis_text ?? "";
     generated.value = historyImages(data);
 
-    const reference = data.images.find((image) => image.role === "reference");
-    if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
-    imageFile.value = null;
-    previewUrl.value = reference ? resourceUrl(reference.url) : "";
+    clearReferencePreviews();
+    referencePreviews.value = data.images
+      .filter((image) => image.role === "reference")
+      .sort((left, right) => left.position - right.position)
+      .map((image) => ({
+        key: `history-${image.id}`,
+        category: image.reference_category ?? "person",
+        name: image.filename ?? `历史参考图 ${image.position + 1}`,
+        url: resourceUrl(image.url),
+        file: null,
+      }));
     preloadHistoryImages(data);
     void restoreHistoryApiConfig(data).catch((exception) => {
       if (openVersion === historyOpenVersion) {
@@ -803,13 +974,11 @@ async function refreshConversationLists() {
 
 function clearWorkspace() {
   generated.value = [];
-  analysis.value = "";
   activeHistoryId.value = null;
+  currentConversationId.value = null;
   prompt.value = "";
   batchPrompts.value = "";
-  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
-  imageFile.value = null;
-  previewUrl.value = "";
+  clearReferencePreviews();
 }
 
 function restoreGenerationRun(runId: number) {
@@ -838,10 +1007,13 @@ function restoreGenerationRun(runId: number) {
   quality.value = run.quality;
   size.value = run.size;
   resolution.value = run.resolution;
-  imageFile.value = run.imageFile;
-  previewUrl.value = run.imageFile
-    ? URL.createObjectURL(run.imageFile)
-    : run.referencePreviewUrl;
+  referencePreviews.value = run.referenceFiles.map(({ file, category }) => ({
+    key: `run-${++referencePreviewSequence}`,
+    category,
+    name: file.name,
+    url: URL.createObjectURL(file),
+    file,
+  }));
   generated.value = run.images;
   error.value = run.error;
   generationVersion.value++;
@@ -887,7 +1059,7 @@ async function submitDeleteHistory(project: ProjectSummary, ids: number[]) {
   const response = await fetch(`${API_BASE}/api/projects/${project.id}/history`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ history_ids: ids }) });
   if (!response.ok) { projectError.value = "删除历史记录失败"; return; }
   for (const id of ids) historyDetailCache.delete(id);
-  if (ids.includes(activeHistoryId.value ?? -1)) clearWorkspace();
+  if (ids.includes(activeHistoryId.value ?? -1) || ids.includes(currentConversationId.value ?? -1)) clearWorkspace();
   await loadProjects();
 }
 
@@ -961,9 +1133,8 @@ async function confirmDeletion() {
   }
 }
 
-function startNewConversation() {
-  activeGenerationRunId.value = null;
-  clearWorkspace();
+function startNewConversation(projectId: number) {
+  selectProject(projectId);
 }
 
 async function applyRuntimeSettings() {
@@ -993,19 +1164,119 @@ async function applyRuntimeSettings() {
   await save;
 }
 
-function setFile(file?: File) {
-  if (!file) return;
-  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
-  imageFile.value = file;
-  previewUrl.value = URL.createObjectURL(file);
-  activeHistoryId.value = null;
+function referenceFileKey(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function referencesForCategory(category: ReferenceCategory) {
+  return referencePreviews.value.filter((preview) => preview.category === category);
+}
+
+function referenceOrdinal(key: string) {
+  return referencePreviews.value.findIndex((preview) => preview.key === key) + 1;
+}
+
+function addReferenceFiles(
+  category: ReferenceCategory,
+  files?: FileList | File[] | null,
+) {
+  const incoming = Array.from(files ?? []);
+  if (!incoming.length) return;
+
+  const unsupported = incoming.filter((file) => !SUPPORTED_REFERENCE_TYPES.has(file.type));
+  const existing = new Set(
+    referencePreviews.value
+      .filter((preview) => preview.category === category)
+      .map((preview) => preview.file)
+      .filter((file): file is File => file !== null)
+      .map(referenceFileKey),
+  );
+  const candidates = incoming.filter(
+    (file) => SUPPORTED_REFERENCE_TYPES.has(file.type) && !existing.has(referenceFileKey(file)),
+  );
+  const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - referencePreviews.value.length);
+  const accepted = candidates.slice(0, availableSlots);
+
+  referencePreviews.value = [
+    ...referencePreviews.value,
+    ...accepted.map((file) => ({
+      key: `upload-${++referencePreviewSequence}`,
+      category,
+      name: file.name,
+      url: URL.createObjectURL(file),
+      file,
+    })),
+  ];
+  if (accepted.length) activeHistoryId.value = null;
+
+  if (unsupported.length) {
+    error.value = "仅支持 PNG、JPG、WEBP 或 GIF 图片";
+  } else if (candidates.length > availableSlots) {
+    error.value = `参考图片最多添加 ${MAX_REFERENCE_IMAGES} 张`;
+  } else {
+    error.value = "";
+  }
+}
+
+function handleReferenceInput(category: ReferenceCategory, event: Event) {
+  const input = event.target as HTMLInputElement;
+  addReferenceFiles(category, input.files);
+  input.value = "";
+}
+
+function handleReferenceDragEnter(category: ReferenceCategory) {
+  referenceDragDepth[category]++;
+  referenceDragActiveCategory.value = category;
+}
+
+function handleReferenceDragLeave(category: ReferenceCategory) {
+  referenceDragDepth[category] = Math.max(0, referenceDragDepth[category] - 1);
+  if (referenceDragDepth[category] === 0 && referenceDragActiveCategory.value === category) {
+    referenceDragActiveCategory.value = null;
+  }
+}
+
+function handleReferenceDragOver(event: DragEvent) {
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function handleReferenceDrop(category: ReferenceCategory, event: DragEvent) {
+  referenceDragDepth[category] = 0;
+  referenceDragActiveCategory.value = null;
+  addReferenceFiles(category, event.dataTransfer?.files);
+}
+
+function revokeReferencePreview(preview: ReferencePreview) {
+  if (preview.url.startsWith("blob:")) URL.revokeObjectURL(preview.url);
+}
+
+function removeReference(key: string) {
+  const index = referencePreviews.value.findIndex((preview) => preview.key === key);
+  if (index === -1) return;
+  const [removed] = referencePreviews.value.splice(index, 1);
+  if (removed) revokeReferencePreview(removed);
   error.value = "";
 }
 
-function clearFile() {
-  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
-  imageFile.value = null;
-  previewUrl.value = "";
+function clearReferencePreviews() {
+  for (const preview of referencePreviews.value) revokeReferencePreview(preview);
+  referencePreviews.value = [];
+  for (const category of REFERENCE_CATEGORIES) referenceDragDepth[category.id] = 0;
+  referenceDragActiveCategory.value = null;
+}
+
+async function referenceFilesForRequest() {
+  return Promise.all(referencePreviews.value.map(async (preview, index) => {
+    if (preview.file) return preview.file;
+    const response = await fetch(preview.url, { credentials: "include" });
+    if (!response.ok) throw new Error(`无法读取参考图片 ${index + 1}`);
+    const blob = await response.blob();
+    const file = new File([blob], preview.name || `reference-${index + 1}`, {
+      type: blob.type || "image/png",
+    });
+    preview.file = file;
+    return file;
+  }));
 }
 
 function formatDuration(milliseconds?: number | null) {
@@ -1072,7 +1343,95 @@ function historyImages(data: HistoryDetail): ImageResult[] {
     .map((image) => ({
       url: resourceUrl(image.url),
       generation_time_ms: data.elapsed_ms,
+      history_id: data.id,
+      history_image_id: image.id,
     }));
+}
+
+async function deleteGeneratedImage(item: ImageResult) {
+  const historyId = item.history_id;
+  const imageId = item.history_image_id;
+  if (historyId == null || imageId == null || deletingImageIds.value.includes(imageId)) return;
+
+  deletingImageIds.value = [...deletingImageIds.value, imageId];
+  try {
+    const response = await fetch(`${API_BASE}/api/history/${historyId}/images/${imageId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      throw new Error(readableError(await parseJsonResponse(response), "删除图片失败"));
+    }
+    const source = imageSource(item);
+    generated.value = generated.value.filter((image) => image.history_image_id !== imageId);
+    for (const run of generationRuns.values()) {
+      run.images = run.images.filter((image) => image.history_image_id !== imageId);
+    }
+    if (source && lightboxUrl.value === source) lightboxUrl.value = "";
+    generationVersion.value++;
+    historyDetailCache.delete(historyId);
+    await refreshConversationLists();
+    error.value = "";
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "删除图片失败";
+  } finally {
+    deletingImageIds.value = deletingImageIds.value.filter((id) => id !== imageId);
+  }
+}
+
+async function modifyGeneratedImage(item: ImageResult) {
+  const historyId = item.history_id;
+  const imageId = item.history_image_id;
+  if (historyId == null || imageId == null || modifyingImageIds.value.includes(imageId)) return;
+
+  modifyingImageIds.value = [...modifyingImageIds.value, imageId];
+  try {
+    const response = await fetch(`${API_BASE}/api/history/${historyId}/images/${imageId}/edit`, {
+      credentials: "include",
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "无法恢复图片参数"));
+    const snapshot = data as HistoryImageEditSnapshot;
+
+    prompt.value = snapshot.prompt;
+    batchPrompts.value = "";
+    quality.value = QUALITY_OPTIONS.some((option) => option.value === snapshot.detail)
+      ? snapshot.detail
+      : "auto";
+    const snapshotSize = snapshot.size
+      ? LEGACY_SIZE_TO_ASPECT_RATIO[snapshot.size] ?? snapshot.size
+      : DEFAULT_SIZE;
+    size.value = SIZE_OPTIONS.some((option) => option.value === snapshotSize)
+      ? snapshotSize
+      : DEFAULT_SIZE;
+    resolution.value = RESOLUTION_OPTIONS.includes(
+      snapshot.resolution as typeof RESOLUTION_OPTIONS[number],
+    ) ? snapshot.resolution ?? DEFAULT_RESOLUTION : DEFAULT_RESOLUTION;
+    imageCount.value = Math.min(4, Math.max(1, snapshot.image_count));
+    currentConversationId.value = snapshot.history_id;
+
+    clearReferencePreviews();
+    referencePreviews.value = [...snapshot.references]
+      .sort((left, right) => left.position - right.position)
+      .map((reference) => ({
+        key: `edit-${reference.id}`,
+        category: reference.category,
+        name: reference.filename ?? `历史参考图 ${reference.position + 1}`,
+        url: resourceUrl(reference.url),
+        file: null,
+      }));
+    await restoreHistoryApiConfig(snapshot, true);
+    error.value = "";
+
+    await nextTick();
+    const composer = document.querySelector<HTMLElement>(".composer-dock");
+    composer?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+    document.querySelector<HTMLTextAreaElement>(".prompt-row textarea")?.focus();
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "无法恢复图片参数";
+  } finally {
+    modifyingImageIds.value = modifyingImageIds.value.filter((id) => id !== imageId);
+  }
 }
 
 function pollDelay(signal: AbortSignal, milliseconds: number) {
@@ -1193,8 +1552,7 @@ function restorePendingGenerationTasks() {
           resolution: RESOLUTION_OPTIONS.includes(item.resolution as typeof RESOLUTION_OPTIONS[number])
             ? item.resolution ?? DEFAULT_RESOLUTION
             : DEFAULT_RESOLUTION,
-          imageFile: null,
-          referencePreviewUrl: "",
+          referenceFiles: [],
         },
         pendingElapsedMs(item.created_at),
         false,
@@ -1218,11 +1576,22 @@ async function generateImage() {
   const generationModel = model.value;
   const generationConfigId = activeApiKeyConfigId.value;
   const generationProjectId = selectedProjectId.value;
+  const generationConversationId = currentConversationId.value;
   const generationImageCount = imageCount.value;
   const generationQuality = quality.value;
   const generationSize = size.value;
   const generationResolution = resolution.value;
-  const generationImageFile = imageFile.value;
+  let generationReferenceFiles: File[];
+  try {
+    generationReferenceFiles = await referenceFilesForRequest();
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "无法读取参考图片";
+    return;
+  }
+  const generationReferenceSnapshots = generationReferenceFiles.map((file, index) => ({
+    file,
+    category: referencePreviews.value[index]?.category ?? "person",
+  }));
   const generationProviderType = selectedProviderType.value;
   const runId = Date.now() + Math.random();
   const controller = new AbortController();
@@ -1239,17 +1608,19 @@ async function generateImage() {
     quality: generationQuality,
     size: generationSize,
     resolution: generationResolution,
-    imageFile: generationImageFile,
-    referencePreviewUrl: generationImageFile ? "" : previewUrl.value,
+    referenceFiles: generationReferenceSnapshots,
   });
   error.value = "";
-  analysis.value = "";
-  generated.value = [];
+  const continuingImages = generationConversationId !== null ? [...generated.value] : [];
+  const provisionalRun = generationRuns.get(runId);
+  if (provisionalRun) provisionalRun.images = continuingImages;
+  if (generationConversationId === null) generated.value = [];
   activeHistoryId.value = null;
+  if (generationConversationId !== null) historyDetailCache.delete(generationConversationId);
   try {
     let endpoint = `${API_BASE}/api/generate`;
     let requestInit: RequestInit;
-    if (generationImageFile) {
+    if (generationReferenceFiles.length) {
       endpoint += "/reference";
       const form = new FormData();
       form.append("provider", generationProvider);
@@ -1262,8 +1633,12 @@ async function generateImage() {
       if (generationProviderType === "gpt") form.append("detail", generationQuality);
       if (generationConfigId !== null) form.append("api_key_config_id", String(generationConfigId));
       if (generationProjectId !== null) form.append("project_id", String(generationProjectId));
+      if (generationConversationId !== null) form.append("conversation_id", String(generationConversationId));
       for (const batchPrompt of prompts) form.append("prompts", batchPrompt);
-      form.append("image", generationImageFile);
+      for (const reference of generationReferenceSnapshots) {
+        form.append("images", reference.file);
+        form.append("image_categories", reference.category);
+      }
       requestInit = { method: "POST", signal: controller.signal, body: form };
     } else {
       requestInit = {
@@ -1282,6 +1657,7 @@ async function generateImage() {
           aspect_ratio: generationSize,
           resolution: generationResolution,
           project_id: generationProjectId,
+          ...(generationConversationId !== null ? { conversation_id: generationConversationId } : {}),
         }),
       };
     }
@@ -1294,6 +1670,7 @@ async function generateImage() {
     const taskId = Number(data.task_id);
     if (Number.isInteger(taskId) && taskId > 0) {
       if (!adoptGenerationTaskId(runId, taskId)) return;
+      currentConversationId.value = taskId;
       await refreshConversationLists();
       void pollGenerationTask(taskId);
       return;
@@ -1357,11 +1734,19 @@ function handleGenerateClick() {
 }
 
 async function analyzeImage() {
-  if (!imageFile.value) return;
+  if (!referencePreviews.value.length) return;
   busy.value = "analyze";
   error.value = "";
   generated.value = [];
   activeHistoryId.value = null;
+  let referenceFiles: File[];
+  try {
+    referenceFiles = await referenceFilesForRequest();
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "无法读取参考图片";
+    busy.value = "";
+    return;
+  }
   const form = new FormData();
   form.append("provider", provider.value);
   form.append("model", model.value);
@@ -1371,7 +1756,7 @@ async function analyzeImage() {
   }
   form.append("detail", selectedProviderType.value === "gpt" ? quality.value : "auto");
   if (selectedProjectId.value !== null) form.append("project_id", String(selectedProjectId.value));
-  form.append("image", imageFile.value);
+  for (const referenceFile of referenceFiles) form.append("images", referenceFile);
   try {
     const response = await fetch(`${API_BASE}/api/analyze`, {
       method: "POST",
@@ -1379,7 +1764,7 @@ async function analyzeImage() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(readableError(data, "分析失败"));
-    analysis.value = data.text ?? "";
+    prompt.value = promptWithAnalysis(prompt.value, data.text);
     await loadProjects();
   } catch (exception) {
     error.value = exception instanceof Error ? exception.message : "分析失败";
@@ -1401,15 +1786,27 @@ function openLightbox(item: ImageResult) {
   if (source) lightboxUrl.value = source;
 }
 
+function openReferenceLightbox(reference: ReferencePreview) {
+  if (reference.url) lightboxUrl.value = reference.url;
+}
+
 function closeLightbox() {
   lightboxUrl.value = "";
+}
+
+function toggleProjectDrawer() {
+  projectDrawerOpen.value = !projectDrawerOpen.value;
+}
+
+function closeProjectDrawer() {
+  projectDrawerOpen.value = false;
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   if (openParameterMenu.value) closeParameterMenu();
   else if (lightboxUrl.value) closeLightbox();
-  else if (lightboxUrl.value) closeLightbox();
+  else if (projectDrawerOpen.value) closeProjectDrawer();
 }
 
 function handleDocumentPointerDown(event: PointerEvent) {
@@ -1434,6 +1831,7 @@ onMounted(async () => {
 });
 function handlePopState() {
   currentView.value = window.location.pathname === "/settings" ? "settings" : "workspace";
+  projectDrawerOpen.value = false;
   if (currentView.value === "workspace" && activeGenerationRunId.value !== null) {
     restoreGenerationRun(activeGenerationRunId.value);
   }
@@ -1451,12 +1849,14 @@ onUnmounted(() => {
   historyDetailCache.clear();
   for (const image of historyImagePreloads.values()) image.src = "";
   historyImagePreloads.clear();
-  if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
+  clearReferencePreviews();
 });
 </script>
 
 <template>
-  <main class="studio-shell">
+  <main class="studio-shell" :class="`background-${backgroundEffect}`">
+    <FlowingGridBackground v-if="backgroundEffect === 'gravity-grid'" />
+    <SnowfallBackground v-else />
     <section v-if="authView !== 'workspace'" class="auth-page">
       <div v-if="authView === 'checking'" class="auth-loading" aria-live="polite">正在检查登录状态…</div>
       <div v-else class="auth-layout">
@@ -1496,21 +1896,34 @@ onUnmounted(() => {
     </section>
     <template v-else>
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark">G</span>
-        <div><strong>GenImage</strong><small>图像工作台</small></div>
+      <div class="topbar-leading">
+        <button
+          v-if="currentView === 'workspace'"
+          type="button"
+          class="icon-action project-drawer-trigger mobile-sidebar-trigger"
+          aria-controls="project-sidebar"
+          :aria-expanded="projectDrawerOpen"
+          :aria-label="projectDrawerOpen ? '收起项目抽屉' : '打开项目抽屉'"
+          :title="projectDrawerOpen ? '收起项目抽屉' : '打开项目抽屉'"
+          @click="toggleProjectDrawer"
+        ><PanelLeftClose v-if="projectDrawerOpen" :size="18" /><PanelLeft v-else :size="18" /></button>
+        <div class="brand">
+          <span class="brand-mark">G</span>
+          <div><strong>GenImage</strong><small>图像工作台</small></div>
+        </div>
       </div>
       <div class="topbar-actions">
         <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
           <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
-        <span>{{ currentUsername }}</span>
-        <button v-if="currentView === 'workspace'" type="button" class="secondary-action" data-action="settings" @click="navigateToSettings">设置</button>
-        <button v-else type="button" class="secondary-action" data-action="back-to-workspace" @click="navigateToWorkspace">返回工作台</button>
+        <span class="user-chip"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
+        <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="settings" title="设置" @click="navigateToSettings"><Settings :size="16" />设置</button>
+        <button v-else type="button" class="secondary-action topbar-command" data-action="back-to-workspace" title="返回工作台" @click="navigateToWorkspace"><ArrowLeft :size="16" />返回工作台</button>
       </div>
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
+      <header class="settings-page-heading"><span>GenImage</span><h1>设置</h1></header>
       <section class="settings-section settings-interface">
         <div class="settings-heading"><h1>接口配置</h1><div class="settings-heading-actions"><button type="button" class="secondary-action" data-action="add-api-key" @click="beginAddConfig">添加 API Key</button><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div></div>
         <p>{{ apiKeyConfigured ? '已有可用配置' : '尚未配置 API Key' }}</p>
@@ -1553,18 +1966,65 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="settings-section community-section settings-community">
-        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
-        <img class="community-qr" :src="groupQrUrl" alt="GenImage 交流群二维码" />
-      </section>
+      <div class="settings-preferences">
+        <section class="settings-section settings-update" aria-labelledby="version-update-title">
+          <div class="version-update-copy">
+            <div class="version-update-heading"><RefreshCw :size="18" /><h2 id="version-update-title">版本更新</h2></div>
+            <div class="version-meta">
+              <span><small>当前版本</small><strong>{{ CLIENT_VERSION }}</strong></span>
+              <span v-if="serverVersion"><small>服务器版本</small><strong>{{ serverVersion }}</strong></span>
+            </div>
+            <p v-if="versionStatusMessage" class="version-status" :class="updateStatus" role="status">{{ versionStatusMessage }}</p>
+          </div>
+          <button
+            type="button"
+            class="version-update-action"
+            :class="updateStatus === 'available' ? 'primary-action' : 'secondary-action'"
+            data-action="version-update"
+            :disabled="updateStatus === 'checking'"
+            :aria-label="updateStatus === 'current' ? '再次检查版本' : versionActionLabel"
+            @click="handleVersionAction"
+          >
+            <LoaderCircle v-if="updateStatus === 'checking'" class="spin" :size="16" />
+            <Check v-else-if="updateStatus === 'current'" :size="16" />
+            <RefreshCw v-else :size="16" />
+            {{ versionActionLabel }}
+          </button>
+        </section>
 
-      <section class="settings-section feedback-section settings-feedback">
-        <div><h2>留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
-        <form class="feedback-form" @submit.prevent="submitFeedback">
-          <label>联系方式<span class="optional-mark">选填</span><input v-model="feedbackContact" data-field="feedback-contact" maxlength="200" placeholder="微信、邮箱或其他联系方式" /></label>
-          <label>留言<span class="required-mark">*必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
-          <div class="feedback-actions"><button type="submit" class="primary-action" :disabled="feedbackSubmitting || !feedbackMessage.trim()">{{ feedbackSubmitting ? '提交中...' : '提交留言' }}</button><p v-if="feedbackStatus" class="feedback-status" role="status">{{ feedbackStatus }}</p></div>
-        </form>
+        <section class="settings-section settings-background" aria-labelledby="background-effect-title">
+          <h2 id="background-effect-title">界面主题</h2>
+          <div class="background-effect-options" role="group" aria-label="界面主题">
+            <button
+              type="button"
+              class="background-effect-option"
+              :class="{ active: backgroundEffect === 'gravity-grid' }"
+              data-background-effect="gravity-grid"
+              :aria-pressed="backgroundEffect === 'gravity-grid'"
+              @click="selectBackgroundEffect('gravity-grid')"
+            ><Grid3X3 :size="19" /><strong>暗黑引力</strong><Check v-if="backgroundEffect === 'gravity-grid'" :size="17" /></button>
+            <button
+              type="button"
+              class="background-effect-option"
+              :class="{ active: backgroundEffect === 'snowfall' }"
+              data-background-effect="snowfall"
+              :aria-pressed="backgroundEffect === 'snowfall'"
+              @click="selectBackgroundEffect('snowfall')"
+            ><Snowflake :size="19" /><strong>雾白飘雪</strong><Check v-if="backgroundEffect === 'snowfall'" :size="17" /></button>
+          </div>
+        </section>
+      </div>
+
+      <section class="settings-section community-section feedback-section settings-community settings-community-feedback">
+        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
+        <div class="community-feedback-panel">
+          <div class="feedback-heading"><h2>留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
+          <form class="feedback-form" @submit.prevent="submitFeedback">
+            <label>联系方式<span class="optional-mark">选填</span><input v-model="feedbackContact" data-field="feedback-contact" maxlength="200" placeholder="微信、邮箱或其他联系方式" /></label>
+            <label>留言<span class="required-mark">*必填</span><textarea v-model="feedbackMessage" data-field="feedback-message" rows="4" maxlength="2000" placeholder="请输入你的留言" required></textarea></label>
+            <div class="feedback-actions"><button type="submit" class="primary-action" :disabled="feedbackSubmitting || !feedbackMessage.trim()">{{ feedbackSubmitting ? '提交中...' : '提交留言' }}</button><p v-if="feedbackStatus" class="feedback-status" role="status">{{ feedbackStatus }}</p></div>
+          </form>
+        </div>
       </section>
 
       <section class="settings-section security-section settings-security">
@@ -1584,8 +2044,10 @@ onUnmounted(() => {
       />
     </section>
     <template v-else>
-    <div class="studio-grid">
+    <div class="studio-grid" :class="{ 'sidebar-open': projectDrawerOpen }">
+      <button v-if="projectDrawerOpen" type="button" class="project-sidebar-backdrop" aria-label="关闭项目抽屉" @click="closeProjectDrawer"></button>
       <ProjectSidebar
+        id="project-sidebar"
         :projects="projects"
         :selected-project-id="selectedProjectId"
         :running-generations="runningGenerations"
@@ -1600,17 +2062,17 @@ onUnmounted(() => {
         @open-history="openHistory"
         @open-generation="restoreGenerationRun"
         @prefetch-history="prefetchHistory"
+        @close="closeProjectDrawer"
       />
       <section class="workspace-panel">
         <div class="result-panel">
           <div class="result-heading">
-            <div><span>作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
+            <div><span class="result-kicker"><Sparkles :size="13" />作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
             <span v-if="busy === 'analyze'" class="working">处理中</span>
           </div>
 
-          <div v-if="analysis" class="analysis-note"><div class="note-label">图片分析</div><p>{{ analysis }}</p></div>
-          <div v-if="generated.length" class="image-grid">
-            <article v-for="(item, index) in generated" :key="index" class="image-card">
+          <div v-if="generated.length || activeGenerationElapsedMs !== null" class="image-grid">
+            <article v-for="(item, index) in generated" :key="item.history_image_id ?? imageSource(item) ?? index" class="image-card">
               <div class="image-frame">
                 <button v-if="imageSource(item)" type="button" class="image-preview-trigger" :aria-label="`全屏查看生成图片 ${index + 1}`" @click="openLightbox(item)">
                   <img :src="imageSource(item)" :alt="`生成图片 ${index + 1}`" />
@@ -1621,13 +2083,58 @@ onUnmounted(() => {
                 <span>图片 {{ index + 1 }}</span>
                 <div class="image-meta-actions">
                   <strong>{{ formatDuration(item.generation_time_ms) }}</strong>
+                  <button
+                    v-if="item.history_id != null && item.history_image_id != null"
+                    type="button"
+                    class="image-card-action edit-image-action"
+                    :disabled="modifyingImageIds.includes(item.history_image_id)"
+                    aria-label="修改图片"
+                    title="修改图片"
+                    @click="modifyGeneratedImage(item)"
+                  >
+                    <LoaderCircle v-if="modifyingImageIds.includes(item.history_image_id)" class="spin" :size="15" />
+                    <Pencil v-else :size="15" />
+                  </button>
+                  <button
+                    v-if="item.history_id != null && item.history_image_id != null"
+                    type="button"
+                    class="image-card-action delete-image-action danger-action"
+                    :disabled="deletingImageIds.includes(item.history_image_id)"
+                    aria-label="删除图片"
+                    title="删除图片"
+                    @click="deleteGeneratedImage(item)"
+                  >
+                    <LoaderCircle v-if="deletingImageIds.includes(item.history_image_id)" class="spin" :size="15" />
+                    <Trash2 v-else :size="15" />
+                  </button>
                   <a v-if="imageSource(item)" class="download" :href="imageSource(item)" download="genimage-result.png" aria-label="下载图片" title="下载图片"><Download :size="16" /></a>
                 </div>
               </div>
             </article>
+            <article
+              v-for="slot in activeGenerationElapsedMs !== null ? activeGenerationImageCount : 0"
+              :key="`generation-progress-${slot}`"
+              class="image-card generation-progress-card"
+              :aria-label="`正在生成第 ${slot} 张，共 ${activeGenerationImageCount} 张`"
+              :aria-live="slot === 1 ? 'polite' : 'off'"
+            >
+              <div class="generation-progress-frame">
+                <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent}%` }">
+                  <Sparkles class="empty-shape-icon" :size="24" />
+                  <span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
+                </div>
+              </div>
+              <div class="image-meta generation-progress-meta">
+                <span>正在生成</span>
+                <strong>{{ formatDuration(activeGenerationElapsedMs) }}</strong>
+              </div>
+            </article>
           </div>
-          <div v-else-if="!analysis" class="empty-wall">
-            <div class="empty-shape"><Sparkles :size="24" /></div>
+          <div v-else class="empty-wall">
+            <div class="empty-shape" :class="{ 'is-generating': activeGenerationElapsedMs !== null }" :style="{ '--generation-fill': `${generationFillPercent}%` }">
+              <Sparkles class="empty-shape-icon" :size="24" />
+              <span v-if="activeGenerationElapsedMs !== null" class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
+            </div>
             <p v-if="error" class="error-message generation-error">{{ error }}</p>
             <template v-else>
               <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
@@ -1637,27 +2144,46 @@ onUnmounted(() => {
         </div>
 
         <section class="composer-dock">
-          <div class="reference-row">
-            <div class="upload-zone" @dragover.prevent @drop.prevent="setFile(($event as DragEvent).dataTransfer?.files[0])">
-              <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="setFile(($event.target as HTMLInputElement).files?.[0])" />
-              <label for="image-input"><Upload :size="18" /><span>{{ imageFile ? imageFile.name : "添加参考图片" }}</span><small>PNG、JPG、WEBP、GIF</small></label>
-            </div>
-            <div v-if="previewUrl" class="file-chip"><img :src="previewUrl" alt="参考图片预览" /><span>{{ imageFile?.name ?? "历史参考图片" }}</span><button type="button" aria-label="移除参考图片" @click="clearFile"><X :size="15" /></button></div>
-          </div>
-
           <div class="composer-main">
-            <div class="prompt-row">
-            <label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label>
-              <div class="parameter-toolbar">
+            <div class="parameter-toolbar" aria-label="模型参数">
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="apiKey" :aria-expanded="openParameterMenu === 'apiKey'" @click="toggleParameterMenu('apiKey')">API Key <strong>{{ selectedApiKeyLabel }}</strong></button><div v-if="openParameterMenu === 'apiKey'" class="parameter-menu" data-parameter-menu="apiKey"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectApiKeyConfig(option)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in modelOptions" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === model }" :data-parameter-option="option.id" @click="selectModel(option.id)"><span>{{ option.id }}</span><Check v-if="option.id === model" :size="15" /></button><span v-if="loadingConfigModels" class="parameter-option-description">获取模型列表中...</span></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片比例 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong></span><Check v-if="option.value === size" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="resolution" :aria-expanded="openParameterMenu === 'resolution'" @click="toggleParameterMenu('resolution')">分辨率 <strong>{{ resolution }}</strong></button><div v-if="openParameterMenu === 'resolution'" class="parameter-menu" data-parameter-menu="resolution"><button v-for="option in RESOLUTION_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === resolution }" :data-parameter-option="option" @click="selectResolution(option)"><span>{{ option }}</span><Check v-if="option === resolution" :size="15" /></button></div></div>
                 <div v-if="selectedProviderType === 'gpt'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="quality" :aria-expanded="openParameterMenu === 'quality'" @click="toggleParameterMenu('quality')">生成质量 <strong>{{ QUALITY_OPTIONS.find((option) => option.value === quality)?.label }}</strong></button><div v-if="openParameterMenu === 'quality'" class="parameter-menu" data-parameter-menu="quality"><button v-for="option in QUALITY_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === quality }" :data-parameter-option="option.value" @click="selectQuality(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === quality" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
-              </div>
             </div>
-            <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': activeGenerationRun }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="activeGenerationRun" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ activeGenerationRun ? "取消生成" : "生成图片" }}</button></div>
+            <div class="prompt-column">
+              <div class="prompt-row"><label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label></div>
+              <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': activeGenerationRun }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="activeGenerationRun" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ activeGenerationRun ? "取消生成" : "生成图片" }}</button></div>
+            </div>
+            <div class="reference-row" :class="{ 'has-references': referencePreviews.length }" aria-label="参考图片分类">
+              <section v-for="category in REFERENCE_CATEGORIES" :key="category.id" class="reference-module">
+                <div
+                  class="upload-zone"
+                  :class="{ 'is-dragging': referenceDragActiveCategory === category.id, 'has-previews': referencesForCategory(category.id).length }"
+                  @dragenter.prevent="handleReferenceDragEnter(category.id)"
+                  @dragleave.prevent="handleReferenceDragLeave(category.id)"
+                  @dragover.prevent="handleReferenceDragOver"
+                  @drop.prevent="handleReferenceDrop(category.id, $event)"
+                >
+                  <input :id="category.id === 'person' ? 'image-input' : 'image-input-' + category.id" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple :disabled="referencePreviews.length >= MAX_REFERENCE_IMAGES" @change="handleReferenceInput(category.id, $event)" />
+                  <label :for="category.id === 'person' ? 'image-input' : 'image-input-' + category.id" :aria-label="`${referencesForCategory(category.id).length ? '继续添加' : '添加'}${category.label}参考图`">
+                    <span class="upload-zone-icon"><Upload :size="20" /></span>
+                    <span class="upload-zone-copy"><strong>{{ referencesForCategory(category.id).length ? `继续添加${category.label}参考图` : `添加${category.label}参考图` }}</strong><small>{{ referencePreviews.length >= MAX_REFERENCE_IMAGES ? "已达到总数量上限" : "点击选择或拖动图片到这里" }}</small></span>
+                  </label>
+                  <div v-if="referencesForCategory(category.id).length" class="reference-preview-list" role="list" :aria-label="`${category.label}参考图片`">
+                    <article v-for="reference in referencesForCategory(category.id)" :key="reference.key" class="reference-thumbnail" role="listitem">
+                      <button type="button" class="reference-preview-trigger" :aria-label="`放大查看${category.label}参考图片`" @click="openReferenceLightbox(reference)">
+                        <img :src="reference.url" :alt="`${category.label}参考图片`" />
+                      </button>
+                      <span :title="reference.name">{{ reference.name }}</span>
+                      <button type="button" class="reference-remove" :aria-label="`移除参考图片 ${referenceOrdinal(reference.key)}`" title="移除参考图片" @click="removeReference(reference.key)"><X :size="14" /></button>
+                    </article>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
       </section>
@@ -1682,9 +2208,9 @@ onUnmounted(() => {
       </div>
     -->
 
-    <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" aria-label="生成图片全屏预览" @click.self="closeLightbox">
+    <div v-if="lightboxUrl" class="image-lightbox" role="dialog" aria-modal="true" aria-label="图片全屏预览" @click.self="closeLightbox">
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>
-      <img :src="lightboxUrl" alt="生成图片全屏预览" />
+      <img :src="lightboxUrl" alt="图片全屏预览" />
     </div>
     <ProjectDialog
       :open="projectDialogMode !== null"

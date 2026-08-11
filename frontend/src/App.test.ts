@@ -13,6 +13,7 @@ const jsonResponse = (body: unknown) =>
 
 describe("GenImage workspace", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -61,6 +62,7 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".settings-page .model-select").exists()).toBe(false);
     expect(wrapper.find(".theme-option").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("暂不支持");
+    expect(wrapper.get("canvas.flowing-grid-background").attributes("aria-hidden")).toBe("true");
   });
 
   it("labels the community number as a QQ group number", async () => {
@@ -69,9 +71,105 @@ describe("GenImage workspace", () => {
 
     await wrapper.get("[data-action='settings']").trigger("click");
 
-    const communityLabels = wrapper.get(".settings-community").findAll("dt").map((label) => label.text());
+    const community = wrapper.get(".settings-community");
+    const communityLabels = community.findAll("dt").map((label) => label.text());
     expect(communityLabels).toContain("QQ群号");
     expect(communityLabels).not.toContain("群号");
+    expect(community.find(".community-qr").exists()).toBe(false);
+    expect(community.find(".community-feedback-panel").exists()).toBe(true);
+    expect(wrapper.get(".settings-preferences").findAll("h2").map((heading) => heading.text())).toEqual([
+      "版本更新",
+      "界面主题",
+    ]);
+  });
+
+  it("switches and remembers the selected background effect", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.find("canvas.flowing-grid-background").exists()).toBe(true);
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+    const options = wrapper.findAll("[data-background-effect]");
+    expect(options).toHaveLength(2);
+    expect(wrapper.get("#background-effect-title").text()).toBe("界面主题");
+    await wrapper.get("[data-background-effect='snowfall']").trigger("click");
+
+    expect(wrapper.get("main").classes()).toContain("background-snowfall");
+    expect(wrapper.get("[data-field='feedback-contact']").element.closest(".background-snowfall")).toBe(wrapper.get("main").element);
+    expect(wrapper.find("canvas.snowfall-background").exists()).toBe(true);
+    expect(wrapper.find("canvas.flowing-grid-background").exists()).toBe(false);
+    expect(window.localStorage.getItem("genimage-background-effect")).toBe("snowfall");
+    expect(wrapper.get("[data-background-effect='snowfall']").attributes("aria-pressed")).toBe("true");
+  });
+
+  it("checks the deployed version from settings", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/version?")) return jsonResponse({ version: "dev" });
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.get("[data-action='version-update']").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("[data-action='version-update']").text()).toContain("已是最新版本");
+    expect(wrapper.get(".version-status").text()).toBe("当前版本已是最新版本");
+    const request = fetchMock.mock.calls.find(([input]) => String(input).includes("/api/version?"));
+    expect(request?.[1]?.cache).toBe("no-store");
+  });
+
+  it("offers a cache-busting reload when a new version is available", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/version?")) return jsonResponse({ version: "release-next" });
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.get("[data-action='version-update']").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("[data-action='version-update']").text()).toContain("立即更新");
+    expect(wrapper.get(".version-meta").text()).toContain("release-next");
+    await wrapper.get("[data-action='version-update']").trigger("click");
+    expect(window.location.search).toBe("?_app_version=release-next");
+  });
+
+  it("shows a retry action when checking the version fails", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/version?")) return Promise.reject(new Error("offline"));
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.get("[data-action='version-update']").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("[data-action='version-update']").text()).toContain("重新检查");
+    expect(wrapper.get(".version-status").classes()).toContain("error");
   });
 
   it("saves an API key from settings when editing finishes and returns to login after changing password", async () => {
@@ -210,6 +308,106 @@ describe("GenImage workspace", () => {
     expect(actions[1].classes()).toContain("primary-action");
   });
 
+  it.each([
+    ["空提示词", "", "请描述这张图片", "分析结果"],
+    ["已有提示词", "原提示词", "原提示词", "原提示词\n\n分析结果"],
+  ])(
+    "writes image analysis into the prompt for %s",
+    async (_caseName, initialPrompt, submittedPrompt, expectedPrompt) => {
+      const fetchMock = vi.mocked(fetch);
+      let analyzeRequest: RequestInit | undefined;
+      fetchMock.mockImplementation((input, init) => {
+        const url = String(input);
+        if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+        if (url.endsWith("/api/providers")) {
+          return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+        }
+        if (url.endsWith("/api/settings")) {
+          return jsonResponse({ provider_name: "北海AI", model: "gpt-image-1.5", api_key_configured: false });
+        }
+        if (url.endsWith("/api/projects")) return jsonResponse([]);
+        if (url.endsWith("/api/analyze")) {
+          analyzeRequest = init;
+          return jsonResponse({ text: "分析结果" });
+        }
+        throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+      });
+
+      const wrapper = mount(App);
+      await flushPromises();
+      const reference = new File(["reference"], "reference.jpg", { type: "image/jpeg" });
+      const fileInput = wrapper.get<HTMLInputElement>("#image-input");
+      Object.defineProperty(fileInput.element, "files", { value: [reference], configurable: true });
+      await fileInput.trigger("change");
+      await wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").setValue(initialPrompt);
+      await wrapper.get(".analyze-action").trigger("click");
+      await flushPromises();
+
+      expect((analyzeRequest?.body as FormData).get("prompt")).toBe(submittedPrompt);
+      expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe(expectedPrompt);
+      expect(wrapper.find(".analysis-note").exists()).toBe(false);
+    },
+  );
+
+  it("restores the original prompt and analysis result into the prompt field", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) {
+        return jsonResponse({ provider_name: "北海AI", model: "gpt-image-1.5", api_key_configured: false });
+      }
+      if (url.endsWith("/api/projects")) {
+        return jsonResponse([{
+          id: 1,
+          name: "测试项目",
+          history_count: 1,
+          history: [{
+            id: 12,
+            kind: "analyze",
+            prompt: "原提示词",
+            provider: "compatible",
+            model: "gpt-image-1.5",
+            status: "completed",
+            image_count: 0,
+            created_at: "2026-08-11T10:00:00",
+          }],
+        }]);
+      }
+      if (url.endsWith("/api/history/12")) {
+        return jsonResponse({
+          id: 12,
+          kind: "analyze",
+          status: "completed",
+          prompt: "原提示词",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "high",
+          image_count: 0,
+          analysis_text: "分析结果",
+          elapsed_ms: 300,
+          error_code: null,
+          error_message: null,
+          created_at: "2026-08-11T10:00:00",
+          completed_at: "2026-08-11T10:00:01",
+          images: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("原提示词\n\n分析结果");
+    expect(wrapper.find(".analysis-note").exists()).toBe(false);
+  });
+
   it("automatically saves an API key in settings when editing finishes", async () => {
     const wrapper = mount(App);
     await flushPromises();
@@ -296,7 +494,7 @@ describe("GenImage workspace", () => {
     });
   });
 
-  it("uploads a reference image together with the prompt when generating", async () => {
+  it("uploads multiple reference images together with the prompt when generating", async () => {
     const fetchMock = vi.mocked(fetch);
     let referenceRequest: RequestInit | undefined;
     fetchMock.mockImplementation((input, init) => {
@@ -326,9 +524,12 @@ describe("GenImage workspace", () => {
     const wrapper = mount(App);
     await flushPromises();
     const reference = new File(["reference-bytes"], "room.jpg", { type: "image/jpeg" });
+    const material = new File(["material-bytes"], "material.png", { type: "image/png" });
     const fileInput = wrapper.get<HTMLInputElement>("#image-input");
-    Object.defineProperty(fileInput.element, "files", { value: [reference], configurable: true });
+    expect(fileInput.attributes("multiple")).toBeDefined();
+    Object.defineProperty(fileInput.element, "files", { value: [reference, material], configurable: true });
     await fileInput.trigger("change");
+    expect(wrapper.findAll(".reference-thumbnail")).toHaveLength(2);
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
     await wrapper.get("[data-parameter-option='16:9']").trigger("click");
     await wrapper.get("[data-parameter-trigger='resolution']").trigger("click");
@@ -345,7 +546,62 @@ describe("GenImage workspace", () => {
     expect(form.get("prompt")).toBe("保留参考图构图并调整自然光");
     expect(form.get("aspect_ratio")).toBe("16:9");
     expect(form.get("resolution")).toBe("4K");
-    expect((form.get("image") as File).name).toBe("room.jpg");
+    expect(form.getAll("images").map((item) => (item as File).name)).toEqual(["room.jpg", "material.png"]);
+    expect(form.getAll("image_categories")).toEqual(["person", "person"]);
+  });
+
+  it("accepts dragged reference images and removes them individually", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    const room = new File(["room"], "room.jpg", { type: "image/jpeg" });
+    const material = new File(["material"], "material.webp", { type: "image/webp" });
+    const uploadZone = wrapper.get(".upload-zone");
+
+    await uploadZone.trigger("dragenter");
+    expect(uploadZone.classes()).toContain("is-dragging");
+    await uploadZone.trigger("drop", { dataTransfer: { files: [room, material] } });
+
+    expect(uploadZone.classes()).not.toContain("is-dragging");
+    expect(wrapper.findAll(".reference-thumbnail")).toHaveLength(2);
+    await wrapper.get("[aria-label='移除参考图片 1']").trigger("click");
+    expect(wrapper.findAll(".reference-thumbnail")).toHaveLength(1);
+    expect(wrapper.text()).toContain("material.webp");
+  });
+
+  it("keeps person, environment, and object reference modules independent", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const modules = wrapper.findAll(".reference-module");
+    expect(modules).toHaveLength(3);
+    expect(modules.map((module) => module.get(".upload-zone-copy strong").text())).toEqual([
+      "添加人物参考图",
+      "添加环境参考图",
+      "添加物品参考图",
+    ]);
+
+    const environment = new File(["environment"], "studio.jpg", { type: "image/jpeg" });
+    const object = new File(["object"], "chair.png", { type: "image/png" });
+    const environmentInput = wrapper.get<HTMLInputElement>("#image-input-environment");
+    const objectInput = wrapper.get<HTMLInputElement>("#image-input-object");
+    Object.defineProperty(environmentInput.element, "files", { value: [environment], configurable: true });
+    Object.defineProperty(objectInput.element, "files", { value: [object], configurable: true });
+    await environmentInput.trigger("change");
+    await objectInput.trigger("change");
+
+    expect(modules[0].findAll(".reference-thumbnail")).toHaveLength(0);
+    expect(modules[1].findAll(".reference-thumbnail")).toHaveLength(1);
+    expect(modules[2].findAll(".reference-thumbnail")).toHaveLength(1);
+    expect(modules[1].get(".reference-thumbnail").element.closest(".upload-zone")).not.toBeNull();
+    expect(modules[2].get(".reference-thumbnail").element.closest(".upload-zone")).not.toBeNull();
+    const previewSource = modules[1].get(".reference-thumbnail img").attributes("src");
+    await modules[1].get(".reference-preview-trigger").trigger("click");
+    expect(wrapper.get(".image-lightbox img").attributes("src")).toBe(previewSource);
+    await wrapper.get(".lightbox-close").trigger("click");
+    expect(wrapper.find(".image-lightbox").exists()).toBe(false);
+    await modules[1].get(".reference-remove").trigger("click");
+    expect(modules[1].findAll(".reference-thumbnail")).toHaveLength(0);
+    expect(modules[2].findAll(".reference-thumbnail")).toHaveLength(1);
   });
 
   it("uses a standard square size by default", async () => {
@@ -929,6 +1185,35 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".history-trigger").exists()).toBe(false);
   });
 
+  it("toggles the project drawer and closes it from the backdrop or Escape", async () => {
+    const wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+
+    const trigger = wrapper.get(".mobile-sidebar-trigger");
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+
+    await trigger.trigger("click");
+    expect(wrapper.get(".studio-grid").classes()).toContain("sidebar-open");
+    expect(wrapper.get(".project-sidebar-backdrop").exists()).toBe(true);
+    expect(trigger.attributes("aria-expanded")).toBe("true");
+
+    await trigger.trigger("click");
+    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+
+    await trigger.trigger("click");
+    await wrapper.get(".project-sidebar-backdrop").trigger("click");
+    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
+    expect(wrapper.get(".studio-grid").classes()).not.toContain("sidebar-open");
+
+    await trigger.trigger("click");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+    wrapper.unmount();
+  });
+
   it.skip("opens and closes history in a right-side drawer", async () => {
     const wrapper = mount(App);
     await flushPromises();
@@ -1244,7 +1529,7 @@ describe("GenImage workspace", () => {
     wrapper.unmount();
   });
 
-  it("shows the live generation timer in the center of the empty canvas", async () => {
+  it("shows a live generation card and timer for every requested image", async () => {
     let finishGeneration: ((response: Response) => void) | undefined;
     const pendingGeneration = new Promise<Response>((resolve) => {
       finishGeneration = resolve;
@@ -1270,12 +1555,12 @@ describe("GenImage workspace", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find(".result-heading .working").exists()).toBe(false);
-    expect(wrapper.get(".empty-wall h3").text()).toMatch(
-      /^等待生成结果 \d+\.\d{2} 秒$/,
-    );
-    expect(wrapper.get(".empty-wall p").text()).toBe(
-      "配置参数并在下方输入提示词。",
-    );
+    expect(wrapper.find(".empty-wall").exists()).toBe(false);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(1);
+    expect(wrapper.get(".generation-progress-card .empty-shape").classes()).toContain("is-generating");
+    expect(wrapper.get(".generation-progress-card .generation-water").attributes("style")).toBeUndefined();
+    expect(wrapper.get(".generation-progress-card .empty-shape").attributes("style")).toContain("--generation-fill");
+    expect(wrapper.get(".generation-progress-meta").text()).toMatch(/正在生成\d+\.\d{2} 秒/);
 
     finishGeneration?.(
       new Response(
@@ -1284,6 +1569,84 @@ describe("GenImage workspace", () => {
       ),
     );
     await flushPromises();
+    expect(wrapper.find(".generation-water").exists()).toBe(false);
+  });
+
+  it("keeps the water animation and timer visible while continuing a conversation", async () => {
+    let finishGeneration: ((response: Response) => void) | undefined;
+    const pendingGeneration = new Promise<Response>((resolve) => {
+      finishGeneration = resolve;
+    });
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "项目",
+        history: [{
+          id: 7,
+          kind: "generate",
+          status: "completed",
+          prompt: "已有图片",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          created_at: "2026-08-11T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/history/7")) return jsonResponse({
+        id: 7,
+        kind: "generate",
+        status: "completed",
+        prompt: "已有图片",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 1,
+        elapsed_ms: 900,
+        created_at: "2026-08-11T10:00:00",
+        images: [{
+          id: 9,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          url: "/api/history/7/images/9",
+        }],
+      });
+      if (url.endsWith("/api/generate")) return pendingGeneration;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("继续生成");
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    await wrapper.get("[data-parameter-option='4']").trigger("click");
+    await wrapper.get(".primary-action").trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll(".image-grid .image-card")).toHaveLength(5);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(4);
+    expect(wrapper.findAll(".generation-progress-card .empty-shape").every((node) => node.classes().includes("is-generating"))).toBe(true);
+    expect(wrapper.findAll(".generation-progress-card .generation-water")).toHaveLength(4);
+    expect(wrapper.findAll(".generation-progress-meta").every((node) => /正在生成\d+\.\d{2} 秒/.test(node.text()))).toBe(true);
+
+    finishGeneration?.(new Response(JSON.stringify({ images: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await flushPromises();
+    expect(wrapper.find(".generation-progress-card").exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it("keeps a background generation available while navigating elsewhere", async () => {
@@ -1364,7 +1727,7 @@ describe("GenImage workspace", () => {
 
     expect(wrapper.get("[data-project-id='1']").classes()).toContain("active");
     expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("保持当前生成页面");
-    expect(wrapper.get(".empty-wall h3").text()).toMatch(/^等待生成结果 \d+\.\d{2} 秒$/);
+    expect(wrapper.get(".generation-progress-meta").text()).toMatch(/正在生成\d+\.\d{2} 秒/);
     expect(wrapper.get(".primary-action").text()).toContain("取消生成");
 
     await wrapper.get("[data-action='settings']").trigger("click");
@@ -1456,6 +1819,219 @@ describe("GenImage workspace", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/history/44"))).toBe(true);
     expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/9");
     expect(wrapper.get(".image-meta strong").text()).toBe("2.30 秒");
+    wrapper.unmount();
+  });
+
+  it("continues the current conversation until a new conversation is selected", async () => {
+    const generationBodies: Array<Record<string, unknown>> = [];
+    const taskRounds = new Map<number, number>();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        generationBodies.push(body);
+        const taskId = body.conversation_id === 44 || generationBodies.length < 3 ? 44 : 45;
+        taskRounds.set(taskId, (taskRounds.get(taskId) ?? 0) + 1);
+        return Promise.resolve(new Response(JSON.stringify({
+          task_id: taskId,
+          status: "pending",
+          status_url: `/api/history/${taskId}`,
+        }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.endsWith("/api/projects")) {
+        const histories = [...taskRounds.keys()].reverse().map((id) => ({
+          id,
+          kind: "generate",
+          status: "completed",
+          prompt: id === 44 ? "继续调整" : "全新对话",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          size: "1:1",
+          resolution: "1K",
+          created_at: "2026-08-11T10:00:00",
+        }));
+        return jsonResponse([{ id: 1, name: "项目", history: histories, history_count: histories.length }]);
+      }
+      const historyMatch = url.match(/\/api\/history\/(44|45)$/);
+      if (historyMatch) {
+        const taskId = Number(historyMatch[1]);
+        const rounds = taskRounds.get(taskId) ?? 1;
+        return jsonResponse({
+          id: taskId,
+          kind: "generate",
+          status: "completed",
+          prompt: taskId === 44 ? "继续调整" : "全新对话",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          size: "1:1",
+          resolution: "1K",
+          elapsed_ms: 1200,
+          created_at: "2026-08-11T10:00:00",
+          completed_at: "2026-08-11T10:00:01",
+          images: Array.from({ length: rounds }, (_, index) => ({
+            id: taskId * 10 + index,
+            role: "generated",
+            mime_type: "image/png",
+            position: index,
+            url: `/api/history/${taskId}/images/${taskId * 10 + index}`,
+          })),
+        });
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("第一轮");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    await wrapper.get(".prompt-row textarea").setValue("继续调整");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(generationBodies[0]).not.toHaveProperty("conversation_id");
+    expect(generationBodies[1]).toMatchObject({ conversation_id: 44, prompt: "继续调整" });
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+    expect(wrapper.findAll(".history-select")).toHaveLength(1);
+
+    await wrapper.get(".project-new-conversation").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("全新对话");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(generationBodies[2]).not.toHaveProperty("conversation_id");
+    expect(generationBodies[2]).toMatchObject({ prompt: "全新对话" });
+    wrapper.unmount();
+  });
+
+  it("deletes one stored result and restores the selected image generation snapshot", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) {
+        return jsonResponse({ username: "alice", api_key_configured: true });
+      }
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) {
+        return jsonResponse({
+          active_config_id: 4,
+          api_key_configured: true,
+          configs: [{
+            id: 4,
+            alias: "GPT",
+            provider_type: "gpt",
+            model: "gpt-image-2",
+            api_key_configured: true,
+          }],
+        });
+      }
+      if (url.endsWith("/api/settings/api-keys/4/models")) {
+        return jsonResponse({
+          models: [{ id: "gpt-image-2", provider_type: "gpt" }],
+        });
+      }
+      if (url.endsWith("/api/settings/active") && init?.method === "PUT") {
+        return jsonResponse({ active_config_id: 4 });
+      }
+      const historySummary = {
+        id: 7,
+        kind: "generate",
+        status: "completed",
+        prompt: "最后一轮",
+        provider: "compatible",
+        model: "gpt-image-2",
+        detail: "auto",
+        image_count: 1,
+        size: "1:1",
+        resolution: "1K",
+        elapsed_ms: 900,
+        created_at: "2026-08-12T10:00:00",
+      };
+      if (url.endsWith("/api/projects")) {
+        return jsonResponse([{ id: 1, name: "项目", history: [historySummary], history_count: 1 }]);
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([historySummary]);
+      if (url.endsWith("/api/history/7/images/9/edit")) {
+        return jsonResponse({
+          history_id: 7,
+          image_id: 9,
+          api_key_config_id: 4,
+          prompt: "恢复这一轮提示词",
+          provider: "compatible",
+          model: "gpt-image-2",
+          detail: "high",
+          image_count: 4,
+          size: "16:9",
+          resolution: "4K",
+          references: [
+            { id: 31, category: "person", mime_type: "image/jpeg", filename: "person.jpg", position: 0, url: "/api/history/7/images/31" },
+            { id: 32, category: "object", mime_type: "image/png", filename: "chair.png", position: 1, url: "/api/history/7/images/32" },
+          ],
+        });
+      }
+      if (url.endsWith("/api/history/7/images/9") && init?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.endsWith("/api/history/7")) {
+        return jsonResponse({
+          ...historySummary,
+          completed_at: "2026-08-12T10:00:01",
+          images: [
+            { id: 9, role: "generated", mime_type: "image/png", position: 0, url: "/api/history/7/images/9" },
+            { id: 10, role: "generated", mime_type: "image/png", position: 1, url: "/api/history/7/images/10" },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll("[aria-label='修改图片']")).toHaveLength(2);
+    expect(wrapper.findAll("[aria-label='删除图片']")).toHaveLength(2);
+    expect(wrapper.findAll(".download")).toHaveLength(2);
+
+    await wrapper.findAll("[aria-label='修改图片']")[0].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("恢复这一轮提示词");
+    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gpt-image-2");
+    expect(wrapper.get("[data-parameter-trigger='size']").text()).toContain("16:9");
+    expect(wrapper.get("[data-parameter-trigger='resolution']").text()).toContain("4K");
+    expect(wrapper.get("[data-parameter-trigger='quality']").text()).toContain("高");
+    expect(wrapper.get("[data-parameter-trigger='count']").text()).toContain("4 张");
+    const referenceModules = wrapper.findAll(".reference-module");
+    expect(referenceModules[0].findAll(".reference-thumbnail")).toHaveLength(1);
+    expect(referenceModules[1].findAll(".reference-thumbnail")).toHaveLength(0);
+    expect(referenceModules[2].findAll(".reference-thumbnail")).toHaveLength(1);
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+
+    await wrapper.findAll("[aria-label='删除图片']")[0].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/7/images/10");
+    expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input).endsWith("/api/history/7/images/9") && init?.method === "DELETE"
+    ))).toBe(true);
     wrapper.unmount();
   });
 

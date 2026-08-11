@@ -1,6 +1,6 @@
 import logging
 from io import BytesIO
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from time import perf_counter
 from typing import Any
 
@@ -23,7 +23,13 @@ from app.providers.base import (
     normalize_image_results,
     normalize_text,
 )
-from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
+from app.schemas.generate import (
+    GenerateRequest,
+    GenerateResponse,
+    ReferenceImage,
+    ReferenceImageInput,
+    normalize_reference_images,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -64,7 +70,7 @@ class OpenAIProvider(ImageProvider):
     async def generate_image(
         self,
         request: GenerateRequest,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         output_size = _output_size(request)
         arguments: dict[str, Any] = {
@@ -85,12 +91,19 @@ class OpenAIProvider(ImageProvider):
             context,
         )
         try:
-            if reference_image is None:
+            reference_images = normalize_reference_images(reference_image)
+            if not reference_images:
                 response = await self.client.images.generate(**arguments)
             else:
-                image_file = BytesIO(reference_image.data)
-                image_file.name = reference_image.filename or "reference-image"
-                response = await self.client.images.edit(image=image_file, **arguments)
+                image_files = []
+                for index, image in enumerate(reference_images):
+                    image_file = BytesIO(image.data)
+                    image_file.name = image.filename or f"reference-image-{index + 1}"
+                    image_files.append(image_file)
+                response = await self.client.images.edit(
+                    image=image_files[0] if len(image_files) == 1 else image_files,
+                    **arguments,
+                )
         except APIStatusError as exc:
             self._log_generation_failure(request, started_at, "api_status_error")
             raise ProviderRequestError(
@@ -133,6 +146,18 @@ class OpenAIProvider(ImageProvider):
     async def analyze_image(
         self, model: str, prompt: str, image_bytes: bytes, content_type: str
     ) -> AnalyzeResponse:
+        return await self.analyze_images(
+            model,
+            prompt,
+            [ReferenceImage(data=image_bytes, content_type=content_type)],
+        )
+
+    async def analyze_images(
+        self,
+        model: str,
+        prompt: str,
+        reference_images: Sequence[ReferenceImage],
+    ) -> AnalyzeResponse:
         arguments = {
             "model": model,
             "messages": [
@@ -140,10 +165,15 @@ class OpenAIProvider(ImageProvider):
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_data_url(image_bytes, content_type)},
-                        },
+                        *[
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_data_url(image.data, image.content_type)
+                                },
+                            }
+                            for image in reference_images
+                        ],
                     ],
                 }
             ],

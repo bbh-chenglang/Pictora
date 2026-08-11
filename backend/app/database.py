@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -69,10 +69,25 @@ CREATE TABLE IF NOT EXISTS history (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS generation_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
+    api_key_config_id INTEGER REFERENCES api_key_configs(id) ON DELETE SET NULL,
+    prompt TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    image_count INTEGER NOT NULL,
+    size TEXT,
+    resolution TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS history_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
+    batch_id INTEGER REFERENCES generation_batches(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('reference', 'generated')),
+    reference_category TEXT CHECK (reference_category IN ('person', 'environment', 'object')),
     mime_type TEXT NOT NULL,
     filename TEXT,
     position INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_history_user_created_at ON history(user_id, creat
 CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_project_created_at ON history(project_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_images_history_id ON history_images(history_id, position);
+CREATE INDEX IF NOT EXISTS idx_history_images_batch_role_position ON history_images(batch_id, role, position);
 CREATE TRIGGER IF NOT EXISTS trg_users_default_project
 AFTER INSERT ON users
 BEGIN
@@ -124,6 +140,98 @@ async def _remove_empty_default_api_key_configs(connection: aiosqlite.Connection
               WHERE api_key_configs.id = users.active_api_key_config_id
                 AND api_key_configs.user_id = users.id
           )
+        """
+    )
+
+
+async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
+    tables = {
+        row[0]
+        for row in await (await connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )).fetchall()
+    }
+    if not {"history", "history_images"}.issubset(tables):
+        return
+
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
+            api_key_config_id INTEGER REFERENCES api_key_configs(id) ON DELETE SET NULL,
+            prompt TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            image_count INTEGER NOT NULL,
+            size TEXT,
+            resolution TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    image_columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(history_images)")).fetchall()
+    }
+    if "batch_id" not in image_columns:
+        await connection.execute(
+            "ALTER TABLE history_images ADD COLUMN batch_id INTEGER REFERENCES generation_batches(id) ON DELETE CASCADE"
+        )
+    if "reference_category" not in image_columns:
+        await connection.execute(
+            """
+            ALTER TABLE history_images
+            ADD COLUMN reference_category TEXT
+            CHECK (reference_category IN ('person', 'environment', 'object'))
+            """
+        )
+    history_columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(history)")).fetchall()
+    }
+    required_history_columns = {
+        "id", "prompt", "provider", "model", "detail", "image_count", "size", "resolution"
+    }
+    if required_history_columns.issubset(history_columns):
+        await connection.execute(
+            """
+            INSERT INTO generation_batches (
+                history_id, prompt, provider, model, detail, image_count, size, resolution, created_at
+            )
+            SELECT history.id, history.prompt, history.provider, history.model, history.detail,
+                   history.image_count, history.size, history.resolution, history.created_at
+            FROM history
+            WHERE NOT EXISTS (
+                SELECT 1 FROM generation_batches WHERE generation_batches.history_id = history.id
+            )
+            """
+        )
+        await connection.execute(
+            """
+            UPDATE history_images
+            SET batch_id = (
+                SELECT generation_batches.id
+                FROM generation_batches
+                WHERE generation_batches.history_id = history_images.history_id
+                ORDER BY generation_batches.id DESC
+                LIMIT 1
+            )
+            WHERE batch_id IS NULL
+            """
+        )
+    await connection.execute(
+        """
+        UPDATE history_images
+        SET reference_category = 'person'
+        WHERE role = 'reference' AND reference_category IS NULL
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_history_images_batch_role_position
+        ON history_images(batch_id, role, position)
         """
     )
 
@@ -240,6 +348,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 END;
                 """
             )
+            await _migrate_generation_batches(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -298,6 +407,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                     (active_id, user_id),
                 )
             await _remove_empty_default_api_key_configs(connection)
+            await _migrate_generation_batches(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -310,16 +420,25 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             if "resolution" not in history_columns:
                 await connection.execute("ALTER TABLE history ADD COLUMN resolution TEXT")
             await _remove_empty_default_api_key_configs(connection)
+            await _migrate_generation_batches(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         elif version < 6:
             await connection.execute("BEGIN")
             await _remove_empty_default_api_key_configs(connection)
+            await _migrate_generation_batches(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 7:
+            await connection.execute("BEGIN")
+            await _migrate_generation_batches(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         else:
             await connection.executescript(SCHEMA)
+            await _migrate_generation_batches(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

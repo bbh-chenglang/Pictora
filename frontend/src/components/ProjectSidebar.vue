@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
-import { ChevronDown, ChevronRight, FileImage, Folder, LoaderCircle, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-vue-next";
+import { ChevronDown, ChevronRight, FileImage, Folder, LoaderCircle, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-vue-next";
 
 export type HistorySummary = {
   id: number;
@@ -33,11 +33,12 @@ const props = defineProps<{
   activeGenerationRunId?: number | null;
 }>();
 const emit = defineEmits<{
-  "select-project": [id: number]; "new-conversation": []; "create-project": [];
+  "select-project": [id: number]; "new-conversation": [projectId: number]; "create-project": [];
   "rename-project": [project: ProjectSummary]; "delete-project": [project: ProjectSummary];
   "delete-history": [project: ProjectSummary, ids: number[]]; "open-history": [id: number];
   "open-generation": [id: number];
   "prefetch-history": [id: number];
+  close: [];
 }>();
 const expanded = ref<Record<number, boolean>>({});
 const projectExpanded = ref<Record<number, boolean>>({});
@@ -89,6 +90,26 @@ function deleteSelected(project: ProjectSummary) {
   const ids = selected(project);
   if (ids.length) emit("delete-history", project, ids);
 }
+function selectProject(project: ProjectSummary) {
+  emit("select-project", project.id);
+  emit("close");
+}
+function openHistoryItem(id: number) {
+  emit("open-history", id);
+  emit("close");
+}
+function openGeneration(id: number) {
+  emit("open-generation", id);
+  emit("close");
+}
+function createProject() {
+  emit("create-project");
+  emit("close");
+}
+function startConversation(project: ProjectSummary) {
+  emit("new-conversation", project.id);
+  emit("close");
+}
 watch(() => props.projects, (projects) => {
   const currentHistoryIds = new Map(projects.map((project) => [project.id, new Set(project.history.map((item) => item.id))]));
   for (const [projectId, ids] of Object.entries(selectedHistory.value)) {
@@ -111,16 +132,17 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
 
 <template>
   <aside class="project-sidebar" aria-label="项目列表">
-    <div class="sidebar-heading"><div><span>工作区</span><h2>项目</h2></div><button type="button" class="icon-action" title="新建项目" aria-label="新建项目" @click="emit('create-project')"><Plus :size="17" /></button></div>
+    <div class="sidebar-heading"><div><span>工作区</span><h2>项目</h2></div><div class="sidebar-heading-actions"><button type="button" class="icon-action" title="新建项目" aria-label="新建项目" @click="createProject"><Plus :size="17" /></button><button type="button" class="icon-action mobile-sidebar-close" title="关闭项目列表" aria-label="关闭项目列表" @click="emit('close')"><X :size="17" /></button></div></div>
     <p v-if="loading" class="sidebar-muted">正在加载项目...</p>
     <div v-else class="project-list">
       <section v-for="project in projects" :key="project.id" :data-project-id="project.id" class="project-group" :class="{ active: project.id === selectedProjectId }">
         <div class="project-row">
-          <button type="button" class="project-select" @pointerenter="project.history[0] && emit('prefetch-history', project.history[0].id)" @focus="project.history[0] && emit('prefetch-history', project.history[0].id)" @click="emit('select-project', project.id)"><Folder :size="16" /><LoaderCircle v-if="runningForProject(project).length" class="spin project-run-indicator" :size="13" /><span>{{ project.name }}</span><small>{{ project.history_count }}</small></button>
+          <button type="button" class="project-select" @pointerenter="project.history[0] && emit('prefetch-history', project.history[0].id)" @focus="project.history[0] && emit('prefetch-history', project.history[0].id)" @click="selectProject(project)"><Folder :size="16" /><LoaderCircle v-if="runningForProject(project).length" class="spin project-run-indicator" :size="13" /><span>{{ project.name }}</span><small>{{ project.history_count }}</small></button>
+          <button type="button" class="project-new-conversation" :title="`在“${project.name}”中新建对话`" :aria-label="`在“${project.name}”中新建对话`" @click.stop="startConversation(project)"><Plus :size="15" /></button>
           <button type="button" class="project-toggle" :aria-label="isProjectExpanded(project) ? '收起项目' : '展开项目'" :aria-expanded="isProjectExpanded(project)" @click.stop="toggleProject(project)"><ChevronDown v-if="isProjectExpanded(project)" :size="15" /><ChevronRight v-else :size="15" /></button>
           <button type="button" class="icon-action" data-project-menu-trigger title="项目操作" aria-label="项目操作" @click="menuProjectId = menuProjectId === project.id ? null : project.id"><MoreHorizontal :size="17" /></button>
         </div>
-        <div v-if="menuProjectId === project.id" class="project-menu project-menu-overlay"><button type="button" @click="emit('new-conversation'); menuProjectId = null"><Plus :size="14" />新建对话</button><button type="button" data-project-action="rename" @click="emit('rename-project', project); menuProjectId = null"><Pencil :size="14" />重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
+        <div v-if="menuProjectId === project.id" class="project-menu project-menu-overlay"><button type="button" @click="startConversation(project); menuProjectId = null"><Plus :size="14" />新建对话</button><button type="button" data-project-action="rename" @click="emit('rename-project', project); menuProjectId = null"><Pencil :size="14" />重命名</button><button type="button" class="danger-text" @click="emit('delete-project', project); menuProjectId = null"><Trash2 :size="14" />删除项目</button></div>
         <div v-if="isProjectExpanded(project)" class="project-history">
           <p v-if="!project.history.length && !runningForProject(project).length" class="sidebar-muted">暂无历史记录</p>
           <button
@@ -129,7 +151,7 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
             type="button"
             class="running-generation"
             :class="{ active: run.id === activeGenerationRunId }"
-            @click="emit('open-generation', run.id)"
+            @click="openGeneration(run.id)"
           >
             <LoaderCircle class="spin" :size="14" />
             <span class="history-copy">
@@ -140,7 +162,7 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
           </button>
           <label v-for="item in visibleHistory(project)" :key="item.id" class="history-row">
             <input class="history-checkbox" type="checkbox" :checked="selected(project).includes(item.id)" @click.stop @change="toggleHistorySelection(project, item.id)" />
-            <button type="button" class="history-select" :class="{ failed: item.status === 'failed' }" @pointerenter="emit('prefetch-history', item.id)" @focus="emit('prefetch-history', item.id)" @click="emit('open-history', item.id)">
+            <button type="button" class="history-select" :class="{ failed: item.status === 'failed' }" @pointerenter="emit('prefetch-history', item.id)" @focus="emit('prefetch-history', item.id)" @click="openHistoryItem(item.id)">
               <FileImage :size="14" />
               <span class="history-copy">
                 <span class="history-prompt">{{ item.prompt }}</span>

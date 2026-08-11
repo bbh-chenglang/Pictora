@@ -42,7 +42,7 @@ class FakeImageService:
             provider="openai", model="vision-model", text="A red boat."
         )
         self.generate_calls = []
-        self.reference_images: list[ReferenceImage | None] = []
+        self.reference_images = []
         self.analyze_calls = []
 
     async def list_providers(self):
@@ -53,10 +53,18 @@ class FakeImageService:
         self.reference_images.append(reference_image)
         return self.generate_response
 
-    async def analyze(self, provider, model, prompt, detail, image_bytes, content_type):
-        self.analyze_calls.append(
-            (provider, model, prompt, detail, image_bytes, content_type)
-        )
+    async def analyze(
+        self,
+        provider,
+        model,
+        prompt,
+        detail,
+        image_bytes,
+        content_type,
+        reference_images=None,
+    ):
+        call = (provider, model, prompt, detail, image_bytes, content_type)
+        self.analyze_calls.append(call + ((reference_images,) if reference_images else ()))
         return self.analyze_response
 
 
@@ -65,6 +73,18 @@ def wait_for_generation(service: FakeImageService) -> None:
     while not service.generate_calls and time.monotonic() < deadline:
         time.sleep(0.01)
     assert service.generate_calls
+
+
+def test_version_is_public_and_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "release-2026.08.12")
+    app.dependency_overrides.pop(get_current_user, None)
+
+    with TestClient(app) as client:
+        response = client.get("/api/version")
+
+    assert response.status_code == 200
+    assert response.json() == {"version": "release-2026.08.12"}
+    assert response.headers["cache-control"] == "no-store"
 
 
 class PassthroughHistoryService:
@@ -95,7 +115,11 @@ class PassthroughHistoryService:
         image_bytes,
         content_type,
         filename,
+        reference_images=None,
     ):
+        analyze_kwargs = {}
+        if reference_images is not None:
+            analyze_kwargs["reference_images"] = reference_images
         return await image_service.analyze(
             provider,
             model,
@@ -103,6 +127,7 @@ class PassthroughHistoryService:
             detail,
             image_bytes,
             content_type,
+            **analyze_kwargs,
         )
 
 
@@ -210,11 +235,29 @@ def test_generate_returns_service_response(service: FakeImageService) -> None:
     assert service.generate_calls[0].prompt == "draw a boat"
 
 
+def test_generate_accepts_an_existing_conversation(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "conversation_id": 42,
+                "provider": "openai",
+                "model": "gpt-image-1",
+                "prompt": "continue this conversation",
+            },
+        )
+        wait_for_generation(service)
+
+    assert response.status_code == 202
+    assert service.generate_calls[-1].conversation_id == 42
+
+
 def test_generate_with_reference_uploads_image_and_parameters(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/generate/reference",
             data={
+                "conversation_id": "42",
                 "provider": "gemini",
                 "model": "gemini-3.1-flash-image",
                 "prompt": "保留参考图构图并调整光线",
@@ -229,6 +272,7 @@ def test_generate_with_reference_uploads_image_and_parameters(service: FakeImage
 
     assert response.status_code == 202
     assert service.generate_calls[-1].prompt == "保留参考图构图并调整光线"
+    assert service.generate_calls[-1].conversation_id == 42
     assert service.generate_calls[-1].aspect_ratio == "16:9"
     assert service.generate_calls[-1].resolution == "4K"
     reference = service.reference_images[-1]
@@ -236,6 +280,31 @@ def test_generate_with_reference_uploads_image_and_parameters(service: FakeImage
     assert reference.data == b"reference-bytes"
     assert reference.content_type == "image/jpeg"
     assert reference.filename == "room.jpg"
+
+
+def test_generate_with_multiple_reference_images(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate/reference",
+            data={
+                "provider": "gemini",
+                "model": "gemini-3.1-flash-image",
+                "prompt": "融合空间与材质参考",
+                "image_categories": ["environment", "object"],
+            },
+            files=[
+                ("images", ("room.jpg", b"room-bytes", "image/jpeg")),
+                ("images", ("material.png", b"material-bytes", "image/png")),
+            ],
+        )
+        wait_for_generation(service)
+
+    assert response.status_code == 202
+    references = service.reference_images[-1]
+    assert isinstance(references, list)
+    assert [reference.filename for reference in references] == ["room.jpg", "material.png"]
+    assert [reference.data for reference in references] == [b"room-bytes", b"material-bytes"]
+    assert [reference.category for reference in references] == ["environment", "object"]
 
 
 def test_generate_apple_image_prompt(service: FakeImageService) -> None:
@@ -342,6 +411,26 @@ def test_analyze_accepts_jpeg(service: FakeImageService) -> None:
     assert response.status_code == 200
     assert response.json()["text"] == "A red boat."
     assert service.analyze_calls[0][-1] == "image/jpeg"
+
+
+def test_analyze_accepts_multiple_images(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/analyze",
+            data={
+                "provider": "openai",
+                "model": "vision-model",
+                "prompt": "比较这些图片",
+            },
+            files=[
+                ("images", ("first.jpg", b"first", "image/jpeg")),
+                ("images", ("second.png", b"second", "image/png")),
+            ],
+        )
+
+    assert response.status_code == 200
+    references = service.analyze_calls[-1][-1]
+    assert [reference.filename for reference in references] == ["first.jpg", "second.png"]
 
 
 @pytest.mark.parametrize(
@@ -510,6 +599,38 @@ def test_history_detail_and_image_routes(
     assert image.headers["content-type"] == "image/png"
     assert image.headers["cache-control"] == "private, max-age=31536000, immutable"
     assert image.content == b"png-bytes"
+
+
+def test_history_image_edit_snapshot_and_delete_routes(
+    history_repository_with_record: HistoryRepository,
+) -> None:
+    app.dependency_overrides[get_history_repository] = (
+        lambda: history_repository_with_record
+    )
+    try:
+        with TestClient(app) as client:
+            snapshot = client.get("/api/history/1/images/1/edit")
+            deleted = client.delete("/api/history/1/images/1")
+            missing = client.get("/api/history/1/images/1")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert snapshot.status_code == 200
+    assert snapshot.json() == {
+        "history_id": 1,
+        "image_id": 1,
+        "api_key_config_id": None,
+        "prompt": "画一个苹果",
+        "provider": "compatible",
+        "model": "custom-model",
+        "detail": "high",
+        "image_count": 1,
+        "size": None,
+        "resolution": None,
+        "references": [],
+    }
+    assert deleted.status_code == 204
+    assert missing.status_code == 404
 
 
 def test_missing_history_resources_return_404(

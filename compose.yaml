@@ -6,6 +6,7 @@ services:
     expose:
       - "8002"
     environment:
+      APP_VERSION: ${APP_VERSION:-dev}
       WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
     volumes:
       - genimage_data:/app/backend/data
@@ -25,6 +26,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_APP_VERSION: ${APP_VERSION:-dev}
     depends_on:
       backend:
         condition: service_healthy

@@ -137,6 +137,41 @@ async def test_gemini_provider_combines_reference_image_with_prompt():
 
 
 @pytest.mark.asyncio
+async def test_gemini_provider_combines_multiple_reference_images_with_prompt():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"candidates": []})
+
+    references = [
+        ReferenceImage(data=b"room", content_type="image/jpeg", filename="room.jpg"),
+        ReferenceImage(data=b"material", content_type="image/png", filename="material.png"),
+    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = GeminiProvider(
+            api_key="secret",
+            base_url="https://sub.beibeihai.xyz/v1beta",
+            model="gemini-3.1-flash-image",
+            client=client,
+        )
+        await provider.generate_image(
+            GenerateRequest(
+                provider="gemini",
+                model="gemini-3.1-flash-image",
+                prompt="融合空间和材质",
+            ),
+            references,
+        )
+
+    assert captured["body"]["contents"][0]["parts"] == [
+        {"text": "融合空间和材质"},
+        {"inlineData": {"mimeType": "image/jpeg", "data": "cm9vbQ=="}},
+        {"inlineData": {"mimeType": "image/png", "data": "bWF0ZXJpYWw="}},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gemini_provider_analyzes_images_through_native_endpoint():
     captured = {}
 

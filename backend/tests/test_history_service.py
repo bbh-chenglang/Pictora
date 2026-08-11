@@ -132,6 +132,218 @@ async def test_generation_can_be_created_and_executed_as_separate_task(
 
 
 @pytest.mark.asyncio
+async def test_generation_reuses_a_conversation_and_appends_new_images(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="compatible",
+            model="custom-model",
+            images=[ImageResult(base64_data="Zmlyc3Q=")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    first_request = GenerateRequest(
+        provider="compatible",
+        model="custom-model",
+        prompt="第一轮",
+    )
+    first_reference = ReferenceImage(
+        data=b"first-reference",
+        content_type="image/jpeg",
+        filename="first.jpg",
+    )
+
+    conversation_id = await service.create_generation(
+        first_request,
+        user_id=1,
+        reference_image=first_reference,
+    )
+    await service.execute_generation(
+        conversation_id,
+        first_request,
+        image_service,
+        user_id=1,
+        reference_image=first_reference,
+    )
+
+    image_service.generate_response = GenerateResponse(
+        provider="compatible",
+        model="custom-model",
+        images=[ImageResult(base64_data="c2Vjb25k")],
+    )
+    second_request = GenerateRequest(
+        conversation_id=conversation_id,
+        provider="compatible",
+        model="custom-model",
+        prompt="第二轮",
+    )
+    second_reference = ReferenceImage(
+        data=b"second-reference",
+        content_type="image/png",
+        filename="second.png",
+    )
+    reused_id = await service.create_generation(
+        second_request,
+        user_id=1,
+        reference_image=second_reference,
+    )
+    pending = await history_repository.get(1, conversation_id)
+
+    assert reused_id == conversation_id
+    assert pending is not None
+    assert pending.status == "pending"
+    assert [image.filename for image in pending.images if image.role == "reference"] == ["second.png"]
+    assert len([image for image in pending.images if image.role == "generated"]) == 1
+
+    await service.execute_generation(
+        conversation_id,
+        second_request,
+        image_service,
+        user_id=1,
+        reference_image=second_reference,
+    )
+    completed = await history_repository.get(1, conversation_id)
+    summaries = await history_repository.list(user_id=1, limit=20)
+
+    assert completed is not None
+    assert completed.prompt == "第二轮"
+    assert [image.position for image in completed.images if image.role == "generated"] == [0, 1]
+    assert len(summaries) == 1
+
+
+@pytest.mark.asyncio
+async def test_each_generated_image_keeps_its_batch_snapshot_and_can_be_deleted(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="gemini",
+            model="gemini-first",
+            images=[ImageResult(base64_data="Zmlyc3Q=")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    first_request = GenerateRequest(
+        provider="gemini",
+        model="gemini-first",
+        prompt="第一轮提示词",
+        detail="high",
+        count=2,
+        size="16:9",
+        aspect_ratio="16:9",
+        resolution="4K",
+    )
+    first_reference = ReferenceImage(
+        data=b"person",
+        content_type="image/jpeg",
+        filename="person.jpg",
+        category="person",
+    )
+    history_id = await service.create_generation(
+        first_request,
+        user_id=1,
+        reference_image=first_reference,
+    )
+    await service.execute_generation(
+        history_id,
+        first_request,
+        image_service,
+        user_id=1,
+        reference_image=first_reference,
+    )
+
+    image_service.generate_response = GenerateResponse(
+        provider="gemini",
+        model="gemini-second",
+        images=[ImageResult(base64_data="c2Vjb25k")],
+    )
+    second_request = GenerateRequest(
+        conversation_id=history_id,
+        provider="gemini",
+        model="gemini-second",
+        prompt="第二轮提示词",
+        detail="low",
+        count=1,
+        size="2:3",
+        aspect_ratio="2:3",
+        resolution="1K",
+    )
+    second_reference = ReferenceImage(
+        data=b"room",
+        content_type="image/png",
+        filename="room.png",
+        category="environment",
+    )
+    await service.create_generation(
+        second_request,
+        user_id=1,
+        reference_image=second_reference,
+    )
+    await service.execute_generation(
+        history_id,
+        second_request,
+        image_service,
+        user_id=1,
+        reference_image=second_reference,
+    )
+
+    detail = await history_repository.get(1, history_id)
+    assert detail is not None
+    generated_images = [image for image in detail.images if image.role == "generated"]
+    assert len(generated_images) == 2
+    first_snapshot = await history_repository.get_image_edit_snapshot(
+        1, history_id, generated_images[0].id
+    )
+    second_snapshot = await history_repository.get_image_edit_snapshot(
+        1, history_id, generated_images[1].id
+    )
+
+    assert first_snapshot is not None
+    assert first_snapshot.prompt == "第一轮提示词"
+    assert first_snapshot.model == "gemini-first"
+    assert first_snapshot.detail == "high"
+    assert first_snapshot.image_count == 2
+    assert first_snapshot.size == "16:9"
+    assert first_snapshot.resolution == "4K"
+    assert [(reference.category, reference.filename) for reference in first_snapshot.references] == [
+        ("person", "person.jpg")
+    ]
+    assert second_snapshot is not None
+    assert second_snapshot.prompt == "第二轮提示词"
+    assert second_snapshot.model == "gemini-second"
+    assert second_snapshot.detail == "low"
+    assert second_snapshot.image_count == 1
+    assert [(reference.category, reference.filename) for reference in second_snapshot.references] == [
+        ("environment", "room.png")
+    ]
+
+    async with aiosqlite.connect(history_repository.database_path) as connection:
+        batch_count = (await (await connection.execute(
+            "SELECT COUNT(*) FROM generation_batches WHERE history_id = ?", (history_id,)
+        )).fetchone())[0]
+    assert batch_count == 2
+    assert await history_repository.get_image_edit_snapshot(
+        2, history_id, generated_images[0].id
+    ) is None
+    assert not await history_repository.delete_generated_image(
+        2, history_id, generated_images[0].id
+    )
+
+    assert await history_repository.delete_generated_image(
+        1, history_id, generated_images[0].id
+    )
+    remaining = await history_repository.get(1, history_id)
+    assert remaining is not None
+    assert [image.id for image in remaining.images if image.role == "generated"] == [
+        generated_images[1].id
+    ]
+    assert [image.filename for image in remaining.images if image.role == "reference"] == [
+        "room.png"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_pending_generation_is_failed_during_restart_recovery(
     history_repository: HistoryRepository,
 ) -> None:
@@ -286,6 +498,38 @@ async def test_generation_history_stores_and_forwards_reference_image(
     assert reference_blob is not None
     assert reference_blob.data == b"reference-bytes"
     assert reference_blob.filename == "room.jpg"
+
+
+@pytest.mark.asyncio
+async def test_generation_history_stores_multiple_reference_images_in_order(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService()
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    references = [
+        ReferenceImage(data=b"room", content_type="image/jpeg", filename="room.jpg"),
+        ReferenceImage(data=b"material", content_type="image/png", filename="material.png"),
+    ]
+
+    await service.generate(
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-image",
+            prompt="融合两张参考图",
+        ),
+        image_service,
+        1,
+        reference_image=references,
+    )
+
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+    assert image_service.reference_image == references
+    assert detail is not None
+    stored_references = [image for image in detail.images if image.role == "reference"]
+    assert [image.filename for image in stored_references] == ["room.jpg", "material.png"]
+    assert [image.position for image in stored_references] == [0, 1]
 
 
 @pytest.mark.asyncio

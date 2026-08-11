@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,3 +92,12 @@ app.include_router(feedback_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+async def version():
+    app_version = os.getenv("APP_VERSION", "dev").strip() or "dev"
+    return JSONResponse(
+        content={"version": app_version},
+        headers={"Cache-Control": "no-store"},
+    )

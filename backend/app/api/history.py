@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.dependencies import get_current_user, get_history_repository
 from app.repositories.history_repository import HistoryRepository
-from app.schemas.history import HistoryDetail, HistorySummary
+from app.schemas.history import HistoryDetail, HistoryImageEditSnapshot, HistorySummary
 from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/history", tags=["history"])
@@ -59,3 +59,48 @@ async def read_history_image(
         media_type=image.mime_type,
         headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+@router.get(
+    "/{history_id}/images/{image_id}/edit",
+    response_model=HistoryImageEditSnapshot,
+)
+async def read_history_image_edit_snapshot(
+    history_id: int,
+    image_id: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> HistoryImageEditSnapshot:
+    snapshot = await repository.get_image_edit_snapshot(user.id, history_id, image_id)
+    if snapshot is None:
+        raise HTTPException(
+            404,
+            {
+                "error": {
+                    "code": "history_image_not_found",
+                    "message": "历史图片不存在",
+                }
+            },
+        )
+    return snapshot
+
+
+@router.delete("/{history_id}/images/{image_id}", status_code=204)
+async def delete_history_image(
+    history_id: int,
+    image_id: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> Response:
+    deleted = await repository.delete_generated_image(user.id, history_id, image_id)
+    if not deleted:
+        raise HTTPException(
+            404,
+            {
+                "error": {
+                    "code": "history_image_not_found",
+                    "message": "历史图片不存在",
+                }
+            },
+        )
+    return Response(status_code=204)

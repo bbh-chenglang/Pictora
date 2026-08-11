@@ -17,7 +17,13 @@ from app.providers.base import (
 )
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
+from app.schemas.generate import (
+    GenerateRequest,
+    GenerateResponse,
+    ReferenceImage,
+    ReferenceImageInput,
+    normalize_reference_images,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -119,7 +125,7 @@ class GeminiProvider(ImageProvider):
     async def generate_image(
         self,
         request: GenerateRequest,
-        reference_image: ReferenceImage | None = None,
+        reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
         started_at = perf_counter()
         image_config: dict[str, str] = {}
@@ -133,12 +139,12 @@ class GeminiProvider(ImageProvider):
         if image_config:
             generation_config["imageConfig"] = image_config
         parts: list[dict[str, Any]] = [{"text": request.prompt}]
-        if reference_image is not None:
+        for image in normalize_reference_images(reference_image):
             parts.append(
                 {
                     "inlineData": {
-                        "mimeType": reference_image.content_type,
-                        "data": base64.b64encode(reference_image.data).decode("ascii"),
+                        "mimeType": image.content_type,
+                        "data": base64.b64encode(image.data).decode("ascii"),
                     }
                 }
             )
@@ -166,18 +172,33 @@ class GeminiProvider(ImageProvider):
     async def analyze_image(
         self, model: str, prompt: str, image_bytes: bytes, content_type: str
     ) -> AnalyzeResponse:
+        return await self.analyze_images(
+            model,
+            prompt,
+            [ReferenceImage(data=image_bytes, content_type=content_type)],
+        )
+
+    async def analyze_images(
+        self,
+        model: str,
+        prompt: str,
+        reference_images: Sequence[ReferenceImage],
+    ) -> AnalyzeResponse:
         payload = {
             "contents": [
                 {
                     "role": "user",
                     "parts": [
                         {"text": prompt},
-                        {
-                            "inlineData": {
-                                "mimeType": content_type,
-                                "data": base64.b64encode(image_bytes).decode("ascii"),
+                        *[
+                            {
+                                "inlineData": {
+                                    "mimeType": image.content_type,
+                                    "data": base64.b64encode(image.data).decode("ascii"),
+                                }
                             }
-                        },
+                            for image in reference_images
+                        ],
                     ],
                 }
             ],
