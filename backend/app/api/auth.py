@@ -29,6 +29,7 @@ from app.schemas.auth import (
     CurrentUserResponse,
     LoginRequest,
     PasswordChangeRequest,
+    ProfileUpdateRequest,
     RegistrationRequest,
     StoredSessionUser,
     VerificationCodeRequest,
@@ -193,17 +194,26 @@ async def login(
     repository: UserRepository = Depends(get_user_repository),
 ) -> CurrentUserResponse:
     user = await repository.get_by_email(request.email)
+    if user is None:
+        legacy_user = await repository.get_by_username(request.email)
+        if legacy_user is not None and legacy_user.email is None:
+            user = legacy_user
     if user is None or not verify_password(request.password, user.password_hash):
         raise HTTPException(
             401,
-            {"error": {"code": "invalid_credentials", "message": "邮箱或密码错误"}},
+            {
+                "error": {
+                    "code": "invalid_credentials",
+                    "message": "邮箱、旧用户名或密码错误",
+                }
+            },
         )
-    should_be_admin = request.email in configured_admin_emails()
+    should_be_admin = bool(user.email and user.email in configured_admin_emails())
     if user.is_admin != should_be_admin:
         await repository.set_admin(user.id, should_be_admin)
     await create_session(response, repository, user.id)
     refreshed = await repository.get_by_id(user.id)
-    if refreshed is None or refreshed.email is None:
+    if refreshed is None:
         raise RuntimeError("Authenticated user cannot be loaded")
     return CurrentUserResponse(
         username=refreshed.username,
@@ -227,6 +237,30 @@ async def logout(
 @router.get("/me", response_model=CurrentUserResponse)
 async def me(user: StoredSessionUser = Depends(get_current_user)) -> CurrentUserResponse:
     return current_user_response(user)
+
+
+@router.put("/profile", response_model=CurrentUserResponse)
+async def update_profile(
+    request: ProfileUpdateRequest,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: UserRepository = Depends(get_user_repository),
+) -> CurrentUserResponse:
+    try:
+        await repository.update_username(user.id, request.username)
+    except UserAlreadyExistsError:
+        raise HTTPException(
+            409,
+            {"error": {"code": "username_taken", "message": "用户名已存在"}},
+        ) from None
+    refreshed = await repository.get_by_id(user.id)
+    if refreshed is None:
+        raise RuntimeError("Updated user cannot be loaded")
+    return CurrentUserResponse(
+        username=refreshed.username,
+        email=refreshed.email,
+        is_admin=refreshed.is_admin,
+        api_key_configured=bool(refreshed.api_key.strip()),
+    )
 
 
 @router.put("/password", status_code=204)

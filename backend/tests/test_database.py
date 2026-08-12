@@ -45,7 +45,7 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
     assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 8
+    assert version == 11
     assert "api_key_configs" in tables
     assert "generation_batches" in tables
     assert "email_verification_codes" in tables
@@ -86,7 +86,7 @@ async def test_database_adds_resolution_to_version_four_history(tmp_path: Path) 
         }
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
     assert "resolution" in columns
-    assert version == 8
+    assert version == 11
 
 
 @pytest.mark.asyncio
@@ -143,7 +143,7 @@ async def test_database_removes_only_empty_generated_default_configs(tmp_path: P
         (preserved, "默认配置", "real-key", "gpt"),
     ]
     assert active_id == replacement
-    assert version == 8
+    assert version == 11
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,7 @@ async def test_database_migrates_version_six_history_images_into_batches(tmp_pat
         )).fetchall()
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
-    assert version == 8
+    assert version == 11
     assert batch == ("旧提示词", "gemini", "gemini-image", "high", 2, "16:9", "2K")
     assert images[0][0:2] == ("reference", "person.jpg")
     assert images[0][2] is not None
@@ -223,3 +223,153 @@ async def test_database_migrates_version_six_history_images_into_batches(tmp_pat
     assert images[1][0:2] == ("generated", "result.png")
     assert images[1][2] == images[0][2]
     assert images[1][4] == b"generated"
+
+
+@pytest.mark.asyncio
+async def test_database_adds_grok_without_losing_existing_config_links(tmp_path: Path) -> None:
+    database_path = tmp_path / "version-eight.db"
+    await initialize_database(database_path)
+    async with aiosqlite.connect(database_path) as connection:
+        user_id = (await connection.execute(
+            "INSERT INTO users (username, password_hash) VALUES ('alice', 'hash')"
+        )).lastrowid
+        config_id = (await connection.execute(
+            """
+            INSERT INTO api_key_configs (user_id, alias, api_key, provider_type, model)
+            VALUES (?, 'OpenAI', 'secret', 'gpt', 'gpt-image-2')
+            """,
+            (user_id,),
+        )).lastrowid
+        project_id = (await (await connection.execute(
+            "SELECT id FROM projects WHERE user_id = ?", (user_id,)
+        )).fetchone())[0]
+        history_id = (await connection.execute(
+            """
+            INSERT INTO history (
+                user_id, project_id, kind, status, prompt, provider, model, detail
+            ) VALUES (?, ?, 'generate', 'completed', 'draw', 'compatible',
+                      'gpt-image-2', 'high')
+            """,
+            (user_id, project_id),
+        )).lastrowid
+        batch_id = (await connection.execute(
+            """
+            INSERT INTO generation_batches (
+                history_id, api_key_config_id, prompt, provider, model, detail, image_count
+            ) VALUES (?, ?, 'draw', 'compatible', 'gpt-image-2', 'high', 1)
+            """,
+            (history_id, config_id),
+        )).lastrowid
+        await connection.execute(
+            "UPDATE users SET active_api_key_config_id = ? WHERE id = ?",
+            (config_id, user_id),
+        )
+        await connection.commit()
+        await connection.execute("PRAGMA foreign_keys = OFF")
+        await connection.executescript(
+            """
+            CREATE TABLE api_key_configs_v8 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                alias TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '',
+                provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini')),
+                model TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (user_id, alias)
+            );
+            INSERT INTO api_key_configs_v8 SELECT * FROM api_key_configs;
+            DROP TABLE api_key_configs;
+            ALTER TABLE api_key_configs_v8 RENAME TO api_key_configs;
+            PRAGMA user_version = 8;
+            """
+        )
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        config = await (await connection.execute(
+            "SELECT id, provider_type, model FROM api_key_configs WHERE id = ?",
+            (config_id,),
+        )).fetchone()
+        linked_config_id = (await (await connection.execute(
+            "SELECT api_key_config_id FROM generation_batches WHERE id = ?", (batch_id,)
+        )).fetchone())[0]
+        active_config_id = (await (await connection.execute(
+            "SELECT active_api_key_config_id FROM users WHERE id = ?", (user_id,)
+        )).fetchone())[0]
+        await connection.execute(
+            """
+            INSERT INTO api_key_configs (user_id, alias, api_key, provider_type, model)
+            VALUES (?, 'Grok', 'secret', 'grok', 'grok-imagine-image')
+            """,
+            (user_id,),
+        )
+        version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
+
+    assert config == (config_id, "gpt", "gpt-image-2")
+    assert linked_config_id == config_id
+    assert active_config_id == config_id
+    assert version == 11
+
+
+@pytest.mark.asyncio
+async def test_database_adds_native_image_parameters_to_version_nine_batches(tmp_path: Path) -> None:
+    database_path = tmp_path / "version-nine.db"
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.executescript(
+            """
+            CREATE TABLE history (
+                id INTEGER PRIMARY KEY,
+                prompt TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                image_count INTEGER NOT NULL,
+                size TEXT,
+                resolution TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE generation_batches (
+                id INTEGER PRIMARY KEY,
+                history_id INTEGER NOT NULL,
+                prompt TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                image_count INTEGER NOT NULL,
+                size TEXT,
+                resolution TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE history_images (
+                id INTEGER PRIMARY KEY,
+                history_id INTEGER NOT NULL,
+                batch_id INTEGER,
+                role TEXT NOT NULL,
+                reference_category TEXT,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            PRAGMA user_version = 9;
+            """
+        )
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in await (await connection.execute(
+                "PRAGMA table_info(generation_batches)"
+            )).fetchall()
+        }
+        version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
+
+    assert {
+        "output_format", "background", "output_compression", "moderation",
+        "status", "elapsed_ms", "error_code", "error_message", "completed_at",
+    }.issubset(columns)
+    assert version == 11

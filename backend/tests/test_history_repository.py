@@ -49,6 +49,7 @@ async def test_history_repository_tracks_task_and_blob_images(
     assert summaries[0].size == "1152x1536"
     assert summaries[0].resolution == "2K"
     assert detail.images[0].role == "generated"
+    assert detail.images[0].batch_id is not None
     assert (
         detail.images[0].url
         == f"/api/history/{history_id}/images/{detail.images[0].id}"

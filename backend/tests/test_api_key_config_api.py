@@ -302,3 +302,55 @@ def test_openai_model_discovery_stays_on_the_openai_endpoint(
         ]
     }
     assert str(client_arguments["base_url"]) == "https://sub.beibeihai.xyz/v1"
+
+
+def test_grok_uses_the_shared_endpoint_and_only_returns_grok_models(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register(client)
+    client_arguments = {}
+
+    class FakeModels:
+        async def list(self):
+            return type(
+                "Response",
+                (),
+                {
+                    "data": [
+                        type("Model", (), {"id": "gpt-image-2"})(),
+                        type("Model", (), {"id": "grok-imagine-image"})(),
+                        type("Model", (), {"id": "grok-4"})(),
+                    ]
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            client_arguments.update(kwargs)
+            self.models = FakeModels()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.api.settings.AsyncOpenAI", FakeClient)
+
+    discovered = client.post(
+        "/api/settings/api-keys/models",
+        json={"api_key": "secret", "provider_type": "grok"},
+    )
+
+    assert discovered.status_code == 200
+    assert discovered.json() == {
+        "models": [
+            {"id": "grok-imagine-image", "provider_type": "grok"},
+            {"id": "grok-4", "provider_type": "grok"},
+        ]
+    }
+    assert str(client_arguments["base_url"]) == "https://sub.beibeihai.xyz/v1"
+
+    created = client.post(
+        "/api/settings/api-keys",
+        json={"alias": "Grok", "api_key": "secret", "provider_type": "grok"},
+    )
+    assert created.status_code == 201
+    assert created.json()["model"] == "grok-imagine-image"

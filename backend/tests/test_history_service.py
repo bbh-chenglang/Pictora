@@ -7,7 +7,7 @@ import pytest_asyncio
 
 from app.database import initialize_database
 from app.auth import hash_password
-from app.providers.base import ProviderAuthError
+from app.providers.base import ProviderAuthError, ProviderRequestError
 from app.repositories.history_repository import HistoryRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.analyze import AnalyzeResponse
@@ -213,6 +213,79 @@ async def test_generation_reuses_a_conversation_and_appends_new_images(
 
 
 @pytest.mark.asyncio
+async def test_generation_queues_multiple_batches_in_the_same_pending_conversation(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="compatible",
+            model="custom-model",
+            images=[ImageResult(base64_data="Zmlyc3Q=")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    first_request = GenerateRequest(
+        provider="compatible",
+        model="custom-model",
+        prompt="第一批",
+    )
+    history_id, first_batch_id = await service.create_generation(
+        first_request,
+        user_id=1,
+        include_batch_id=True,
+    )
+    second_request = GenerateRequest(
+        conversation_id=history_id,
+        provider="compatible",
+        model="custom-model",
+        prompt="第二批",
+    )
+    reused_id, second_batch_id = await service.create_generation(
+        second_request,
+        user_id=1,
+        include_batch_id=True,
+    )
+
+    assert reused_id == history_id
+    assert second_batch_id != first_batch_id
+
+    await service.execute_generation(
+        history_id,
+        first_request,
+        image_service,
+        user_id=1,
+        batch_id=first_batch_id,
+    )
+    first_batch = await history_repository.get_generation_batch(1, history_id, first_batch_id)
+    queued_batch = await history_repository.get_generation_batch(1, history_id, second_batch_id)
+    pending_conversation = await history_repository.get(1, history_id)
+
+    assert first_batch is not None and first_batch.status == "completed"
+    assert queued_batch is not None and queued_batch.status == "pending"
+    assert pending_conversation is not None and pending_conversation.status == "pending"
+    assert [image.batch_id for image in first_batch.images] == [first_batch_id]
+
+    image_service.generate_response = GenerateResponse(
+        provider="compatible",
+        model="custom-model",
+        images=[ImageResult(base64_data="c2Vjb25k")],
+    )
+    await service.execute_generation(
+        history_id,
+        second_request,
+        image_service,
+        user_id=1,
+        batch_id=second_batch_id,
+    )
+    completed_batch = await history_repository.get_generation_batch(1, history_id, second_batch_id)
+    completed_conversation = await history_repository.get(1, history_id)
+
+    assert completed_batch is not None and completed_batch.status == "completed"
+    assert completed_conversation is not None and completed_conversation.status == "completed"
+    assert [image.batch_id for image in completed_batch.images] == [second_batch_id]
+
+
+@pytest.mark.asyncio
 async def test_each_generated_image_keeps_its_batch_snapshot_and_can_be_deleted(
     history_repository: HistoryRepository,
 ) -> None:
@@ -302,17 +375,17 @@ async def test_each_generated_image_keeps_its_batch_snapshot_and_can_be_deleted(
     assert first_snapshot is not None
     assert first_snapshot.prompt == "第一轮提示词"
     assert first_snapshot.model == "gemini-first"
-    assert first_snapshot.detail == "high"
+    assert first_snapshot.detail == "auto"
     assert first_snapshot.image_count == 2
     assert first_snapshot.size == "16:9"
-    assert first_snapshot.resolution == "4K"
+    assert first_snapshot.resolution is None
     assert [(reference.category, reference.filename) for reference in first_snapshot.references] == [
         ("person", "person.jpg")
     ]
     assert second_snapshot is not None
     assert second_snapshot.prompt == "第二轮提示词"
     assert second_snapshot.model == "gemini-second"
-    assert second_snapshot.detail == "low"
+    assert second_snapshot.detail == "auto"
     assert second_snapshot.image_count == 1
     assert [(reference.category, reference.filename) for reference in second_snapshot.references] == [
         ("environment", "room.png")
@@ -457,6 +530,43 @@ async def test_generation_history_preserves_data_url_image_type(
     assert blob is not None
     assert blob.data == b"jpeg-bytes"
     assert blob.mime_type == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_generation_history_preserves_response_image_type(
+    history_repository: HistoryRepository,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="grok",
+            model="grok-imagine-image",
+            images=[ImageResult(base64_data="d2VicC1ieXRlcw==", mime_type="image/webp")],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+
+    await service.generate(
+        GenerateRequest(
+            provider="grok",
+            model="grok-imagine-image",
+            prompt="WebP 图片",
+            aspect_ratio="20:9",
+            resolution="2K",
+        ),
+        image_service,
+        1,
+    )
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+    assert detail is not None
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
+
+    assert blob is not None
+    assert blob.data == b"webp-bytes"
+    assert blob.mime_type == "image/webp"
+    assert detail.size == "20:9"
+    assert detail.resolution == "2K"
 
 
 @pytest.mark.asyncio
@@ -672,6 +782,43 @@ async def test_provider_failure_marks_history_failed(
     assert detail is not None
     assert detail.status == "failed"
     assert detail.error_code == "provider_auth"
+
+
+@pytest.mark.asyncio
+async def test_provider_request_failure_preserves_safe_upstream_detail(
+    history_repository: HistoryRepository,
+) -> None:
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    error = ProviderRequestError(
+        status_code=403,
+        response_content=(
+            b'{"error":{"message":"Grok account is not eligible; '
+            b'API key: xai-secretvalue123"}}'
+        ),
+        content_type="application/json",
+    )
+
+    with pytest.raises(ProviderRequestError):
+        await service.generate(
+            GenerateRequest(
+                provider="grok",
+                model="grok-imagine-image",
+                prompt="test",
+            ),
+            FailingImageService(error),
+            1,
+        )
+
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+
+    assert detail is not None
+    assert detail.error_message == (
+        "Provider request failed (HTTP 403): "
+        "Grok account is not eligible; API key: [REDACTED]"
+    )
+    assert "xai-secretvalue123" not in detail.error_message
 
 
 @pytest.mark.asyncio

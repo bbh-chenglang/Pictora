@@ -44,7 +44,7 @@ class LoginRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_login_email(cls, value: str) -> str:
+    def normalize_login_identifier(cls, value: str) -> str:
         return value.strip().lower()
 
 
@@ -82,9 +82,23 @@ class PasswordChangeRequest(BaseModel):
         return value
 
 
+class ProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str
+
+    @field_validator("username")
+    @classmethod
+    def username_must_not_be_blank(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("用户名不能为空")
+        return normalized
+
+
 class CurrentUserResponse(BaseModel):
     username: str
-    email: str
+    email: str | None
     is_admin: bool
     api_key_configured: bool
 
@@ -107,7 +121,7 @@ class StoredUser(BaseModel):
 class StoredSessionUser(BaseModel):
     id: int
     username: str
-    email: str = "test@example.com"
+    email: str | None = "test@example.com"
     is_admin: bool = False
     api_key: str
     model: str

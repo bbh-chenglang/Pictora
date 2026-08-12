@@ -2,11 +2,82 @@ import json
 
 import httpx
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.providers.compatible_provider import COMPATIBLE_USER_AGENT
 from app.providers.gemini_provider import GeminiProvider
 from app.schemas.generate import GenerateRequest, ReferenceImage
+
+
+def test_gemini_model_capabilities_normalize_native_image_parameters():
+    modern = GenerateRequest(
+        provider="gemini",
+        model="gemini-3.1-flash-image",
+        prompt="wide panorama",
+        aspect_ratio="1:8",
+        resolution="4K",
+    )
+    legacy = GenerateRequest(
+        provider="gemini",
+        model="gemini-2.5-flash-image",
+        prompt="square image",
+        aspect_ratio="1:1",
+        resolution="4K",
+    )
+    lite = GenerateRequest(
+        provider="gemini",
+        model="gemini-3.1-flash-lite-image-preview",
+        prompt="square image",
+        resolution="2K",
+    )
+
+    assert modern.aspect_ratio == "1:8"
+    assert modern.resolution == "4K"
+    assert legacy.resolution is None
+    assert lite.resolution is None
+    with pytest.raises(ValidationError):
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-3-pro-image-preview",
+            prompt="unsupported extreme ratio",
+            aspect_ratio="8:1",
+        )
+    with pytest.raises(ValidationError):
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-3.1-flash-image",
+            prompt="Grok-only ratio",
+            aspect_ratio="20:9",
+        )
+
+
+def test_gpt_native_format_and_background_constraints():
+    request = GenerateRequest(
+        provider="openai",
+        model="gpt-image-1.5",
+        prompt="transparent asset",
+        output_format="webp",
+        background="transparent",
+        output_compression=77,
+    )
+    png = GenerateRequest(
+        provider="openai",
+        model="gpt-image-1.5",
+        prompt="lossless asset",
+        output_format="png",
+        output_compression=77,
+    )
+
+    assert request.output_compression == 77
+    assert png.output_compression is None
+    with pytest.raises(ValidationError):
+        GenerateRequest(
+            provider="openai",
+            model="gpt-image-2",
+            prompt="unsupported transparent background",
+            output_format="png",
+            background="transparent",
+        )
 
 
 def test_gemini_provider_uses_native_gateway_headers(monkeypatch):

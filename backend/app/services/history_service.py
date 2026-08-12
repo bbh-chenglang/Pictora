@@ -84,8 +84,11 @@ class HistoryService:
         request: GenerateRequest,
         user_id: int = 1,
         reference_image: ReferenceImageInput | None = None,
-    ) -> int:
+        *,
+        include_batch_id: bool = False,
+    ) -> int | tuple[int, int]:
         project_id = await self._resolve_project(request.project_id, user_id)
+        stored_size = request.aspect_ratio if request.provider == "grok" else request.size
         if request.conversation_id is None:
             history_id = await self.repository.create(
                 user_id=user_id,
@@ -97,8 +100,12 @@ class HistoryService:
                 detail=request.detail,
                 image_count=request.count,
                 api_key_config_id=request.api_key_config_id,
-                size=request.size,
+                size=stored_size,
                 resolution=request.resolution,
+                output_format=request.output_format,
+                background=request.background,
+                output_compression=request.output_compression,
+                moderation=request.moderation,
             )
             batch_id = await self.repository.latest_generation_batch_id(
                 user_id=user_id,
@@ -116,8 +123,12 @@ class HistoryService:
                 detail=request.detail,
                 image_count=request.count,
                 api_key_config_id=request.api_key_config_id,
-                size=request.size,
+                size=stored_size,
                 resolution=request.resolution,
+                output_format=request.output_format,
+                background=request.background,
+                output_compression=request.output_compression,
+                moderation=request.moderation,
             )
         try:
             reference_position = await self.repository.next_image_position(
@@ -145,7 +156,7 @@ class HistoryService:
                 error_message="参考图保存失败",
             )
             raise
-        return history_id
+        return (history_id, batch_id) if include_batch_id else history_id
 
     async def execute_generation(
         self,
@@ -154,6 +165,8 @@ class HistoryService:
         image_service: ImageService,
         user_id: int = 1,
         reference_image: ReferenceImageInput | None = None,
+        *,
+        batch_id: int | None = None,
     ) -> GenerateResponse:
         generation_token = generation_id.set(uuid4().hex)
         started_at = perf_counter()
@@ -181,10 +194,11 @@ class HistoryService:
                 history_id=history_id,
                 image_count=len(response.images),
             )
-            batch_id = await self.repository.latest_generation_batch_id(
-                user_id=user_id,
-                history_id=history_id,
-            )
+            if batch_id is None:
+                batch_id = await self.repository.latest_generation_batch_id(
+                    user_id=user_id,
+                    history_id=history_id,
+                )
             generated_position = await self.repository.next_image_position(
                 user_id=user_id,
                 history_id=history_id,
@@ -224,8 +238,9 @@ class HistoryService:
                     byte_count=len(data),
                 )
             complete_started_at = perf_counter()
-            await self.repository.complete(
+            await self.repository.complete_generation_batch(
                 history_id,
+                batch_id,
                 elapsed_ms=_duration_ms(started_at),
             )
             project_id = await self.repository.get_project_id(user_id, history_id)
@@ -245,24 +260,42 @@ class HistoryService:
             return response
         except asyncio.CancelledError:
             _log_step("generation_cancelled", started_at, history_id=history_id)
-            await self.repository.fail(
+            if batch_id is None:
+                batch_id = await self.repository.latest_generation_batch_id(
+                    user_id=user_id,
+                    history_id=history_id,
+                )
+            await self.repository.fail_generation_batch(
                 history_id,
+                batch_id,
                 error_code="generation_cancelled",
                 error_message="生成任务已取消",
             )
             raise
         except ProviderError as exc:
             _log_step("generation_failed", started_at, history_id=history_id, error_code=exc.code)
-            await self.repository.fail(
+            if batch_id is None:
+                batch_id = await self.repository.latest_generation_batch_id(
+                    user_id=user_id,
+                    history_id=history_id,
+                )
+            await self.repository.fail_generation_batch(
                 history_id,
+                batch_id,
                 error_code=exc.code,
                 error_message=exc.message,
             )
             raise
         except Exception:
             _log_step("generation_failed", started_at, history_id=history_id, error_code="internal_error")
-            await self.repository.fail(
+            if batch_id is None:
+                batch_id = await self.repository.latest_generation_batch_id(
+                    user_id=user_id,
+                    history_id=history_id,
+                )
+            await self.repository.fail_generation_batch(
                 history_id,
+                batch_id,
                 error_code="internal_error",
                 error_message="任务处理失败",
             )
@@ -376,7 +409,11 @@ class HistoryService:
     ) -> tuple[str, bytes] | None:
         if image.base64_data:
             source = image.base64_data.strip()
-            mime_type = "image/png"
+            mime_type = (
+                image.mime_type.strip().lower()
+                if image.mime_type and image.mime_type.strip().lower().startswith("image/")
+                else "image/png"
+            )
             encoded = source
             if source.startswith("data:") and "," in source:
                 metadata, encoded = source.split(",", 1)

@@ -44,10 +44,13 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 MODEL_BY_PROVIDER = {
     "gpt": "gpt-image-2",
     "gemini": "gemini-3.1-flash-image",
+    "grok": "grok-imagine-image",
 }
 
 
-async def _list_openai_models(api_key: str) -> list[DiscoveredModel]:
+async def _list_openai_models(
+    api_key: str, provider_type: str = "gpt"
+) -> list[DiscoveredModel]:
     client = AsyncOpenAI(
         api_key=api_key,
         base_url=OPENAI_BASE_URL,
@@ -55,11 +58,16 @@ async def _list_openai_models(api_key: str) -> list[DiscoveredModel]:
     )
     try:
         response = await client.models.list()
-        return [
-            DiscoveredModel(id=model_id, provider_type="gpt")
+        model_ids = [
+            model_id
             for model in (getattr(response, "data", []) or [])
             if (model_id := getattr(model, "id", None))
         ]
+        if provider_type == "grok":
+            model_ids = [model_id for model_id in model_ids if "grok" in model_id.casefold()]
+        else:
+            model_ids = [model_id for model_id in model_ids if "grok" not in model_id.casefold()]
+        return [DiscoveredModel(id=model_id, provider_type=provider_type) for model_id in model_ids]
     finally:
         await client.close()
 
@@ -90,7 +98,7 @@ async def _list_remote_models(
 ) -> list[DiscoveredModel]:
     if provider_type == "gemini":
         return await _list_gemini_models(api_key)
-    return await _list_openai_models(api_key)
+    return await _list_openai_models(api_key, provider_type)
 
 
 def _summary(config) -> ApiKeyConfigSummary:
@@ -109,11 +117,12 @@ async def _settings_response(repository: ApiKeyConfigRepository, user_id: int):
     if active_id is None and configs:
         active_id = configs[0].id
     active = next((config for config in configs if config.id == active_id), configs[0] if configs else None)
-    active_is_gemini = bool(active and active.provider_type == "gemini")
+    active_provider_type = active.provider_type if active else "gpt"
+    active_is_gemini = active_provider_type == "gemini"
     return {
         "provider_name": FIXED_PROVIDER_NAME,
         "base_url": GEMINI_BASE_URL if active_is_gemini else OPENAI_BASE_URL,
-        "provider_id": "gemini" if active_is_gemini else "compatible",
+        "provider_id": "gemini" if active_is_gemini else active_provider_type if active_provider_type == "grok" else "compatible",
         "active_config_id": active_id,
         "model": active.model if active else MODEL_BY_PROVIDER["gpt"],
         "api_key_configured": bool(active and active.api_key.strip()),

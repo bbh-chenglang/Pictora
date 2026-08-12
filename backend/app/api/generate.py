@@ -33,14 +33,37 @@ from app.services.image_service import ImageService
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 logger = logging.getLogger(__name__)
 SUPPORTED_REFERENCE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-MAX_REFERENCE_IMAGES = 8
+MAX_GPT_REFERENCE_IMAGES = 16
+MAX_GEMINI_REFERENCE_IMAGES = 14
+MAX_LEGACY_GEMINI_REFERENCE_IMAGES = 3
+MAX_GROK_REFERENCE_IMAGES = 3
 Detail = Literal["low", "medium", "high", "original", "auto"]
-AspectRatio = Literal["1:1", "3:2", "2:3", "9:16", "16:9"]
+AspectRatio = Literal[
+    "auto", "1:1", "1:2", "1:4", "1:8", "2:1", "2:3", "3:2", "3:4",
+    "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "19.5:9",
+    "9:19.5", "20:9", "9:20", "21:9",
+]
 Resolution = Literal["1K", "2K", "4K"]
+OutputFormat = Literal["png", "jpeg", "webp"]
+Background = Literal["auto", "opaque", "transparent"]
+Moderation = Literal["auto", "low"]
+
+
+def _reference_limit(provider: str, model: str) -> int:
+    if provider == "grok":
+        return MAX_GROK_REFERENCE_IMAGES
+    if provider == "gemini":
+        return (
+            MAX_GEMINI_REFERENCE_IMAGES
+            if "gemini-3" in model.casefold()
+            else MAX_LEGACY_GEMINI_REFERENCE_IMAGES
+        )
+    return MAX_GPT_REFERENCE_IMAGES
 
 
 async def _execute_generation_task(
     history_id: int,
+    batch_id: int,
     request: GenerateRequest,
     service: ImageService,
     history_service: HistoryService,
@@ -54,6 +77,7 @@ async def _execute_generation_task(
             service,
             user.id,
             reference_image=reference_image,
+            batch_id=batch_id,
         )
     except asyncio.CancelledError:
         raise
@@ -70,10 +94,11 @@ async def _submit_generation(
     reference_image: ReferenceImageInput | None = None,
 ) -> GenerateTaskResponse:
     try:
-        history_id = await history_service.create_generation(
+        history_id, batch_id = await history_service.create_generation(
             request,
             user.id,
             reference_image=reference_image,
+            include_batch_id=True,
         )
     except Exception as exc:
         from app.repositories.project_repository import ProjectNotFoundError
@@ -91,6 +116,7 @@ async def _submit_generation(
         history_id,
         lambda: _execute_generation_task(
             history_id,
+            batch_id,
             request,
             service,
             history_service,
@@ -100,7 +126,8 @@ async def _submit_generation(
     )
     return GenerateTaskResponse(
         task_id=history_id,
-        status_url=f"/api/history/{history_id}",
+        batch_id=batch_id,
+        status_url=f"/api/history/{history_id}/batches/{batch_id}",
     )
 
 
@@ -127,11 +154,15 @@ async def generate_image_from_reference(
     conversation_id: Annotated[int | None, Form(gt=0)] = None,
     image_categories: Annotated[list[ReferenceCategory] | None, Form()] = None,
     prompts: Annotated[list[str] | None, Form()] = None,
-    count: Annotated[int, Form(ge=1, le=4)] = 1,
+    count: Annotated[int, Form(ge=1, le=10)] = 1,
     detail: Annotated[Detail, Form()] = "auto",
-    size: Annotated[str, Form()] = "1024x1024",
+    size: Annotated[str | None, Form()] = None,
     aspect_ratio: Annotated[AspectRatio | None, Form()] = None,
     resolution: Annotated[Resolution | None, Form()] = None,
+    output_format: Annotated[OutputFormat | None, Form()] = None,
+    background: Annotated[Background | None, Form()] = None,
+    output_compression: Annotated[int | None, Form(ge=0, le=100)] = None,
+    moderation: Annotated[Moderation | None, Form()] = None,
     service: ImageService = Depends(get_image_service),
     history_service: HistoryService = Depends(get_history_service),
     task_manager: GenerationTaskManager = Depends(get_generation_task_manager),
@@ -143,10 +174,11 @@ async def generate_image_from_reference(
             400,
             {"error": {"code": "invalid_image", "message": "At least one image is required"}},
         )
-    if len(uploads) > MAX_REFERENCE_IMAGES:
+    reference_limit = _reference_limit(provider, model)
+    if len(uploads) > reference_limit:
         raise HTTPException(
             400,
-            {"error": {"code": "invalid_image", "message": f"At most {MAX_REFERENCE_IMAGES} images are allowed"}},
+            {"error": {"code": "invalid_image", "message": f"At most {reference_limit} images are allowed"}},
         )
 
     reference_images: list[ReferenceImage] = []
@@ -185,6 +217,10 @@ async def generate_image_from_reference(
         size=size,
         aspect_ratio=aspect_ratio,
         resolution=resolution,
+        output_format=output_format,
+        background=background,
+        output_compression=output_compression,
+        moderation=moderation,
     )
     reference_image: ReferenceImageInput = (
         reference_images[0] if len(reference_images) == 1 else reference_images

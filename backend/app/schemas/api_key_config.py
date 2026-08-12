@@ -17,7 +17,7 @@ class StoredApiKeyConfig:
     updated_at: datetime
 
 
-ProviderType = Literal["gpt", "gemini"]
+ProviderType = Literal["gpt", "gemini", "grok"]
 
 
 class ApiKeyConfigCreate(BaseModel):

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ArrowLeft,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Download,
   ExternalLink,
@@ -34,7 +35,7 @@ import ProjectDialog from "./components/ProjectDialog.vue";
 import SnowfallBackground from "./components/SnowfallBackground.vue";
 
 type Provider = { id: string; label: string; models: string[] };
-type ApiKeyProvider = "gpt" | "gemini";
+type ApiKeyProvider = "gpt" | "gemini" | "grok";
 type BackgroundEffect = "gravity-grid" | "snowfall";
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
 type CurrentView = "workspace" | "settings" | "admin";
@@ -75,6 +76,15 @@ type AdminUsage = {
   created_at: string;
   completed_at: string | null;
 };
+type AdminUserPage = {
+  items: AdminUser[];
+  total: number;
+  result_total: number;
+  admin_total: number;
+  usage_total: number;
+  page: number;
+  page_size: number;
+};
 type DiscoveredModel = { id: string; provider_type: ApiKeyProvider };
 type ApiKeyTestResult = {
   message: string;
@@ -93,6 +103,7 @@ type ImageResult = {
   generation_time_ms?: number | null;
   history_id?: number;
   history_image_id?: number;
+  batch_id?: number | null;
 };
 type HistorySummary = {
   id: number;
@@ -112,6 +123,7 @@ type HistorySummary = {
 };
 type HistoryImage = {
   id: number;
+  batch_id?: number | null;
   role: "reference" | "generated";
   mime_type: string;
   filename?: string | null;
@@ -122,6 +134,15 @@ type HistoryImage = {
 type HistoryDetail = HistorySummary & {
   analysis_text?: string | null;
   completed_at?: string | null;
+  images: HistoryImage[];
+};
+type GenerationBatchDetail = {
+  id: number;
+  history_id: number;
+  status: "pending" | "completed" | "failed";
+  elapsed_ms?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
   images: HistoryImage[];
 };
 type ReferenceCategory = "person" | "environment" | "object";
@@ -147,6 +168,10 @@ type HistoryImageEditSnapshot = {
   image_count: number;
   size?: string | null;
   resolution?: string | null;
+  output_format?: string | null;
+  background?: string | null;
+  output_compression?: number | null;
+  moderation?: string | null;
   references: Array<{
     id: number;
     category: ReferenceCategory;
@@ -164,14 +189,34 @@ const MODEL_OPTIONS = [
   "gpt-image-1Mini",
 ] as const;
 const DEFAULT_MODEL = MODEL_OPTIONS[0];
-const SIZE_OPTIONS = [
-  { label: "1:1", value: "1:1" },
-  { label: "3:2", value: "3:2" },
-  { label: "2:3", value: "2:3" },
-  { label: "9:16", value: "9:16" },
-  { label: "16:9", value: "16:9" },
+const GEMINI_ASPECT_RATIO_OPTIONS = [
+  "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
 ] as const;
-const DEFAULT_SIZE = "1:1";
+const GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS = [
+  ...GEMINI_ASPECT_RATIO_OPTIONS,
+  "1:4", "1:8", "4:1", "8:1",
+] as const;
+const GPT_STANDARD_SIZE_OPTIONS = [
+  { label: "自动", value: "auto" },
+  { label: "正方形", value: "1024x1024" },
+  { label: "横向", value: "1536x1024" },
+  { label: "纵向", value: "1024x1536" },
+] as const;
+const GPT_IMAGE_2_SIZE_OPTIONS = [
+  ...GPT_STANDARD_SIZE_OPTIONS,
+  { label: "2K 正方形", value: "2048x2048" },
+  { label: "2K 横向", value: "2048x1152" },
+  { label: "2K 纵向", value: "1152x2048" },
+  { label: "4K 横向", value: "3840x2160" },
+  { label: "4K 纵向", value: "2160x3840" },
+] as const;
+const DEFAULT_GPT_SIZE = "auto";
+const DEFAULT_GEMINI_ASPECT_RATIO = "1:1";
+const GROK_ASPECT_RATIO_OPTIONS = [
+  "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3",
+  "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20",
+] as const;
+const DEFAULT_GROK_ASPECT_RATIO = "auto";
 const LEGACY_SIZE_TO_ASPECT_RATIO: Record<string, string> = {
   "1024x1024": "1:1",
   "1536x1024": "3:2",
@@ -182,6 +227,7 @@ const LEGACY_SIZE_TO_ASPECT_RATIO: Record<string, string> = {
   "1280x720": "16:9",
 };
 const RESOLUTION_OPTIONS = ["1K", "2K", "4K"] as const;
+const GROK_RESOLUTION_OPTIONS = ["1K", "2K"] as const;
 const DEFAULT_RESOLUTION = "1K";
 const REFERENCE_CATEGORIES: Array<{
   id: ReferenceCategory;
@@ -197,13 +243,23 @@ const QUALITY_OPTIONS = [
   { label: "中", value: "medium" },
   { label: "高", value: "high" },
 ] as const;
-const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
-const MAX_REFERENCE_IMAGES = 8;
+const GROK_QUALITY_OPTIONS = [
+  { label: "低", value: "low" },
+  { label: "中", value: "medium" },
+] as const;
+const GEMINI_IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
+const GPT_IMAGE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+const MAX_GPT_REFERENCE_IMAGES = 16;
+const MAX_GEMINI_REFERENCE_IMAGES = 14;
+const MAX_LEGACY_GEMINI_REFERENCE_IMAGES = 3;
+const MAX_GROK_REFERENCE_IMAGES = 3;
 const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 type ParameterMenu = "apiKey" | "model" | "size" | "resolution" | "quality" | "count";
 type GenerationRun = {
   controller: AbortController;
   taskId: number | null;
+  batchId: number | null;
+  conversationId: number | null;
   startedAt: number;
   elapsedMs: number;
   timer?: number;
@@ -230,7 +286,7 @@ const prompt = ref("");
 const batchPrompts = ref("");
 const imageCount = ref(1);
 const quality = ref("auto");
-const size = ref<string>(DEFAULT_SIZE);
+const size = ref<string>(DEFAULT_GPT_SIZE);
 const resolution = ref<string>(DEFAULT_RESOLUTION);
 const referencePreviews = ref<ReferencePreview[]>([]);
 const referenceDragActiveCategory = ref<ReferenceCategory | null>(null);
@@ -238,6 +294,7 @@ const generated = ref<ImageResult[]>([]);
 const deletingImageIds = ref<number[]>([]);
 const modifyingImageIds = ref<number[]>([]);
 const busy = ref<"generate" | "analyze" | "">("");
+const generationSubmitting = ref(false);
 const error = ref("");
 const apiKeyConfigured = ref(false);
 const history = ref<HistorySummary[]>([]);
@@ -265,6 +322,9 @@ const passwordConfirmation = ref("");
 const currentUsername = ref("");
 const currentEmail = ref("");
 const currentIsAdmin = ref(false);
+const profileUsername = ref("");
+const profileStatus = ref("");
+const profileSaving = ref(false);
 const authError = ref("");
 const authSubmitting = ref(false);
 const verificationSending = ref(false);
@@ -296,6 +356,12 @@ const feedbackSubmitting = ref(false);
 const adminUsers = ref<AdminUser[]>([]);
 const adminUsage = ref<AdminUsage[]>([]);
 const adminSearch = ref("");
+const adminPage = ref(1);
+const adminPageSize = 20;
+const adminUserTotal = ref(0);
+const adminResultTotal = ref(0);
+const adminUserAdminTotal = ref(0);
+const adminUsageTotal = ref(0);
 const selectedAdminUserId = ref<number | null>(null);
 const adminLoading = ref(false);
 const adminError = ref("");
@@ -305,10 +371,16 @@ const adminResetting = ref(false);
 const updateStatus = ref<UpdateStatus>("idle");
 const serverVersion = ref("");
 const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
+const WORKSPACE_RESULT_RATIO_KEY = "genimage-workspace-result-ratio";
+const DEFAULT_WORKSPACE_RESULT_RATIO = 48;
 const backgroundEffect = ref<BackgroundEffect>(loadBackgroundEffect());
+const workspaceResultRatio = ref(loadWorkspaceResultRatio());
+const workspacePanel = ref<HTMLElement | null>(null);
+const workspaceResizing = ref(false);
 let settingsSaveQueue: Promise<void> = Promise.resolve();
 let referencePreviewSequence = 0;
 let verificationCooldownTimer: number | undefined;
+let adminSearchTimer: number | undefined;
 const referenceDragDepth: Record<ReferenceCategory, number> = {
   person: 0,
   environment: 0,
@@ -330,6 +402,82 @@ function loadBackgroundEffect(): BackgroundEffect {
   }
 }
 
+function loadWorkspaceResultRatio() {
+  try {
+    const stored = Number(window.localStorage.getItem(WORKSPACE_RESULT_RATIO_KEY));
+    return Number.isFinite(stored) && stored >= 25 && stored <= 75
+      ? stored
+      : DEFAULT_WORKSPACE_RESULT_RATIO;
+  } catch {
+    return DEFAULT_WORKSPACE_RESULT_RATIO;
+  }
+}
+
+function persistWorkspaceResultRatio() {
+  try {
+    window.localStorage.setItem(WORKSPACE_RESULT_RATIO_KEY, String(workspaceResultRatio.value));
+  } catch {
+    // The resized layout still applies for the current session when storage is unavailable.
+  }
+}
+
+function workspaceRatioBounds() {
+  const height = workspacePanel.value?.getBoundingClientRect().height ?? 0;
+  if (height <= 0) return { minimum: 25, maximum: 75 };
+  const minimum = Math.max(25, 260 / height * 100);
+  const maximum = Math.min(78, (height - 232) / height * 100);
+  return maximum > minimum ? { minimum, maximum } : { minimum: 25, maximum: 75 };
+}
+
+function setWorkspaceResultRatio(ratio: number, persist = false) {
+  const { minimum, maximum } = workspaceRatioBounds();
+  workspaceResultRatio.value = Math.round(Math.min(maximum, Math.max(minimum, ratio)) * 10) / 10;
+  if (persist) persistWorkspaceResultRatio();
+}
+
+function resizeWorkspaceFromPointer(event: PointerEvent) {
+  const panel = workspacePanel.value;
+  if (!panel) return;
+  const bounds = panel.getBoundingClientRect();
+  if (!bounds.height) return;
+  setWorkspaceResultRatio((event.clientY - bounds.top) / bounds.height * 100);
+}
+
+function finishWorkspaceResize() {
+  if (!workspaceResizing.value) return;
+  workspaceResizing.value = false;
+  document.body.classList.remove("workspace-is-resizing");
+  window.removeEventListener("pointermove", resizeWorkspaceFromPointer);
+  window.removeEventListener("pointerup", finishWorkspaceResize);
+  window.removeEventListener("pointercancel", finishWorkspaceResize);
+  persistWorkspaceResultRatio();
+}
+
+function startWorkspaceResize(event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  workspaceResizing.value = true;
+  document.body.classList.add("workspace-is-resizing");
+  resizeWorkspaceFromPointer(event);
+  window.addEventListener("pointermove", resizeWorkspaceFromPointer);
+  window.addEventListener("pointerup", finishWorkspaceResize);
+  window.addEventListener("pointercancel", finishWorkspaceResize);
+}
+
+function handleWorkspaceResizeKeydown(event: KeyboardEvent) {
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    setWorkspaceResultRatio(workspaceResultRatio.value + (event.key === "ArrowDown" ? 2 : -2), true);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    setWorkspaceResultRatio(DEFAULT_WORKSPACE_RESULT_RATIO, true);
+  }
+}
+
+function resetWorkspaceResultRatio() {
+  setWorkspaceResultRatio(DEFAULT_WORKSPACE_RESULT_RATIO, true);
+}
+
 function resolveCurrentView(): CurrentView {
   if (window.location.pathname === "/settings") return "settings";
   if (window.location.pathname === "/admin") return "admin";
@@ -344,39 +492,40 @@ function selectBackgroundEffect(effect: BackgroundEffect) {
     // The selected effect still applies for the current session when storage is unavailable.
   }
 }
-const activeGenerationRun = computed(() => {
+const visibleGenerationRuns = computed(() => {
   generationVersion.value;
-  return activeGenerationRunId.value === null
-    ? null
-    : generationRuns.get(activeGenerationRunId.value) ?? null;
-});
-const activeGenerationElapsedMs = computed(() => {
-  generationVersion.value;
-  if (activeGenerationRunId.value === null) return null;
-  return generationRuns.get(activeGenerationRunId.value)?.elapsedMs ?? 0;
-});
-const filteredAdminUsers = computed(() => {
-  const query = adminSearch.value.trim().toLowerCase();
-  if (!query) return adminUsers.value;
-  return adminUsers.value.filter((user) =>
-    user.username.toLowerCase().includes(query) || user.email.toLowerCase().includes(query),
-  );
+  if (activeHistoryId.value !== null) return [];
+
+  if (currentConversationId.value !== null) {
+    return [...generationRuns.entries()]
+      .filter(([, run]) => run.conversationId === currentConversationId.value)
+      .map(([id, run]) => ({ id, run }));
+  }
+
+  if (activeGenerationRunId.value === null) return [];
+  const run = generationRuns.get(activeGenerationRunId.value);
+  return run ? [{ id: activeGenerationRunId.value, run }] : [];
 });
 const selectedAdminUser = computed(() =>
   adminUsers.value.find((user) => user.id === selectedAdminUserId.value) ?? null,
 );
-const adminUsageTotal = computed(() =>
-  adminUsers.value.reduce((total, user) => total + user.usage_count, 0),
-);
-const activeGenerationImageCount = computed(() => activeGenerationRun.value?.imageCount ?? 1);
-const generationFillPercent = computed(() => {
-  const elapsedMs = activeGenerationElapsedMs.value;
-  if (elapsedMs === null) return 0;
+const adminPageCount = computed(() => Math.max(1, Math.ceil(adminResultTotal.value / adminPageSize)));
+function generationFillPercent(elapsedMs: number) {
   return Math.min(94, 8 + elapsedMs / 450);
-});
+}
 const runningGenerations = computed<RunningGenerationSummary[]>(() => {
   generationVersion.value;
-  return [...generationRuns.entries()].map(([id, run]) => ({
+  const conversations = new Map<string, { id: number; run: GenerationRun }>();
+  for (const [id, run] of generationRuns.entries()) {
+    const conversationId = run.conversationId ?? run.taskId;
+    const key = conversationId === null ? `run-${id}` : `conversation-${conversationId}`;
+    const current = conversations.get(key);
+    const shouldReplace = !current
+      || id === activeGenerationRunId.value
+      || (current.id !== activeGenerationRunId.value && run.startedAt > current.run.startedAt);
+    if (shouldReplace) conversations.set(key, { id, run });
+  }
+  return [...conversations.values()].map(({ id, run }) => ({
     id,
     projectId: run.projectId,
     prompt: run.prompt,
@@ -389,8 +538,77 @@ const runningGenerations = computed<RunningGenerationSummary[]>(() => {
 const canAnalyze = computed(() => referencePreviews.value.length > 0 && busy.value !== "analyze");
 const selectedConfig = computed(() => apiKeyConfigs.value.find((item) => item.id === activeApiKeyConfigId.value) ?? null);
 const selectedProviderType = computed<ApiKeyProvider>(() =>
-  selectedConfig.value?.provider_type ?? (provider.value === "gemini" ? "gemini" : "gpt"),
+  selectedConfig.value?.provider_type
+    ?? (provider.value === "gemini" ? "gemini" : provider.value === "grok" ? "grok" : "gpt"),
 );
+const normalizedModel = computed(() => model.value.toLowerCase());
+const isGptImage2 = computed(() => normalizedModel.value.startsWith("gpt-image-2"));
+const isGemini31FlashImage = computed(() => normalizedModel.value.includes("gemini-3.1-flash-image"));
+const supportsGeminiResolution = computed(() => (
+  selectedProviderType.value === "gemini"
+  && normalizedModel.value.includes("gemini-3")
+  && !normalizedModel.value.includes("lite-image")
+));
+const supportsGrokQuality = computed(() => (
+  selectedProviderType.value === "grok" && normalizedModel.value === "grok-imagine-image-2.0"
+));
+const geminiAspectRatioOptions = computed<readonly string[]>(() => (
+  isGemini31FlashImage.value
+    ? GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS
+    : GEMINI_ASPECT_RATIO_OPTIONS
+));
+const nativeAspectRatioOptions = computed<readonly string[]>(() => (
+  selectedProviderType.value === "grok" ? GROK_ASPECT_RATIO_OPTIONS : geminiAspectRatioOptions.value
+));
+const resolutionOptions = computed<readonly string[]>(() => (
+  selectedProviderType.value === "grok" ? GROK_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS
+));
+const qualityOptions = computed(() => (
+  supportsGrokQuality.value ? GROK_QUALITY_OPTIONS : QUALITY_OPTIONS
+));
+const gptSizeOptions = computed(() => (
+  isGptImage2.value ? GPT_IMAGE_2_SIZE_OPTIONS : GPT_STANDARD_SIZE_OPTIONS
+));
+const selectedGptSizeLabel = computed(() => (
+  gptSizeOptions.value.find((option) => option.value === size.value)?.label ?? size.value
+));
+const imageCountOptions = computed<readonly number[]>(() =>
+  selectedProviderType.value === "gemini" ? GEMINI_IMAGE_COUNT_OPTIONS : GPT_IMAGE_COUNT_OPTIONS,
+);
+const maxReferenceImages = computed(() => {
+  if (selectedProviderType.value === "grok") return MAX_GROK_REFERENCE_IMAGES;
+  if (selectedProviderType.value === "gpt") return MAX_GPT_REFERENCE_IMAGES;
+  return normalizedModel.value.includes("gemini-3")
+    ? MAX_GEMINI_REFERENCE_IMAGES
+    : MAX_LEGACY_GEMINI_REFERENCE_IMAGES;
+});
+watch([selectedProviderType, normalizedModel], () => {
+  imageCount.value = Math.min(imageCount.value, imageCountOptions.value.at(-1) ?? 4);
+  if (selectedProviderType.value === "gpt") {
+    if (!gptSizeOptions.value.some((option) => option.value === size.value)) size.value = DEFAULT_GPT_SIZE;
+  } else if (selectedProviderType.value === "gemini") {
+    const candidate = LEGACY_SIZE_TO_ASPECT_RATIO[size.value] ?? size.value;
+    size.value = geminiAspectRatioOptions.value.includes(candidate) ? candidate : DEFAULT_GEMINI_ASPECT_RATIO;
+  } else if (selectedProviderType.value === "grok") {
+    size.value = GROK_ASPECT_RATIO_OPTIONS.includes(size.value as typeof GROK_ASPECT_RATIO_OPTIONS[number])
+      ? size.value
+      : DEFAULT_GROK_ASPECT_RATIO;
+    if (!GROK_RESOLUTION_OPTIONS.includes(resolution.value as typeof GROK_RESOLUTION_OPTIONS[number])) {
+      resolution.value = DEFAULT_RESOLUTION;
+    }
+    quality.value = supportsGrokQuality.value && GROK_QUALITY_OPTIONS.some((option) => option.value === quality.value)
+      ? quality.value
+      : supportsGrokQuality.value ? "medium" : "auto";
+  }
+  const supportedMenus = selectedProviderType.value === "grok"
+    ? ["apiKey", "model", "size", "resolution", ...(supportsGrokQuality.value ? ["quality"] : []), "count"]
+    : selectedProviderType.value === "gemini"
+      ? ["apiKey", "model", "size", ...(supportsGeminiResolution.value ? ["resolution"] : []), "count"]
+      : ["apiKey", "model", "size", "quality", "count"];
+  if (openParameterMenu.value && !supportedMenus.includes(openParameterMenu.value)) {
+    openParameterMenu.value = null;
+  }
+});
 const selectedApiKeyLabel = computed(() => selectedConfig.value?.alias ?? "未配置");
 const selectedModelLabel = computed(() => model.value);
 const modelOptions = computed(() => {
@@ -430,7 +648,7 @@ function readableError(data: any, fallback: string) {
     provider_not_found: "找不到所选服务商",
     invalid_image: "图片格式或内容无效",
     history_not_found: "历史记录不存在",
-    invalid_credentials: "邮箱或密码错误",
+  invalid_credentials: "邮箱、旧用户名或密码错误",
     invalid_verification_code: "验证码错误或已失效",
     email_registered: "该邮箱已注册",
     username_taken: "用户名已存在",
@@ -509,7 +727,7 @@ async function submitAuth(mode: "login" | "register") {
   if (!email.value.trim() || password.value.length < 6 || !registrationValid) {
     authError.value = mode === "register"
       ? "请填写用户名、邮箱和 6 位验证码，密码至少 6 位且两次输入一致"
-      : "请填写邮箱和密码";
+      : "请填写邮箱或旧用户名和密码";
     return;
   }
   const body = mode === "register"
@@ -544,6 +762,7 @@ async function submitAuth(mode: "login" | "register") {
 function applyCurrentUser(data: any) {
   currentUsername.value = String(data?.username ?? "");
   currentEmail.value = String(data?.email ?? "");
+  profileUsername.value = currentUsername.value;
   currentIsAdmin.value = Boolean(data?.is_admin);
 }
 
@@ -593,6 +812,8 @@ async function logout() {
   history.value = [];
   currentUsername.value = "";
   currentEmail.value = "";
+  profileUsername.value = "";
+  profileStatus.value = "";
   currentIsAdmin.value = false;
   adminUsers.value = [];
   adminUsage.value = [];
@@ -603,6 +824,8 @@ function navigateToSettings() {
   window.history.pushState({}, "", "/settings");
   currentView.value = "settings";
   settingsApiKey.value = "";
+  profileUsername.value = currentUsername.value;
+  profileStatus.value = "";
 }
 
 function navigateToWorkspace() {
@@ -622,15 +845,32 @@ async function navigateToAdmin() {
   await loadAdminUsers();
 }
 
-async function loadAdminUsers() {
+async function loadAdminUsers(page = adminPage.value) {
   if (!currentIsAdmin.value) return;
+  adminPage.value = Math.max(1, page);
   adminLoading.value = true;
   adminError.value = "";
   try {
-    const response = await fetch(`${API_BASE}/api/admin/users`, { credentials: "include" });
+    const parameters = new URLSearchParams();
+    if (adminPage.value > 1) parameters.set("page", String(adminPage.value));
+    if (adminSearch.value.trim()) parameters.set("search", adminSearch.value.trim());
+    const query = parameters.size ? `?${parameters.toString()}` : "";
+    const response = await fetch(`${API_BASE}/api/admin/users${query}`, { credentials: "include" });
     const data = await parseJsonResponse(response);
     if (!response.ok) throw new Error(readableError(data, "无法加载用户信息"));
-    adminUsers.value = Array.isArray(data) ? data : [];
+    const legacyItems = Array.isArray(data) ? data as AdminUser[] : null;
+    const pageData = (legacyItems ? null : data) as AdminUserPage | null;
+    adminUsers.value = legacyItems ?? (Array.isArray(pageData?.items) ? pageData.items : []);
+    adminUserTotal.value = legacyItems?.length ?? Number(pageData?.total ?? 0);
+    adminResultTotal.value = legacyItems?.length ?? Number(pageData?.result_total ?? pageData?.total ?? 0);
+    adminUserAdminTotal.value = legacyItems?.filter((user) => user.is_admin).length ?? Number(pageData?.admin_total ?? 0);
+    adminUsageTotal.value = legacyItems?.reduce((total, user) => total + user.usage_count, 0) ?? Number(pageData?.usage_total ?? 0);
+    if (!legacyItems && pageData?.page) adminPage.value = pageData.page;
+    const lastPage = Math.max(1, Math.ceil(adminResultTotal.value / adminPageSize));
+    if (adminPage.value > lastPage) {
+      await loadAdminUsers(lastPage);
+      return;
+    }
     const selectedExists = adminUsers.value.some((user) => user.id === selectedAdminUserId.value);
     selectedAdminUserId.value = selectedExists
       ? selectedAdminUserId.value
@@ -642,6 +882,19 @@ async function loadAdminUsers() {
   } finally {
     adminLoading.value = false;
   }
+}
+
+function scheduleAdminSearch() {
+  if (adminSearchTimer !== undefined) window.clearTimeout(adminSearchTimer);
+  adminSearchTimer = window.setTimeout(() => {
+    adminSearchTimer = undefined;
+    void loadAdminUsers(1);
+  }, 300);
+}
+
+function changeAdminPage(page: number) {
+  if (page < 1 || page > adminPageCount.value || page === adminPage.value) return;
+  void loadAdminUsers(page);
 }
 
 async function loadAdminUsage(userId: number) {
@@ -695,9 +948,18 @@ async function resetAdminUserPassword() {
 
 function formatAdminDate(value: string | null) {
   if (!value) return "-";
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  }).format(new Date(value));
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(normalized));
+}
+
+function providerTypeLabel(providerType: ApiKeyProvider) {
+  if (providerType === "gemini") return "Gemini";
+  if (providerType === "grok") return "Grok";
+  return "OpenAI";
 }
 
 function formatAdminDuration(milliseconds: number | null) {
@@ -762,7 +1024,9 @@ async function selectApiKeyConfig(selected: ApiKeyConfig) {
   if (legacySettingsMode.value) return;
   activeApiKeyConfigId.value = selected.id;
   model.value = selected.model;
-  provider.value = selected.provider_type === "gemini" ? "gemini" : "compatible";
+  provider.value = selected.provider_type === "gemini"
+    ? "gemini"
+    : selected.provider_type === "grok" ? "grok" : "compatible";
   apiKeyConfigured.value = selected.api_key_configured;
   await fetch(`${API_BASE}/api/settings/active`, {
     method: "PUT",
@@ -775,9 +1039,36 @@ async function selectApiKeyConfig(selected: ApiKeyConfig) {
 }
 
 function historyProviderType(item: Pick<HistorySummary, "provider" | "model">): ApiKeyProvider {
-  return item.provider.toLowerCase() === "gemini" || item.model.toLowerCase().includes("gemini")
-    ? "gemini"
-    : "gpt";
+  const providerId = item.provider.toLowerCase();
+  const modelId = item.model.toLowerCase();
+  if (providerId === "gemini" || modelId.includes("gemini")) return "gemini";
+  if (providerId === "grok" || modelId.includes("grok")) return "grok";
+  return "gpt";
+}
+
+function supportedSizeFor(providerType: ApiKeyProvider, modelId: string, value?: string | null) {
+  if (providerType === "grok") {
+    return GROK_ASPECT_RATIO_OPTIONS.includes(value as typeof GROK_ASPECT_RATIO_OPTIONS[number])
+      ? value ?? DEFAULT_GROK_ASPECT_RATIO
+      : DEFAULT_GROK_ASPECT_RATIO;
+  }
+  if (providerType === "gemini") {
+    const candidate = value ? LEGACY_SIZE_TO_ASPECT_RATIO[value] ?? value : DEFAULT_GEMINI_ASPECT_RATIO;
+    const options: readonly string[] = modelId.toLowerCase().includes("gemini-3.1-flash-image")
+      ? GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS
+      : GEMINI_ASPECT_RATIO_OPTIONS;
+    return options.includes(candidate) ? candidate : DEFAULT_GEMINI_ASPECT_RATIO;
+  }
+  const candidate = value ?? DEFAULT_GPT_SIZE;
+  const options = modelId.toLowerCase().startsWith("gpt-image-2")
+    ? GPT_IMAGE_2_SIZE_OPTIONS
+    : GPT_STANDARD_SIZE_OPTIONS;
+  return options.some((option) => option.value === candidate) ? candidate : DEFAULT_GPT_SIZE;
+}
+
+function supportedResolutionFor(providerType: ApiKeyProvider, value?: string | null) {
+  const options: readonly string[] = providerType === "grok" ? GROK_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS;
+  return options.includes(value ?? "") ? value ?? DEFAULT_RESOLUTION : DEFAULT_RESOLUTION;
 }
 
 async function restoreHistoryApiConfig(
@@ -880,6 +1171,36 @@ async function changePassword() {
   authView.value = "login";
 }
 
+async function updateProfile() {
+  const nextUsername = profileUsername.value.trim();
+  profileStatus.value = "";
+  if (!nextUsername) {
+    profileStatus.value = "用户名不能为空";
+    return;
+  }
+  if (nextUsername === currentUsername.value || profileSaving.value) return;
+  profileSaving.value = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/profile`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: nextUsername }),
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) {
+      profileStatus.value = readableError(data, "用户名修改失败");
+      return;
+    }
+    applyCurrentUser(data);
+    profileStatus.value = "用户名已更新";
+  } catch {
+    profileStatus.value = "无法连接服务器";
+  } finally {
+    profileSaving.value = false;
+  }
+}
+
 async function submitFeedback() {
   const message = feedbackMessage.value.trim();
   if (!message || feedbackSubmitting.value) return;
@@ -918,7 +1239,9 @@ async function loadRuntimeSettings() {
   const active = configs.find((item) => item.id === activeApiKeyConfigId.value);
   model.value = active?.model ?? ((MODEL_OPTIONS as readonly string[]).includes(data.model) ? data.model : DEFAULT_MODEL);
   if (active) {
-    provider.value = active.provider_type === "gemini" ? "gemini" : "compatible";
+    provider.value = active.provider_type === "gemini"
+      ? "gemini"
+      : active.provider_type === "grok" ? "grok" : "compatible";
     await loadConfigModels(active);
   } else {
     availableModels.value = [];
@@ -1087,7 +1410,9 @@ async function loadProviders() {
   providers.value = data.providers ?? [];
   provider.value = selectedConfig.value?.provider_type === "gemini"
     ? "gemini"
-    : providers.value[0]?.id ?? "compatible";
+    : selectedConfig.value?.provider_type === "grok"
+      ? "grok"
+      : providers.value[0]?.id ?? "compatible";
 }
 
 async function loadHistory() {
@@ -1162,14 +1487,10 @@ async function openHistory(historyId: number) {
     if (QUALITY_OPTIONS.some((option) => option.value === data.detail)) {
       quality.value = data.detail;
     }
-    const historyAspectRatio = data.size ? LEGACY_SIZE_TO_ASPECT_RATIO[data.size] ?? data.size : DEFAULT_SIZE;
-    if (SIZE_OPTIONS.some((option) => option.value === historyAspectRatio)) {
-      size.value = historyAspectRatio;
-    }
-    resolution.value = RESOLUTION_OPTIONS.includes(data.resolution as typeof RESOLUTION_OPTIONS[number])
-      ? data.resolution ?? DEFAULT_RESOLUTION
-      : DEFAULT_RESOLUTION;
-    imageCount.value = data.image_count;
+    const providerType = historyProviderType(data);
+    size.value = supportedSizeFor(providerType, data.model, data.size);
+    resolution.value = supportedResolutionFor(providerType, data.resolution);
+    imageCount.value = Math.min(providerType === "gemini" ? 4 : 10, Math.max(1, data.image_count));
     generated.value = historyImages(data);
 
     clearReferencePreviews();
@@ -1230,6 +1551,7 @@ function restoreGenerationRun(runId: number) {
 
   clearWorkspace();
   activeGenerationRunId.value = runId;
+  currentConversationId.value = run.conversationId ?? run.taskId;
   if (run.projectId !== null) {
     selectedProjectId.value = run.projectId;
     history.value = projects.value.find((project) => project.id === run.projectId)?.history ?? [];
@@ -1263,12 +1585,9 @@ function restoreGenerationRun(runId: number) {
 }
 
 function selectProject(projectId: number) {
-  historyOpenVersion++;
-  activeGenerationRunId.value = null;
   selectedProjectId.value = projectId;
   const selectedHistory = projects.value.find((project) => project.id === projectId)?.history ?? [];
   history.value = selectedHistory;
-  clearWorkspace();
   const firstCompleted = selectedHistory.find((item) => item.status === "completed");
   if (firstCompleted) prefetchHistory(firstCompleted.id);
 }
@@ -1279,7 +1598,7 @@ async function submitCreateProject(name: string) {
   if (!response.ok) { projectError.value = "创建项目失败"; return; }
   const data = await response.json();
   await loadProjects();
-  selectProject(data.id);
+  startNewConversation(data.id);
 }
 
 async function submitRenameProject(project: ProjectSummary, name: string) {
@@ -1378,6 +1697,10 @@ async function confirmDeletion() {
 
 function startNewConversation(projectId: number) {
   selectProject(projectId);
+  historyOpenVersion++;
+  activeGenerationRunId.value = null;
+  clearWorkspace();
+  if (currentView.value !== "workspace") navigateToWorkspace();
 }
 
 async function applyRuntimeSettings() {
@@ -1437,7 +1760,7 @@ function addReferenceFiles(
   const candidates = incoming.filter(
     (file) => SUPPORTED_REFERENCE_TYPES.has(file.type) && !existing.has(referenceFileKey(file)),
   );
-  const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - referencePreviews.value.length);
+  const availableSlots = Math.max(0, maxReferenceImages.value - referencePreviews.value.length);
   const accepted = candidates.slice(0, availableSlots);
 
   referencePreviews.value = [
@@ -1455,7 +1778,7 @@ function addReferenceFiles(
   if (unsupported.length) {
     error.value = "仅支持 PNG、JPG、WEBP 或 GIF 图片";
   } else if (candidates.length > availableSlots) {
-    error.value = `参考图片最多添加 ${MAX_REFERENCE_IMAGES} 张`;
+    error.value = `参考图片最多添加 ${maxReferenceImages.value} 张`;
   } else {
     error.value = "";
   }
@@ -1569,15 +1892,44 @@ function stopGenerationRun(runId: number) {
   generationVersion.value++;
 }
 
-function adoptGenerationTaskId(runId: number, taskId: number) {
+function attachGenerationTask(runId: number, taskId: number, batchId: number | null) {
   const run = generationRuns.get(runId);
   if (!run) return null;
-  generationRuns.delete(runId);
   run.taskId = taskId;
-  generationRuns.set(taskId, run);
-  if (activeGenerationRunId.value === runId) activeGenerationRunId.value = taskId;
+  run.batchId = batchId;
+  run.conversationId = taskId;
   generationVersion.value++;
   return run;
+}
+
+function mergeImageResults(current: ImageResult[], incoming: ImageResult[]) {
+  const merged = [...current];
+  const identities = new Set(merged.map((image) =>
+    image.history_image_id != null
+      ? `history-${image.history_image_id}`
+      : `source-${imageSource(image) ?? ""}`,
+  ));
+  for (const image of incoming) {
+    const identity = image.history_image_id != null
+      ? `history-${image.history_image_id}`
+      : `source-${imageSource(image) ?? ""}`;
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    merged.push(image);
+  }
+  return merged;
+}
+
+function appendConversationImages(conversationId: number, images: ImageResult[]) {
+  if (currentConversationId.value === conversationId && activeHistoryId.value === null) {
+    generated.value = mergeImageResults(generated.value, images);
+  }
+  for (const run of generationRuns.values()) {
+    if (run.conversationId === conversationId) {
+      run.images = mergeImageResults(run.images, images);
+    }
+  }
+  generationVersion.value++;
 }
 
 function historyImages(data: HistoryDetail): ImageResult[] {
@@ -1588,6 +1940,38 @@ function historyImages(data: HistoryDetail): ImageResult[] {
       generation_time_ms: data.elapsed_ms,
       history_id: data.id,
       history_image_id: image.id,
+      batch_id: image.batch_id,
+    }));
+}
+
+function latestBatchImages(data: HistoryDetail): ImageResult[] {
+  const generatedImages = data.images.filter((image) => image.role === "generated");
+  const batchIds = generatedImages
+    .map((image) => image.batch_id)
+    .filter((batchId): batchId is number => batchId != null);
+  if (!batchIds.length) return historyImages(data);
+
+  const latestBatchId = Math.max(...batchIds);
+  return generatedImages
+    .filter((image) => image.batch_id === latestBatchId)
+    .map((image) => ({
+      url: resourceUrl(image.url),
+      generation_time_ms: data.elapsed_ms,
+      history_id: data.id,
+      history_image_id: image.id,
+      batch_id: image.batch_id,
+    }));
+}
+
+function generationBatchImages(data: GenerationBatchDetail): ImageResult[] {
+  return data.images
+    .filter((image) => image.role === "generated")
+    .map((image) => ({
+      url: resourceUrl(image.url),
+      generation_time_ms: data.elapsed_ms,
+      history_id: data.history_id,
+      history_image_id: image.id,
+      batch_id: image.batch_id,
     }));
 }
 
@@ -1641,16 +2025,10 @@ async function modifyGeneratedImage(item: ImageResult) {
     quality.value = QUALITY_OPTIONS.some((option) => option.value === snapshot.detail)
       ? snapshot.detail
       : "auto";
-    const snapshotSize = snapshot.size
-      ? LEGACY_SIZE_TO_ASPECT_RATIO[snapshot.size] ?? snapshot.size
-      : DEFAULT_SIZE;
-    size.value = SIZE_OPTIONS.some((option) => option.value === snapshotSize)
-      ? snapshotSize
-      : DEFAULT_SIZE;
-    resolution.value = RESOLUTION_OPTIONS.includes(
-      snapshot.resolution as typeof RESOLUTION_OPTIONS[number],
-    ) ? snapshot.resolution ?? DEFAULT_RESOLUTION : DEFAULT_RESOLUTION;
-    imageCount.value = Math.min(4, Math.max(1, snapshot.image_count));
+    const snapshotProviderType = historyProviderType(snapshot);
+    size.value = supportedSizeFor(snapshotProviderType, snapshot.model, snapshot.size);
+    resolution.value = supportedResolutionFor(snapshotProviderType, snapshot.resolution);
+    imageCount.value = Math.min(snapshotProviderType === "gemini" ? 4 : 10, Math.max(1, snapshot.image_count));
     currentConversationId.value = snapshot.history_id;
 
     clearReferencePreviews();
@@ -1695,17 +2073,22 @@ function pollDelay(signal: AbortSignal, milliseconds: number) {
   });
 }
 
-async function pollGenerationTask(taskId: number) {
-  const initialRun = generationRuns.get(taskId);
+async function pollGenerationTask(runId: number) {
+  const initialRun = generationRuns.get(runId);
   if (!initialRun || initialRun.polling) return;
+  if (initialRun.taskId === null) return;
   initialRun.polling = true;
   let transientFailures = 0;
   try {
-    while (generationRuns.has(taskId)) {
-      const run = generationRuns.get(taskId);
+    while (generationRuns.has(runId)) {
+      const run = generationRuns.get(runId);
       if (!run) return;
+      if (run.taskId === null) return;
       try {
-        const response = await fetch(`${API_BASE}/api/history/${taskId}`, {
+        const statusPath = run.batchId === null
+          ? `/api/history/${run.taskId}`
+          : `/api/history/${run.taskId}/batches/${run.batchId}`;
+        const response = await fetch(`${API_BASE}${statusPath}`, {
           credentials: "include",
           signal: run.controller.signal,
         });
@@ -1718,27 +2101,35 @@ async function pollGenerationTask(taskId: number) {
           }
           throw new Error(readableError(data, `无法查询生成任务（HTTP ${response.status}）`));
         }
-        const detail = data as HistoryDetail;
+        const detail = data as HistoryDetail | GenerationBatchDetail;
         transientFailures = 0;
         if (detail.status === "pending") {
           await pollDelay(run.controller.signal, 1500);
           continue;
         }
 
-        historyDetailCache.set(taskId, Promise.resolve(detail));
+        if (run.batchId === null) {
+          historyDetailCache.set(run.taskId, Promise.resolve(detail as HistoryDetail));
+        } else {
+          historyDetailCache.delete(run.taskId);
+        }
         if (detail.status === "completed") {
-          run.images = historyImages(detail);
-          preloadHistoryImages(detail);
-          if (activeGenerationRunId.value === taskId) {
-            generated.value = run.images;
+          run.images = run.batchId === null
+            ? latestBatchImages(detail as HistoryDetail)
+            : generationBatchImages(detail as GenerationBatchDetail);
+          if (run.batchId === null) preloadHistoryImages(detail as HistoryDetail);
+          appendConversationImages(run.taskId, run.images);
+          if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
             error.value = "";
           }
         } else {
           run.error = detail.error_message || "生成失败";
-          if (activeGenerationRunId.value === taskId) error.value = run.error;
+          if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
+            error.value = run.error;
+          }
         }
-        stopGenerationRun(taskId);
-        if (activeGenerationRunId.value === taskId) activeGenerationRunId.value = null;
+        stopGenerationRun(runId);
+        if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
         await refreshConversationLists();
         return;
       } catch (exception) {
@@ -1750,14 +2141,16 @@ async function pollGenerationTask(taskId: number) {
         }
         const message = exception instanceof Error ? exception.message : "无法查询生成任务";
         run.error = message;
-        if (activeGenerationRunId.value === taskId) error.value = message;
-        stopGenerationRun(taskId);
-        if (activeGenerationRunId.value === taskId) activeGenerationRunId.value = null;
+        if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
+          error.value = message;
+        }
+        stopGenerationRun(runId);
+        if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
         return;
       }
     }
   } finally {
-    const run = generationRuns.get(taskId);
+    const run = generationRuns.get(runId);
     if (run) run.polling = false;
   }
 }
@@ -1771,8 +2164,11 @@ function pendingElapsedMs(createdAt: string) {
 function restorePendingGenerationTasks() {
   for (const project of projects.value) {
     for (const item of project.history) {
-      if (item.kind !== "generate" || item.status !== "pending" || generationRuns.has(item.id)) continue;
-      const historySize = item.size ? LEGACY_SIZE_TO_ASPECT_RATIO[item.size] ?? item.size : DEFAULT_SIZE;
+      if (
+        item.kind !== "generate"
+        || item.status !== "pending"
+        || [...generationRuns.values()].some((run) => run.taskId === item.id)
+      ) continue;
       const providerType = historyProviderType(item);
       const matchingConfig = apiKeyConfigs.value.find(
         (config) => config.provider_type === providerType && config.model === item.model,
@@ -1782,6 +2178,8 @@ function restorePendingGenerationTasks() {
         new AbortController(),
         {
           taskId: item.id,
+          batchId: null,
+          conversationId: item.id,
           polling: false,
           projectId: project.id,
           provider: item.provider,
@@ -1791,7 +2189,7 @@ function restorePendingGenerationTasks() {
           batchPrompts: "",
           imageCount: item.image_count,
           quality: item.detail,
-          size: SIZE_OPTIONS.some((option) => option.value === historySize) ? historySize : DEFAULT_SIZE,
+          size: supportedSizeFor(providerType, item.model, item.size),
           resolution: RESOLUTION_OPTIONS.includes(item.resolution as typeof RESOLUTION_OPTIONS[number])
             ? item.resolution ?? DEFAULT_RESOLUTION
             : DEFAULT_RESOLUTION,
@@ -1806,6 +2204,7 @@ function restorePendingGenerationTasks() {
 }
 
 async function generateImage() {
+  if (generationSubmitting.value) return;
   if (!provider.value || !model.value) {
     error.value = "请先配置 API Key 和模型名称";
     return;
@@ -1836,10 +2235,22 @@ async function generateImage() {
     category: referencePreviews.value[index]?.category ?? "person",
   }));
   const generationProviderType = selectedProviderType.value;
+  const generationSupportsGeminiResolution = generationProviderType === "gemini"
+    && generationModel.toLowerCase().includes("gemini-3")
+    && !generationModel.toLowerCase().includes("lite-image");
+  const generationSupportsGrokQuality = generationProviderType === "grok"
+    && generationModel.toLowerCase() === "grok-imagine-image-2.0";
+  if (generationReferenceFiles.length > maxReferenceImages.value) {
+    error.value = `当前模型最多支持 ${maxReferenceImages.value} 张参考图`;
+    return;
+  }
   const runId = Date.now() + Math.random();
   const controller = new AbortController();
+  generationSubmitting.value = true;
   startGenerationRun(runId, controller, {
     taskId: null,
+    batchId: null,
+    conversationId: generationConversationId,
     polling: false,
     projectId: generationProjectId,
     provider: generationProvider,
@@ -1870,10 +2281,21 @@ async function generateImage() {
       form.append("model", generationModel);
       form.append("prompt", requestPrompt);
       form.append("count", String(generationImageCount));
-      form.append("size", generationSize);
-      form.append("aspect_ratio", generationSize);
-      form.append("resolution", generationResolution);
-      if (generationProviderType === "gpt") form.append("detail", generationQuality);
+      if (generationProviderType === "gemini") {
+        form.append("size", generationSize);
+        form.append("aspect_ratio", generationSize);
+        if (generationSupportsGeminiResolution) form.append("resolution", generationResolution);
+      } else if (generationProviderType === "grok") {
+        form.append("aspect_ratio", generationSize);
+        form.append("resolution", generationResolution);
+        if (generationSupportsGrokQuality) form.append("detail", generationQuality);
+      } else if (generationProviderType === "gpt") {
+        form.append("size", generationSize);
+        form.append("detail", generationQuality);
+        form.append("output_format", "png");
+        form.append("background", "auto");
+        form.append("moderation", "auto");
+      }
       if (generationConfigId !== null) form.append("api_key_config_id", String(generationConfigId));
       if (generationProjectId !== null) form.append("project_id", String(generationProjectId));
       if (generationConversationId !== null) form.append("conversation_id", String(generationConversationId));
@@ -1895,10 +2317,23 @@ async function generateImage() {
           prompt: requestPrompt,
           prompts: prompts.length ? prompts : null,
           count: generationImageCount,
-          ...(generationProviderType === "gpt" ? { detail: generationQuality } : {}),
-          size: generationSize,
-          aspect_ratio: generationSize,
-          resolution: generationResolution,
+          ...(generationProviderType === "gpt" ? {
+            detail: generationQuality,
+            size: generationSize,
+            output_format: "png",
+            background: "auto",
+            moderation: "auto",
+          } : {}),
+          ...(generationProviderType === "gemini" ? {
+            size: generationSize,
+            aspect_ratio: generationSize,
+            ...(generationSupportsGeminiResolution ? { resolution: generationResolution } : {}),
+          } : {}),
+          ...(generationProviderType === "grok" ? {
+            aspect_ratio: generationSize,
+            resolution: generationResolution,
+            ...(generationSupportsGrokQuality ? { detail: generationQuality } : {}),
+          } : {}),
           project_id: generationProjectId,
           ...(generationConversationId !== null ? { conversation_id: generationConversationId } : {}),
         }),
@@ -1912,10 +2347,13 @@ async function generateImage() {
     if (!data) throw new Error("服务返回了无效响应");
     const taskId = Number(data.task_id);
     if (Number.isInteger(taskId) && taskId > 0) {
-      if (!adoptGenerationTaskId(runId, taskId)) return;
+      const rawBatchId = Number(data.batch_id);
+      const batchId = Number.isInteger(rawBatchId) && rawBatchId > 0 ? rawBatchId : null;
+      if (!attachGenerationTask(runId, taskId, batchId)) return;
       currentConversationId.value = taskId;
+      generationSubmitting.value = false;
       await refreshConversationLists();
-      void pollGenerationTask(taskId);
+      void pollGenerationTask(runId);
       return;
     }
     const run = generationRuns.get(runId);
@@ -1939,8 +2377,12 @@ async function generateImage() {
       await refreshConversationLists();
     }
   } finally {
-    stopGenerationRun(runId);
-    if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
+    generationSubmitting.value = false;
+    const run = generationRuns.get(runId);
+    if (run?.taskId === null) {
+      stopGenerationRun(runId);
+      if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
+    }
   }
 }
 
@@ -1969,10 +2411,6 @@ async function cancelGenerationRun(runId: number) {
 }
 
 function handleGenerateClick() {
-  if (activeGenerationRunId.value !== null) {
-    void cancelGenerationRun(activeGenerationRunId.value);
-    return;
-  }
   void generateImage();
 }
 
@@ -2088,10 +2526,12 @@ function handlePopState() {
 }
 window.addEventListener("popstate", handlePopState);
 onUnmounted(() => {
+  finishWorkspaceResize();
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("popstate", handlePopState);
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
   if (verificationCooldownTimer !== undefined) window.clearInterval(verificationCooldownTimer);
+  if (adminSearchTimer !== undefined) window.clearTimeout(adminSearchTimer);
   for (const run of generationRuns.values()) {
     if (run.timer !== undefined) window.clearInterval(run.timer);
     run.controller.abort();
@@ -2136,7 +2576,7 @@ onUnmounted(() => {
 
           <div class="auth-fields">
             <label v-if="authView === 'register'">用户名<input v-model="username" autocomplete="username" placeholder="输入用户名" required /></label>
-            <label>邮箱<input v-model="email" type="email" autocomplete="email" placeholder="name@gmail.com" required /></label>
+            <label>{{ authView === 'register' ? '邮箱' : '邮箱或旧用户名' }}<input v-model="email" :type="authView === 'register' ? 'email' : 'text'" :autocomplete="authView === 'register' ? 'email' : 'username'" :placeholder="authView === 'register' ? 'name@gmail.com' : '邮箱或旧用户名'" required /></label>
             <label v-if="authView === 'register'">邮箱验证码<span class="verification-field"><input v-model="verificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="6 位验证码" required /><button type="button" class="secondary-action verification-action" :disabled="verificationSending || verificationCooldown > 0" @click="sendVerificationCode">{{ verificationSending ? '发送中' : verificationCooldown > 0 ? `${verificationCooldown} 秒` : '获取验证码' }}</button></span></label>
             <label>密码<input v-model="password" type="password" :autocomplete="authView === 'register' ? 'new-password' : 'current-password'" placeholder="至少 6 位字符" minlength="6" required /></label>
             <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" autocomplete="new-password" placeholder="再次输入密码" minlength="6" required /></label>
@@ -2185,7 +2625,7 @@ onUnmounted(() => {
         <div v-else class="api-config-list">
           <p v-if="apiKeyConfigs.length === 0" class="api-config-empty">暂无 API Key 配置</p>
           <div v-for="config in apiKeyConfigs" :key="config.id" class="api-config-row" :class="{ active: config.id === activeApiKeyConfigId }">
-            <div class="api-config-identity"><strong>{{ config.alias }}</strong><span>{{ config.provider_type === 'gemini' ? 'Gemini' : 'OpenAI' }}</span></div>
+            <div class="api-config-identity"><strong>{{ config.alias }}</strong><span>{{ providerTypeLabel(config.provider_type) }}</span></div>
             <div class="api-config-actions"><span>{{ config.api_key_configured ? '已配置' : '未配置' }}</span><button type="button" class="secondary-action" data-action="test-api-key" @click="testConfig(config)">{{ testingConfigId === config.id ? '测试中...' : '测试' }}</button><button type="button" class="secondary-action" @click="editConfig(config)">编辑</button><button type="button" class="secondary-action" data-action="delete-api-key" @click="deleteConfig(config)">删除</button></div>
             <div v-if="apiKeyTestResults[config.id]" class="api-config-test-result">
               <p class="api-key-test-message" role="status">{{ apiKeyTestResults[config.id].message }}</p>
@@ -2213,6 +2653,7 @@ onUnmounted(() => {
               <div class="config-provider-options" role="group" aria-label="API 类型">
                 <button type="button" class="config-provider-option" data-provider-type="gpt" :aria-pressed="configForm.provider_type === 'gpt'" :class="{ active: configForm.provider_type === 'gpt' }" @click="configForm.provider_type = 'gpt'">OpenAI</button>
                 <button type="button" class="config-provider-option" data-provider-type="gemini" :aria-pressed="configForm.provider_type === 'gemini'" :class="{ active: configForm.provider_type === 'gemini' }" @click="configForm.provider_type = 'gemini'">Gemini</button>
+                <button type="button" class="config-provider-option" data-provider-type="grok" :aria-pressed="configForm.provider_type === 'grok'" :class="{ active: configForm.provider_type === 'grok' }" @click="configForm.provider_type = 'grok'">Grok</button>
               </div>
             </fieldset>
             <div class="api-config-form-actions"><button type="submit" class="primary-action">{{ editingConfigId ? '保存修改' : '添加配置' }}</button><button type="button" class="secondary-action" data-action="cancel-api-key-form" @click="resetConfigForm">取消</button><span v-if="settingsConfigError" class="settings-error">{{ settingsConfigError }}</span></div>
@@ -2282,7 +2723,15 @@ onUnmounted(() => {
       </section>
 
       <section class="settings-section security-section settings-security">
-        <div class="security-heading"><h2>修改密码</h2></div>
+        <div class="account-profile">
+          <div class="security-heading"><h2>账号资料</h2></div>
+          <form class="profile-form" @submit.prevent="updateProfile">
+            <label>用户名<input v-model="profileUsername" data-field="profile-username" autocomplete="username" maxlength="80" required /></label>
+            <label>邮箱<input :value="currentEmail" data-field="profile-email" type="email" :placeholder="currentEmail ? '' : '未绑定邮箱'" readonly aria-readonly="true" /></label>
+            <div class="profile-actions"><button type="submit" class="primary-action" data-action="save-profile" :disabled="profileSaving || !profileUsername.trim() || profileUsername.trim() === currentUsername">{{ profileSaving ? '保存中...' : '保存用户名' }}</button><p v-if="profileStatus" class="profile-status" role="status">{{ profileStatus }}</p></div>
+          </form>
+        </div>
+        <div class="security-heading password-heading"><h2>修改密码</h2></div>
         <div class="security-grid">
           <form class="password-form" @submit.prevent="changePassword"><label>旧密码<input v-model="oldPassword" data-field="old-password" type="password" /></label><label>新密码<input v-model="newPassword" data-field="new-password" type="password" /></label><label>确认新密码<input v-model="newPasswordConfirmation" data-field="new-password-confirmation" type="password" /></label><p v-if="authError" class="error-message">{{ authError }}</p><button type="submit" class="primary-action" data-action="change-password" @click.prevent="changePassword">修改密码</button></form>
           <div class="logout-panel"><h3>退出登录</h3><p>结束当前账号会话，返回登录页面。</p><button type="button" class="secondary-action logout-action" @click="logout">退出登录</button></div>
@@ -2304,22 +2753,22 @@ onUnmounted(() => {
       </header>
 
       <div class="admin-metrics" aria-label="用户统计">
-        <div><span>已验证用户</span><strong>{{ adminUsers.length }}</strong></div>
-        <div><span>管理员</span><strong>{{ adminUsers.filter((user) => user.is_admin).length }}</strong></div>
+        <div><span>已验证用户</span><strong>{{ adminUserTotal }}</strong></div>
+        <div><span>管理员</span><strong>{{ adminUserAdminTotal }}</strong></div>
         <div><span>累计任务</span><strong>{{ adminUsageTotal }}</strong></div>
       </div>
 
       <section class="admin-directory" aria-labelledby="admin-users-title">
         <div class="admin-section-heading">
-          <h2 id="admin-users-title">用户</h2>
-          <input v-model="adminSearch" type="search" placeholder="搜索用户名或邮箱" aria-label="搜索用户" />
+          <div><h2 id="admin-users-title">用户</h2><span class="admin-timezone">时间均为北京时间</span></div>
+          <input v-model="adminSearch" type="search" placeholder="搜索用户名或邮箱" aria-label="搜索用户" @input="scheduleAdminSearch" />
         </div>
         <p v-if="adminError" class="error-message" role="alert">{{ adminError }}</p>
         <div class="admin-table-wrap">
           <table class="admin-table admin-users-table">
             <thead><tr><th>用户</th><th>权限</th><th>密码</th><th>注册时间</th><th>最后登录</th><th>最后活动</th><th>任务</th><th>模型</th></tr></thead>
             <tbody>
-              <tr v-for="user in filteredAdminUsers" :key="user.id" :class="{ selected: user.id === selectedAdminUserId }" tabindex="0" @click="selectAdminUser(user.id)" @keydown.enter="selectAdminUser(user.id)">
+              <tr v-for="user in adminUsers" :key="user.id" :class="{ selected: user.id === selectedAdminUserId }" tabindex="0" @click="selectAdminUser(user.id)" @keydown.enter="selectAdminUser(user.id)">
                 <td><strong>{{ user.username }}</strong><span>{{ user.email }}</span></td>
                 <td><span class="admin-role" :class="{ elevated: user.is_admin }">{{ user.is_admin ? '管理员' : '用户' }}</span></td>
                 <td>{{ user.password_status }}</td>
@@ -2329,10 +2778,17 @@ onUnmounted(() => {
                 <td>{{ user.usage_count }}</td>
                 <td><span class="admin-model-list">{{ user.models_used.join('、') || '-' }}</span></td>
               </tr>
-              <tr v-if="!adminLoading && filteredAdminUsers.length === 0"><td colspan="8" class="admin-empty">没有匹配的用户</td></tr>
+              <tr v-if="!adminLoading && adminUsers.length === 0"><td colspan="8" class="admin-empty">没有匹配的用户</td></tr>
             </tbody>
           </table>
         </div>
+        <nav v-if="adminResultTotal > adminPageSize" class="admin-pagination" aria-label="用户列表分页">
+          <span>第 {{ adminPage }} / {{ adminPageCount }} 页，共 {{ adminResultTotal }} 位用户</span>
+          <div>
+            <button type="button" class="secondary-action icon-action" title="上一页" aria-label="上一页" :disabled="adminPage <= 1 || adminLoading" @click="changeAdminPage(adminPage - 1)"><ChevronLeft :size="17" /></button>
+            <button type="button" class="secondary-action icon-action" title="下一页" aria-label="下一页" :disabled="adminPage >= adminPageCount || adminLoading" @click="changeAdminPage(adminPage + 1)"><ChevronRight :size="17" /></button>
+          </div>
+        </nav>
       </section>
 
       <section v-if="selectedAdminUser" class="admin-user-detail" aria-labelledby="admin-usage-title">
@@ -2388,14 +2844,19 @@ onUnmounted(() => {
         @prefetch-history="prefetchHistory"
         @close="closeProjectDrawer"
       />
-      <section class="workspace-panel">
+      <section
+        ref="workspacePanel"
+        class="workspace-panel"
+        :class="{ 'is-resizing': workspaceResizing }"
+        :style="{ '--workspace-result-ratio': `${workspaceResultRatio}%` }"
+      >
         <div class="result-panel">
           <div class="result-heading">
             <div><span class="result-kicker"><Sparkles :size="13" />作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
             <span v-if="busy === 'analyze'" class="working">处理中</span>
           </div>
 
-          <div v-if="generated.length || activeGenerationElapsedMs !== null" class="image-grid">
+          <div v-if="generated.length || visibleGenerationRuns.length" class="image-grid">
             <article v-for="(item, index) in generated" :key="item.history_image_id ?? imageSource(item) ?? index" class="image-card">
               <div class="image-frame">
                 <button v-if="imageSource(item)" type="button" class="image-preview-trigger" :aria-label="`全屏查看生成图片 ${index + 1}`" @click="openLightbox(item)">
@@ -2435,51 +2896,69 @@ onUnmounted(() => {
                 </div>
               </div>
             </article>
-            <article
-              v-for="slot in activeGenerationElapsedMs !== null ? activeGenerationImageCount : 0"
-              :key="`generation-progress-${slot}`"
-              class="image-card generation-progress-card"
-              :aria-label="`正在生成第 ${slot} 张，共 ${activeGenerationImageCount} 张`"
-              :aria-live="slot === 1 ? 'polite' : 'off'"
-            >
-              <div class="generation-progress-frame">
-                <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent}%` }">
-                  <Sparkles class="empty-shape-icon" :size="24" />
-                  <span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
+            <template v-for="{ id: runId, run } in visibleGenerationRuns" :key="`generation-run-${runId}`">
+              <article
+                v-for="slot in run.imageCount"
+                :key="`generation-progress-${runId}-${slot}`"
+                class="image-card generation-progress-card"
+                :aria-label="`正在生成第 ${slot} 张，共 ${run.imageCount} 张`"
+                :aria-live="slot === 1 ? 'polite' : 'off'"
+              >
+                <div class="generation-progress-frame">
+                  <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent(run.elapsedMs)}%` }">
+                    <Sparkles class="empty-shape-icon" :size="24" />
+                    <span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
+                  </div>
                 </div>
-              </div>
-              <div class="image-meta generation-progress-meta">
-                <span>正在生成</span>
-                <strong>{{ formatDuration(activeGenerationElapsedMs) }}</strong>
-              </div>
-            </article>
+                <div class="image-meta generation-progress-meta">
+                  <span>正在生成</span>
+                  <strong>{{ formatDuration(run.elapsedMs) }}</strong>
+                </div>
+              </article>
+            </template>
           </div>
           <div v-else class="empty-wall">
-            <div class="empty-shape" :class="{ 'is-generating': activeGenerationElapsedMs !== null }" :style="{ '--generation-fill': `${generationFillPercent}%` }">
+            <div class="empty-shape">
               <Sparkles class="empty-shape-icon" :size="24" />
-              <span v-if="activeGenerationElapsedMs !== null" class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
             </div>
             <p v-if="error" class="error-message generation-error">{{ error }}</p>
             <template v-else>
-              <h3>{{ activeGenerationElapsedMs !== null ? `等待生成结果 ${formatDuration(activeGenerationElapsedMs)}` : "等待生成结果" }}</h3>
+              <h3>等待生成结果</h3>
               <p>配置参数并在下方输入提示词。</p>
             </template>
           </div>
         </div>
 
+        <div
+          class="panel-resizer"
+          role="separator"
+          aria-label="调整作品画布与编辑区高度"
+          aria-orientation="horizontal"
+          aria-valuemin="25"
+          aria-valuemax="75"
+          :aria-valuenow="Math.round(workspaceResultRatio)"
+          tabindex="0"
+          title="拖动调整上下区域，双击恢复默认比例"
+          @pointerdown="startWorkspaceResize"
+          @keydown="handleWorkspaceResizeKeydown"
+          @dblclick="resetWorkspaceResultRatio"
+        ><span aria-hidden="true"></span></div>
+
+        <div class="workspace-composer-panel">
         <section class="composer-dock">
           <div class="composer-main">
             <div class="parameter-toolbar" aria-label="模型参数">
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="apiKey" :aria-expanded="openParameterMenu === 'apiKey'" @click="toggleParameterMenu('apiKey')">API Key <strong>{{ selectedApiKeyLabel }}</strong></button><div v-if="openParameterMenu === 'apiKey'" class="parameter-menu" data-parameter-menu="apiKey"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectApiKeyConfig(option)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in modelOptions" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === model }" :data-parameter-option="option.id" @click="selectModel(option.id)"><span>{{ option.id }}</span><Check v-if="option.id === model" :size="15" /></button><span v-if="loadingConfigModels" class="parameter-option-description">获取模型列表中...</span></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片比例 <strong>{{ SIZE_OPTIONS.find((option) => option.value === size)?.label }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in SIZE_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong></span><Check v-if="option.value === size" :size="15" /></button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="resolution" :aria-expanded="openParameterMenu === 'resolution'" @click="toggleParameterMenu('resolution')">分辨率 <strong>{{ resolution }}</strong></button><div v-if="openParameterMenu === 'resolution'" class="parameter-menu" data-parameter-menu="resolution"><button v-for="option in RESOLUTION_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === resolution }" :data-parameter-option="option" @click="selectResolution(option)"><span>{{ option }}</span><Check v-if="option === resolution" :size="15" /></button></div></div>
-                <div v-if="selectedProviderType === 'gpt'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="quality" :aria-expanded="openParameterMenu === 'quality'" @click="toggleParameterMenu('quality')">生成质量 <strong>{{ QUALITY_OPTIONS.find((option) => option.value === quality)?.label }}</strong></button><div v-if="openParameterMenu === 'quality'" class="parameter-menu" data-parameter-menu="quality"><button v-for="option in QUALITY_OPTIONS" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === quality }" :data-parameter-option="option.value" @click="selectQuality(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === quality" :size="15" /></button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in IMAGE_COUNT_OPTIONS" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
+                <div v-if="selectedProviderType === 'gpt'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ selectedGptSizeLabel }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in gptSizeOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong><small>{{ option.value }}</small></span><Check v-if="option.value === size" :size="15" /></button></div></div>
+                <div v-if="selectedProviderType === 'gemini' || selectedProviderType === 'grok'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片比例 <strong>{{ size }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in nativeAspectRatioOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === size }" :data-parameter-option="option" @click="selectSize(option)"><span><strong>{{ option }}</strong></span><Check v-if="option === size" :size="15" /></button></div></div>
+                <div v-if="supportsGeminiResolution || selectedProviderType === 'grok'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="resolution" :aria-expanded="openParameterMenu === 'resolution'" @click="toggleParameterMenu('resolution')">分辨率 <strong>{{ resolution }}</strong></button><div v-if="openParameterMenu === 'resolution'" class="parameter-menu" data-parameter-menu="resolution"><button v-for="option in resolutionOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === resolution }" :data-parameter-option="option" @click="selectResolution(option)"><span>{{ option }}</span><Check v-if="option === resolution" :size="15" /></button></div></div>
+                <div v-if="selectedProviderType === 'gpt' || supportsGrokQuality" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="quality" :aria-expanded="openParameterMenu === 'quality'" @click="toggleParameterMenu('quality')">生成质量 <strong>{{ qualityOptions.find((option) => option.value === quality)?.label }}</strong></button><div v-if="openParameterMenu === 'quality'" class="parameter-menu" data-parameter-menu="quality"><button v-for="option in qualityOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === quality }" :data-parameter-option="option.value" @click="selectQuality(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === quality" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in imageCountOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
             </div>
             <div class="prompt-column">
               <div class="prompt-row"><label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label></div>
-              <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :class="{ 'cancel-action': activeGenerationRun }" :disabled="busy === 'analyze'" @click="handleGenerateClick"><X v-if="activeGenerationRun" :size="17" /><LoaderCircle v-else-if="busy === 'analyze'" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ activeGenerationRun ? "取消生成" : "生成图片" }}</button></div>
+              <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :disabled="busy === 'analyze' || generationSubmitting" @click="handleGenerateClick"><LoaderCircle v-if="generationSubmitting" class="spin" :size="17" /><Sparkles v-else :size="17" />生成图片</button></div>
             </div>
             <div class="reference-row" :class="{ 'has-references': referencePreviews.length }" aria-label="参考图片分类">
               <section v-for="category in REFERENCE_CATEGORIES" :key="category.id" class="reference-module">
@@ -2491,10 +2970,10 @@ onUnmounted(() => {
                   @dragover.prevent="handleReferenceDragOver"
                   @drop.prevent="handleReferenceDrop(category.id, $event)"
                 >
-                  <input :id="category.id === 'person' ? 'image-input' : 'image-input-' + category.id" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple :disabled="referencePreviews.length >= MAX_REFERENCE_IMAGES" @change="handleReferenceInput(category.id, $event)" />
+                  <input :id="category.id === 'person' ? 'image-input' : 'image-input-' + category.id" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple :disabled="referencePreviews.length >= maxReferenceImages" @change="handleReferenceInput(category.id, $event)" />
                   <label :for="category.id === 'person' ? 'image-input' : 'image-input-' + category.id" :aria-label="`${referencesForCategory(category.id).length ? '继续添加' : '添加'}${category.label}参考图`">
                     <span class="upload-zone-icon"><Upload :size="20" /></span>
-                    <span class="upload-zone-copy"><strong>{{ referencesForCategory(category.id).length ? `继续添加${category.label}参考图` : `添加${category.label}参考图` }}</strong><small>{{ referencePreviews.length >= MAX_REFERENCE_IMAGES ? "已达到总数量上限" : "点击选择或拖动图片到这里" }}</small></span>
+                    <span class="upload-zone-copy"><strong>{{ referencesForCategory(category.id).length ? `继续添加${category.label}参考图` : `添加${category.label}参考图` }}</strong><small>{{ referencePreviews.length >= maxReferenceImages ? "已达到总数量上限" : "点击选择或拖动图片到这里" }}</small></span>
                   </label>
                   <div v-if="referencesForCategory(category.id).length" class="reference-preview-list" role="list" :aria-label="`${category.label}参考图片`">
                     <article v-for="reference in referencesForCategory(category.id)" :key="reference.key" class="reference-thumbnail" role="listitem">
@@ -2510,6 +2989,7 @@ onUnmounted(() => {
             </div>
           </div>
         </section>
+        </div>
       </section>
     </div>
 

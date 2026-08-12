@@ -63,9 +63,9 @@ function formatDuration(milliseconds: number) {
   return `${(milliseconds / 1000).toFixed(2)} 秒`;
 }
 function historyProviderLabel(item: HistorySummary) {
-  return item.provider?.toLowerCase() === "gemini" || item.model.toLowerCase().includes("gemini")
-    ? "Gemini"
-    : "OpenAI";
+  if (item.provider?.toLowerCase() === "gemini" || item.model.toLowerCase().includes("gemini")) return "Gemini";
+  if (item.provider?.toLowerCase() === "grok" || item.model.toLowerCase().includes("grok")) return "Grok";
+  return "OpenAI";
 }
 function historyAspectRatio(size?: string | null) {
   if (!size) return "未记录";
@@ -80,6 +80,19 @@ function historyAspectRatio(size?: string | null) {
   };
   return legacyRatios[size] ?? size;
 }
+function historyGenerationMeta(item: HistorySummary) {
+  const provider = historyProviderLabel(item);
+  const count = item.image_count ? ` · ${item.image_count}张` : "";
+  if (provider === "Grok") {
+    const resolution = item.resolution ? ` · 分辨率 ${item.resolution}` : "";
+    return `比例 ${historyAspectRatio(item.size)}${resolution}${count}`;
+  }
+  if (provider === "Gemini") {
+    const resolution = item.resolution ? ` · 分辨率 ${item.resolution}` : "";
+    return `比例 ${historyAspectRatio(item.size)}${resolution}${count}`;
+  }
+  return `尺寸 ${item.size ?? "未记录"}${count}`;
+}
 function selected(project: ProjectSummary) { return selectedHistory.value[project.id] ?? []; }
 function toggleHistorySelection(project: ProjectSummary, id: number) {
   const ids = new Set(selected(project));
@@ -92,15 +105,12 @@ function deleteSelected(project: ProjectSummary) {
 }
 function selectProject(project: ProjectSummary) {
   emit("select-project", project.id);
-  emit("close");
 }
 function openHistoryItem(id: number) {
   emit("open-history", id);
-  emit("close");
 }
 function openGeneration(id: number) {
   emit("open-generation", id);
-  emit("close");
 }
 function createProject() {
   emit("create-project");
@@ -168,7 +178,7 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
                 <span class="history-prompt">{{ item.prompt }}</span>
                 <small class="history-provider-model" :title="`${historyProviderLabel(item)} · ${item.model}`">{{ historyProviderLabel(item) }} · {{ item.model }}</small>
                 <small v-if="item.kind === 'analyze'" class="history-generation-meta">图片分析</small>
-                <small v-else class="history-generation-meta">比例 {{ historyAspectRatio(item.size) }} · 分辨率 {{ item.resolution ?? '未记录' }}<template v-if="item.image_count"> · {{ item.image_count }}张</template></small>
+                <small v-else class="history-generation-meta">{{ historyGenerationMeta(item) }}</small>
               </span>
             </button>
           </label>

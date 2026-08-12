@@ -7,6 +7,7 @@ from app.config import Settings
 from app.providers.base import ImageProvider, ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
 from app.providers.gemini_provider import GeminiProvider
+from app.providers.grok_provider import GrokProvider
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.common import ProviderModel
 from app.repositories.settings_repository import StoredProviderSettings
@@ -59,6 +60,13 @@ class ProviderRegistry:
     def from_api_key_config(cls, config: StoredApiKeyConfig) -> ImageProvider:
         if config.provider_type == "gemini":
             return GeminiProvider(SecretStr(config.api_key), GEMINI_BASE_URL, config.model)
+        if config.provider_type == "grok":
+            return GrokProvider(
+                SecretStr(config.api_key),
+                OPENAI_BASE_URL,
+                config.model,
+                "Grok",
+            )
         return CompatibleProvider(
             SecretStr(config.api_key),
             OPENAI_BASE_URL,

@@ -88,13 +88,15 @@ def test_version_is_public_and_not_cached(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 class PassthroughHistoryService:
-    async def create_generation(self, request, user_id, reference_image=None):
+    async def create_generation(
+        self, request, user_id, reference_image=None, *, include_batch_id=False
+    ):
         self.request = request
         self.reference_image = reference_image
-        return 101
+        return (101, 201) if include_batch_id else 101
 
     async def execute_generation(
-        self, history_id, request, image_service, user_id, reference_image=None
+        self, history_id, request, image_service, user_id, reference_image=None, *, batch_id=None
     ):
         if reference_image is not None:
             return await image_service.generate(request, reference_image)
@@ -229,8 +231,9 @@ def test_generate_returns_service_response(service: FakeImageService) -> None:
     assert response.status_code == 202
     assert response.json() == {
         "task_id": 101,
+        "batch_id": 201,
         "status": "pending",
-        "status_url": "/api/history/101",
+        "status_url": "/api/history/101/batches/201",
     }
     assert service.generate_calls[0].prompt == "draw a boat"
 
@@ -307,6 +310,82 @@ def test_generate_with_multiple_reference_images(service: FakeImageService) -> N
     assert [reference.category for reference in references] == ["environment", "object"]
 
 
+def test_grok_reference_generation_accepts_native_count_and_limits_references(
+    service: FakeImageService,
+) -> None:
+    files = [
+        ("images", (f"reference-{index}.png", f"bytes-{index}".encode(), "image/png"))
+        for index in range(3)
+    ]
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate/reference",
+            data={
+                "provider": "grok",
+                "model": "grok-imagine-image",
+                "prompt": "生成十张方案",
+                "count": "10",
+                "size": "16:9",
+                "aspect_ratio": "16:9",
+                "resolution": "2K",
+                "detail": "medium",
+            },
+            files=files,
+        )
+        wait_for_generation(service)
+
+        too_many = client.post(
+            "/api/generate/reference",
+            data={
+                "provider": "grok",
+                "model": "grok-imagine-image",
+                "prompt": "参考图过多",
+            },
+            files=files + [("images", ("fourth.png", b"fourth", "image/png"))],
+        )
+
+    request = service.generate_calls[-1]
+    assert response.status_code == 202
+    assert request.count == 10
+    assert request.detail == "auto"
+    assert request.size is None
+    assert request.aspect_ratio == "16:9"
+    assert request.resolution == "2K"
+    assert too_many.status_code == 400
+
+
+def test_gpt_generation_accepts_ten_images(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "provider": "openai",
+                "model": "gpt-image-2",
+                "prompt": "too many",
+                "count": 10,
+            },
+        )
+        wait_for_generation(service)
+
+    assert response.status_code == 202
+    assert service.generate_calls[-1].count == 10
+
+
+def test_gemini_generation_rejects_more_than_four_images(service: FakeImageService) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "provider": "gemini",
+                "model": "gemini-3.1-flash-image",
+                "prompt": "too many",
+                "count": 5,
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_generate_apple_image_prompt(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
@@ -317,9 +396,11 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
                 "prompt": "帮我生成一个苹果的图片",
                 "detail": "auto",
                 "count": 2,
-                "size": "2:3",
-                "aspect_ratio": "2:3",
-                "resolution": "2K",
+                "size": "1152x2048",
+                "output_format": "webp",
+                "background": "opaque",
+                "output_compression": 85,
+                "moderation": "low",
             },
         )
         wait_for_generation(service)
@@ -329,9 +410,13 @@ def test_generate_apple_image_prompt(service: FakeImageService) -> None:
     assert service.generate_calls[-1].model == "gpt-image-2"
     assert service.generate_calls[-1].prompt == "帮我生成一个苹果的图片"
     assert service.generate_calls[-1].count == 2
-    assert service.generate_calls[-1].size == "2:3"
-    assert service.generate_calls[-1].aspect_ratio == "2:3"
-    assert service.generate_calls[-1].resolution == "2K"
+    assert service.generate_calls[-1].size == "1152x2048"
+    assert service.generate_calls[-1].aspect_ratio is None
+    assert service.generate_calls[-1].resolution is None
+    assert service.generate_calls[-1].output_format == "webp"
+    assert service.generate_calls[-1].background == "opaque"
+    assert service.generate_calls[-1].output_compression == 85
+    assert service.generate_calls[-1].moderation == "low"
 
 
 def test_generate_rejects_empty_prompt(service: FakeImageService) -> None:
@@ -352,16 +437,16 @@ def test_generate_accepts_custom_size(service: FakeImageService) -> None:
                 "provider": "openai",
                 "model": "gpt-image-2",
                 "prompt": "draw",
-                "size": "1000x1000",
+                "size": "1280x1280",
             },
         )
         wait_for_generation(service)
 
     assert response.status_code == 202
-    assert service.generate_calls[-1].size == "1000x1000"
+    assert service.generate_calls[-1].size == "1280x1280"
 
 
-def test_generate_accepts_nonstandard_landscape_size(service: FakeImageService) -> None:
+def test_legacy_gpt_model_rejects_nonstandard_landscape_size(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/generate",
@@ -372,10 +457,8 @@ def test_generate_accepts_nonstandard_landscape_size(service: FakeImageService) 
                 "size": "1536x864",
             },
         )
-        wait_for_generation(service)
 
-    assert response.status_code == 202
-    assert service.generate_calls[-1].size == "1536x864"
+    assert response.status_code == 422
 
 
 def test_generate_accepts_square_size(service: FakeImageService) -> None:
@@ -627,6 +710,10 @@ def test_history_image_edit_snapshot_and_delete_routes(
         "image_count": 1,
         "size": None,
         "resolution": None,
+        "output_format": None,
+        "background": None,
+        "output_compression": None,
+        "moderation": None,
         "references": [],
     }
     assert deleted.status_code == 204

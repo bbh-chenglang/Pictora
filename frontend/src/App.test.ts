@@ -51,6 +51,48 @@ describe("GenImage workspace", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  it("allows an unbound legacy account to submit its username", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      if (url.endsWith("/api/auth/login")) {
+        expect(init?.method).toBe("POST");
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: { code: "invalid_credentials", message: "测试响应" },
+            }),
+            { status: 401, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get(".auth-fields").text()).toContain("邮箱或旧用户名");
+    const identifier = wrapper.get("input[autocomplete='username']");
+    expect(identifier.attributes("type")).toBe("text");
+    await identifier.setValue("bbh");
+    await wrapper.get("input[autocomplete='current-password']").setValue("secret6");
+    expect((identifier.element as HTMLInputElement).checkValidity()).toBe(true);
+
+    await wrapper.get(".auth-form").trigger("submit");
+    await flushPromises();
+
+    const request = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/auth/login"),
+    );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      email: "bbh",
+      password: "secret6",
+    });
+  });
+
   it("requests an email verification code before registration", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
@@ -87,22 +129,30 @@ describe("GenImage workspace", () => {
       if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
       if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
       if (url.endsWith("/api/projects")) return jsonResponse([]);
-      if (url.endsWith("/api/admin/users")) return jsonResponse([{
-        id: 2,
-        username: "alice",
-        email: "alice@example.com",
-        is_admin: false,
-        password_status: "bcrypt 已加密",
-        created_at: "2026-08-12T01:00:00Z",
-        last_login_at: "2026-08-12T02:00:00Z",
-        last_activity_at: "2026-08-12T03:00:00Z",
-        last_used_at: "2026-08-12T03:00:00Z",
-        usage_count: 1,
-        generation_count: 1,
-        analysis_count: 0,
-        total_elapsed_ms: 1250,
-        models_used: ["gpt-image-1.5"],
-      }]);
+      if (url.endsWith("/api/admin/users")) return jsonResponse({
+        items: [{
+          id: 2,
+          username: "alice",
+          email: "alice@example.com",
+          is_admin: false,
+          password_status: "bcrypt 已加密",
+          created_at: "2026-08-12T01:00:00Z",
+          last_login_at: "2026-08-12T02:00:00Z",
+          last_activity_at: "2026-08-12T03:00:00Z",
+          last_used_at: "2026-08-12T03:00:00Z",
+          usage_count: 1,
+          generation_count: 1,
+          analysis_count: 0,
+          total_elapsed_ms: 1250,
+          models_used: ["gpt-image-1.5"],
+        }],
+        total: 28,
+        result_total: 28,
+        admin_total: 2,
+        usage_total: 91,
+        page: 1,
+        page_size: 20,
+      });
       if (url.endsWith("/api/admin/users/2/usage")) return jsonResponse([{
         id: 9,
         kind: "generate",
@@ -129,6 +179,10 @@ describe("GenImage workspace", () => {
     expect(wrapper.get(".admin-page").text()).toContain("alice@example.com");
     expect(wrapper.get(".admin-page").text()).toContain("gpt-image-1.5");
     expect(wrapper.get(".admin-page").text()).toContain("bcrypt 已加密");
+    expect(wrapper.get(".admin-page").text()).toContain("北京时间");
+    expect(wrapper.get(".admin-page").text()).toContain("2026/08/12 09:00");
+    expect(wrapper.get(".admin-metrics").text()).toContain("28");
+    expect(wrapper.get(".admin-pagination").text()).toContain("第 1 / 2 页");
     expect(wrapper.get(".admin-page").text()).not.toContain("password_hash");
     expect(wrapper.get(".admin-page").text()).not.toContain("private prompt");
   });
@@ -145,6 +199,46 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".theme-option").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("暂不支持");
     expect(wrapper.get("canvas.flowing-grid-background").attributes("aria-hidden")).toBe("true");
+  });
+
+  it("shows a read-only email and updates only the username from settings", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({
+        username: "alice",
+        email: "alice@example.com",
+        is_admin: false,
+        api_key_configured: false,
+      });
+      if (url.endsWith("/api/auth/profile") && init?.method === "PUT") {
+        expect(JSON.parse(String(init.body))).toEqual({ username: "alice-renamed" });
+        return jsonResponse({
+          username: "alice-renamed",
+          email: "alice@example.com",
+          is_admin: false,
+          api_key_configured: false,
+        });
+      }
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+    const emailField = wrapper.get<HTMLInputElement>("[data-field='profile-email']");
+    expect(emailField.element.value).toBe("alice@example.com");
+    expect(emailField.attributes("readonly")).toBeDefined();
+    await wrapper.get("[data-field='profile-username']").setValue("alice-renamed");
+    await wrapper.get(".profile-form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.get(".profile-status").text()).toBe("用户名已更新");
+    expect(wrapper.get(".user-chip").text()).toContain("alice-renamed");
   });
 
   it("labels the community number as a QQ group number", async () => {
@@ -291,15 +385,22 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".auth-page").exists()).toBe(true);
   });
 
-  it("keeps image parameters in the prompt toolbar", async () => {
+  it("keeps image parameters in a vertically resizable workspace", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
     expect(wrapper.find(".connection-section").exists()).toBe(false);
     expect(wrapper.find(".api-key-link").exists()).toBe(false);
     expect(wrapper.find(".control-panel").exists()).toBe(false);
-    expect(wrapper.find(".panel-resizer").exists()).toBe(false);
-    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(6);
+    const resizer = wrapper.get(".panel-resizer");
+    expect(resizer.attributes("role")).toBe("separator");
+    expect(resizer.attributes("aria-valuenow")).toBe("48");
+    await resizer.trigger("keydown", { key: "ArrowDown" });
+    expect(resizer.attributes("aria-valuenow")).toBe("50");
+    expect(window.localStorage.getItem("genimage-workspace-result-ratio")).toBe("50");
+    await resizer.trigger("dblclick");
+    expect(resizer.attributes("aria-valuenow")).toBe("48");
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
     expect(wrapper.find(".composer-dock .reference-row").exists()).toBe(true);
     expect(wrapper.find(".composer-dock .prompt-row textarea").exists()).toBe(true);
   });
@@ -352,32 +453,25 @@ describe("GenImage workspace", () => {
     });
   });
 
-  it("shows independent aspect-ratio and resolution options", async () => {
+  it("shows native GPT image sizes without a separate resolution", async () => {
     const wrapper = mount(App);
     await flushPromises();
 
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
 
     const menu = wrapper.get("[data-parameter-menu='size']");
-    expect(menu.findAll(".parameter-option")).toHaveLength(5);
-    expect(menu.text()).toContain("1:1");
-    expect(menu.text()).toContain("3:2");
-    expect(menu.text()).toContain("2:3");
-    expect(menu.text()).toContain("9:16");
-    expect(menu.text()).toContain("16:9");
-    expect(menu.text()).not.toContain("正方形");
-    expect(menu.text()).not.toContain("风景");
-    expect(menu.text()).not.toContain("人像");
-    expect(menu.text()).not.toContain("1024x1024");
+    expect(menu.findAll(".parameter-option")).toHaveLength(4);
+    expect(menu.text()).toContain("自动");
+    expect(menu.text()).toContain("正方形");
+    expect(menu.text()).toContain("横向");
+    expect(menu.text()).toContain("纵向");
+    expect(menu.text()).toContain("1024x1024");
+    expect(menu.text()).toContain("1536x1024");
+    expect(menu.text()).toContain("1024x1536");
     expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
     expect(menu.get(".parameter-option.is-selected svg").exists()).toBe(true);
 
-    await wrapper.get("[data-parameter-trigger='resolution']").trigger("click");
-    const resolutionMenu = wrapper.get("[data-parameter-menu='resolution']");
-    expect(resolutionMenu.findAll(".parameter-option")).toHaveLength(3);
-    expect(resolutionMenu.text()).toContain("1K");
-    expect(resolutionMenu.text()).toContain("2K");
-    expect(resolutionMenu.text()).toContain("4K");
+    expect(wrapper.find("[data-parameter-trigger='resolution']").exists()).toBe(false);
   });
 
   it("places the light-blue analysis action above image generation", async () => {
@@ -558,9 +652,7 @@ describe("GenImage workspace", () => {
     const wrapper = mount(App);
     await flushPromises();
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
-    await wrapper.get("[data-parameter-option='16:9']").trigger("click");
-    await wrapper.get("[data-parameter-trigger='resolution']").trigger("click");
-    await wrapper.get("[data-parameter-option='4K']").trigger("click");
+    await wrapper.get("[data-parameter-option='1536x1024']").trigger("click");
     await wrapper.get(".prompt-row textarea").setValue("竖版海报");
     await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
@@ -570,10 +662,13 @@ describe("GenImage workspace", () => {
     );
     expect(generateRequest).toBeDefined();
     expect(JSON.parse(String(generateRequest?.[1]?.body))).toMatchObject({
-      size: "16:9",
-      aspect_ratio: "16:9",
-      resolution: "4K",
+      size: "1536x1024",
+      output_format: "png",
+      background: "auto",
+      moderation: "auto",
     });
+    expect(JSON.parse(String(generateRequest?.[1]?.body))).not.toHaveProperty("aspect_ratio");
+    expect(JSON.parse(String(generateRequest?.[1]?.body))).not.toHaveProperty("resolution");
   });
 
   it("uploads multiple reference images together with the prompt when generating", async () => {
@@ -686,7 +781,7 @@ describe("GenImage workspace", () => {
     expect(modules[2].findAll(".reference-thumbnail")).toHaveLength(1);
   });
 
-  it("uses a standard square size by default", async () => {
+  it("uses the upstream automatic GPT size by default", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);
@@ -716,10 +811,13 @@ describe("GenImage workspace", () => {
       String(input).endsWith("/api/generate"),
     );
     expect(JSON.parse(String(generateRequest?.[1]?.body))).toMatchObject({
-      size: "1:1",
-      aspect_ratio: "1:1",
-      resolution: "1K",
+      size: "auto",
+      output_format: "png",
+      background: "auto",
+      moderation: "auto",
     });
+    expect(JSON.parse(String(generateRequest?.[1]?.body))).not.toHaveProperty("aspect_ratio");
+    expect(JSON.parse(String(generateRequest?.[1]?.body))).not.toHaveProperty("resolution");
   });
 
   it("shows the HTTP status when generation returns an empty error response", async () => {
@@ -832,7 +930,7 @@ describe("GenImage workspace", () => {
 
     expect(wrapper.get("[data-parameter-trigger='size']").text()).toContain("图片比例");
     expect(wrapper.find("[data-parameter-trigger='quality']").exists()).toBe(false);
-    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(4);
 
     await wrapper.get(".prompt-row textarea").setValue("Gemini 原生图片");
     await wrapper.get(".composer-actions .primary-action").trigger("click");
@@ -841,15 +939,15 @@ describe("GenImage workspace", () => {
       provider: "gemini",
       api_key_config_id: 2,
       aspect_ratio: "1:1",
-      resolution: "1K",
     });
     expect(generationBodies[0]).not.toHaveProperty("detail");
+    expect(generationBodies[0]).not.toHaveProperty("resolution");
 
     await wrapper.get("[data-parameter-trigger='apiKey']").trigger("click");
     await wrapper.get("[data-parameter-option='OpenAI 主账号']").trigger("click");
     await flushPromises();
     expect(wrapper.find("[data-parameter-trigger='quality']").exists()).toBe(true);
-    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(6);
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
     await wrapper.get("[data-parameter-trigger='quality']").trigger("click");
     expect(wrapper.get("[data-parameter-menu='quality']").findAll(".parameter-option")).toHaveLength(4);
     await wrapper.get("[data-parameter-option='medium']").trigger("click");
@@ -858,6 +956,120 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-parameter-option='gpt-image-1.5']").trigger("click");
     await flushPromises();
     expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gpt-image-1.5");
+  });
+
+  it("shows Grok native dimensions and sends them without OpenAI size", async () => {
+    const fetchMock = vi.mocked(fetch);
+    let generationBody: Record<string, unknown> | undefined;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 3,
+        model: "grok-imagine-image",
+        api_key_configured: true,
+        configs: [{
+          id: 3,
+          alias: "Grok",
+          provider_type: "grok",
+          model: "grok-imagine-image",
+          api_key_configured: true,
+        }],
+      });
+      if (url.endsWith("/api/settings/api-keys/3/models")) return jsonResponse({
+        models: [
+          { id: "grok-imagine-image", provider_type: "grok" },
+          { id: "grok-imagine-image-2.0", provider_type: "grok" },
+        ],
+      });
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        generationBody = JSON.parse(String(init.body));
+        return jsonResponse({ provider: "grok", model: "grok-imagine-image", images: [] });
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
+    expect(wrapper.find("[data-parameter-trigger='size']").exists()).toBe(true);
+    expect(wrapper.find("[data-parameter-trigger='resolution']").exists()).toBe(true);
+    expect(wrapper.find("[data-parameter-trigger='quality']").exists()).toBe(false);
+    await wrapper.get("[data-parameter-trigger='size']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='size']").findAll(".parameter-option")).toHaveLength(14);
+    await wrapper.get("[data-parameter-option='20:9']").trigger("click");
+    await wrapper.get("[data-parameter-trigger='resolution']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='resolution']").findAll(".parameter-option")).toHaveLength(2);
+    await wrapper.get("[data-parameter-option='2K']").trigger("click");
+    await wrapper.get("[data-parameter-trigger='model']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='model']").text()).toContain("grok-imagine-image-2.0");
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='count']").findAll(".parameter-option")).toHaveLength(10);
+    await wrapper.get("[data-parameter-option='10']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("生成十张原图");
+    await wrapper.get(".composer-actions .primary-action").trigger("click");
+    await flushPromises();
+
+    expect(generationBody).toMatchObject({
+      provider: "grok",
+      model: "grok-imagine-image",
+      count: 10,
+    });
+    expect(generationBody).not.toHaveProperty("size");
+    expect(generationBody?.aspect_ratio).toBe("20:9");
+    expect(generationBody?.resolution).toBe("2K");
+    expect(generationBody).not.toHaveProperty("detail");
+    wrapper.unmount();
+  });
+
+  it("shows and sends quality only for Grok Imagine Image 2.0", async () => {
+    const fetchMock = vi.mocked(fetch);
+    let generationBody: Record<string, unknown> | undefined;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 3,
+        model: "grok-imagine-image-2.0",
+        api_key_configured: true,
+        configs: [{ id: 3, alias: "Grok", provider_type: "grok", model: "grok-imagine-image-2.0", api_key_configured: true }],
+      });
+      if (url.endsWith("/api/settings/api-keys/3/models")) return jsonResponse({
+        models: [{ id: "grok-imagine-image-2.0", provider_type: "grok" }],
+      });
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        generationBody = JSON.parse(String(init.body));
+        return jsonResponse({ provider: "grok", model: "grok-imagine-image-2.0", images: [] });
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get("[data-parameter-trigger='quality']").text()).toContain("中");
+    await wrapper.get("[data-parameter-trigger='quality']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='quality']").findAll(".parameter-option")).toHaveLength(2);
+    await wrapper.get("[data-parameter-option='low']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("低质量快速草图");
+    await wrapper.get(".composer-actions .primary-action").trigger("click");
+    await flushPromises();
+
+    expect(generationBody).toMatchObject({
+      provider: "grok",
+      model: "grok-imagine-image-2.0",
+      aspect_ratio: "auto",
+      resolution: "1K",
+      detail: "low",
+    });
+    wrapper.unmount();
   });
 
   it("uses the upstream model list without adding a stale saved model", async () => {
@@ -1110,6 +1322,7 @@ describe("GenImage workspace", () => {
     expect(wrapper.find("[data-action='discover-models']").exists()).toBe(false);
     expect(wrapper.get("[data-provider-type='gpt']").attributes("aria-pressed")).toBe("false");
     expect(wrapper.get("[data-provider-type='gemini']").attributes("aria-pressed")).toBe("false");
+    expect(wrapper.get("[data-provider-type='grok']").attributes("aria-pressed")).toBe("false");
     await wrapper.get(".api-config-form").trigger("submit");
     expect(wrapper.text()).toContain("请选择 API 类型");
     await wrapper.get("[data-field='config-api-key']").setValue("new-key");
@@ -1133,6 +1346,47 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-action='add-api-key']").trigger("click");
     expect(wrapper.get<HTMLInputElement>("[data-field='config-alias']").element.value).toBe("");
     expect(wrapper.get<HTMLInputElement>("[data-field='config-api-key']").element.value).toBe("");
+  });
+
+  it("adds Grok beside OpenAI and Gemini in the shared API configuration", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: null,
+        model: "gpt-image-2",
+        api_key_configured: false,
+        configs: [],
+      });
+      if (url.endsWith("/api/settings/api-keys") && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          alias: "Grok 中转",
+          api_key: "grok-key",
+          provider_type: "grok",
+        });
+        return jsonResponse({ id: 3 });
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-action='settings']").trigger("click");
+    await wrapper.get("[data-action='add-api-key']").trigger("click");
+    await wrapper.get("[data-field='config-alias']").setValue("Grok 中转");
+    await wrapper.get("[data-field='config-api-key']").setValue("grok-key");
+    await wrapper.get("[data-provider-type='grok']").trigger("click");
+
+    expect(wrapper.get("[data-provider-type='grok']").attributes("aria-pressed")).toBe("true");
+    await wrapper.get(".api-config-form").trigger("submit");
+    await flushPromises();
+
+    const createRequest = fetchMock.mock.calls.find(([, request]) => request?.method === "POST");
+    expect(createRequest).toBeTruthy();
   });
 
   it("recreates a stale edited config without losing the Gemini form values", async () => {
@@ -1800,6 +2054,7 @@ describe("GenImage workspace", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.get("[data-project-id='2']").classes()).toContain("active");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("保持当前生成页面");
     expect(wrapper.get(".primary-action").text()).toContain("生成图片");
     await wrapper.get("[data-project-id='1'] .project-toggle").trigger("click");
     expect(wrapper.get(".running-generation").text()).toMatch(/正在生成 · \d+\.\d{2} 秒/);
@@ -1810,14 +2065,14 @@ describe("GenImage workspace", () => {
     expect(wrapper.get("[data-project-id='1']").classes()).toContain("active");
     expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("保持当前生成页面");
     expect(wrapper.get(".generation-progress-meta").text()).toMatch(/正在生成\d+\.\d{2} 秒/);
-    expect(wrapper.get(".primary-action").text()).toContain("取消生成");
+    expect(wrapper.get(".primary-action").text()).toContain("生成图片");
 
     await wrapper.get("[data-action='settings']").trigger("click");
     expect(window.location.pathname).toBe("/settings");
     expect(wrapper.find(".settings-page").exists()).toBe(true);
     await wrapper.get("[data-action='back-to-workspace']").trigger("click");
     await wrapper.vm.$nextTick();
-    expect(wrapper.get(".primary-action").text()).toContain("取消生成");
+    expect(wrapper.get(".primary-action").text()).toContain("生成图片");
 
     await wrapper.get(".history-select").trigger("click");
     await flushPromises();
@@ -1828,7 +2083,7 @@ describe("GenImage workspace", () => {
     await wrapper.get(".running-generation").trigger("click");
     await wrapper.vm.$nextTick();
     expect(wrapper.get(".result-heading h2").text()).toBe("生成结果");
-    expect(wrapper.get(".primary-action").text()).toContain("取消生成");
+    expect(wrapper.get(".primary-action").text()).toContain("生成图片");
 
     finishGeneration?.(
       new Response(
@@ -1843,6 +2098,107 @@ describe("GenImage workspace", () => {
     await flushPromises();
 
     expect(wrapper.get(".image-grid img").attributes("src")).toBe("data:image/png;base64,cmVzdWx0");
+    wrapper.unmount();
+  });
+
+  it("submits another batch in the same conversation before the first result finishes", async () => {
+    const generationBodies: Array<Record<string, unknown>> = [];
+    let batchSequence = 0;
+    let finishFirstBatch: ((response: Response) => void) | undefined;
+    let finishSecondBatch: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) {
+        return jsonResponse([{ id: 1, name: "项目", history: [], history_count: 0 }]);
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        generationBodies.push(body);
+        batchSequence++;
+        return Promise.resolve(new Response(JSON.stringify({
+          task_id: 44,
+          batch_id: 100 + batchSequence,
+          status: "pending",
+          status_url: `/api/history/44/batches/${100 + batchSequence}`,
+        }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      }
+      if (/\/api\/history\/44\/batches\/10[12]$/.test(url)) {
+        const batchId = Number(url.slice(-3));
+        return new Promise<Response>((resolve) => {
+          if (batchId === 101) finishFirstBatch = resolve;
+          else finishSecondBatch = resolve;
+        });
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("第一批");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".primary-action").text()).toContain("生成图片");
+    expect(wrapper.get(".primary-action").attributes("disabled")).toBeUndefined();
+
+    await wrapper.get(".prompt-row textarea").setValue("第二批");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(generationBodies).toHaveLength(2);
+    expect(generationBodies[0]).not.toHaveProperty("conversation_id");
+    expect(generationBodies[1]).toMatchObject({ conversation_id: 44, prompt: "第二批" });
+    expect(wrapper.findAll(".running-generation")).toHaveLength(1);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(2);
+
+    finishFirstBatch?.(new Response(JSON.stringify({
+      id: 101,
+      history_id: 44,
+      status: "completed",
+      elapsed_ms: 1200,
+      images: [{
+        id: 501,
+        batch_id: 101,
+        role: "generated",
+        mime_type: "image/png",
+        position: 0,
+        url: "/api/history/44/images/501",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/501");
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(1);
+
+    finishSecondBatch?.(new Response(JSON.stringify({
+      id: 102,
+      history_id: 44,
+      status: "completed",
+      elapsed_ms: 2400,
+      images: [{
+        id: 502,
+        batch_id: 102,
+        role: "generated",
+        mime_type: "image/png",
+        position: 0,
+        url: "/api/history/44/images/502",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
+      "/api/history/44/images/501",
+      "/api/history/44/images/502",
+    ]);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(0);
     wrapper.unmount();
   });
 
@@ -1919,7 +2275,7 @@ describe("GenImage workspace", () => {
       if (url.endsWith("/api/generate") && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
         generationBodies.push(body);
-        const taskId = body.conversation_id === 44 || generationBodies.length < 3 ? 44 : 45;
+        const taskId = body.conversation_id === 44 || generationBodies.length < 4 ? 44 : 45;
         taskRounds.set(taskId, (taskRounds.get(taskId) ?? 0) + 1);
         return Promise.resolve(new Response(JSON.stringify({
           task_id: taskId,
@@ -1963,6 +2319,7 @@ describe("GenImage workspace", () => {
           completed_at: "2026-08-11T10:00:01",
           images: Array.from({ length: rounds }, (_, index) => ({
             id: taskId * 10 + index,
+            batch_id: taskId * 100 + index,
             role: "generated",
             mime_type: "image/png",
             position: index,
@@ -1988,7 +2345,24 @@ describe("GenImage workspace", () => {
     expect(generationBodies[0]).not.toHaveProperty("conversation_id");
     expect(generationBodies[1]).toMatchObject({ conversation_id: 44, prompt: "继续调整" });
     expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
+      "/api/history/44/images/440",
+      "/api/history/44/images/441",
+    ]);
     expect(wrapper.findAll(".history-select")).toHaveLength(1);
+
+    await wrapper.get(".prompt-row textarea").setValue("第三轮调整");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(generationBodies[2]).toMatchObject({ conversation_id: 44, prompt: "第三轮调整" });
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(3);
+    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
+      "/api/history/44/images/440",
+      "/api/history/44/images/441",
+      "/api/history/44/images/442",
+    ]);
 
     await wrapper.get(".project-new-conversation").trigger("click");
     await wrapper.get(".prompt-row textarea").setValue("全新对话");
@@ -1996,8 +2370,8 @@ describe("GenImage workspace", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(generationBodies[2]).not.toHaveProperty("conversation_id");
-    expect(generationBodies[2]).toMatchObject({ prompt: "全新对话" });
+    expect(generationBodies[3]).not.toHaveProperty("conversation_id");
+    expect(generationBodies[3]).toMatchObject({ prompt: "全新对话" });
     wrapper.unmount();
   });
 
@@ -2058,8 +2432,12 @@ describe("GenImage workspace", () => {
           model: "gpt-image-2",
           detail: "high",
           image_count: 4,
-          size: "16:9",
-          resolution: "4K",
+          size: "2048x1152",
+          resolution: null,
+          output_format: "webp",
+          background: "opaque",
+          output_compression: 84,
+          moderation: "low",
           references: [
             { id: 31, category: "person", mime_type: "image/jpeg", filename: "person.jpg", position: 0, url: "/api/history/7/images/31" },
             { id: 32, category: "object", mime_type: "image/png", filename: "chair.png", position: 1, url: "/api/history/7/images/32" },
@@ -2096,9 +2474,13 @@ describe("GenImage workspace", () => {
 
     expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("恢复这一轮提示词");
     expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gpt-image-2");
-    expect(wrapper.get("[data-parameter-trigger='size']").text()).toContain("16:9");
-    expect(wrapper.get("[data-parameter-trigger='resolution']").text()).toContain("4K");
+    expect(wrapper.get("[data-parameter-trigger='size']").text()).toContain("2K 横向");
+    expect(wrapper.find("[data-parameter-trigger='resolution']").exists()).toBe(false);
     expect(wrapper.get("[data-parameter-trigger='quality']").text()).toContain("高");
+    expect(wrapper.find("[data-parameter-trigger='format']").exists()).toBe(false);
+    expect(wrapper.find("[data-parameter-trigger='background']").exists()).toBe(false);
+    expect(wrapper.find("[data-parameter-trigger='moderation']").exists()).toBe(false);
+    expect(wrapper.find("#output-compression").exists()).toBe(false);
     expect(wrapper.get("[data-parameter-trigger='count']").text()).toContain("4 张");
     const referenceModules = wrapper.findAll(".reference-module");
     expect(referenceModules[0].findAll(".reference-thumbnail")).toHaveLength(1);

@@ -81,7 +81,7 @@ class UserRepository:
                 SELECT u.id, u.username, u.email, u.is_admin, u.api_key, u.model
                 FROM user_sessions AS s
                 JOIN users AS u ON u.id = s.user_id
-                WHERE s.token_hash = ? AND s.expires_at > ? AND u.email IS NOT NULL
+                WHERE s.token_hash = ? AND s.expires_at > ?
                 """,
                 (token_hash, datetime.now(timezone.utc).isoformat()),
             )
@@ -166,6 +166,17 @@ class UserRepository:
                 (password_hash, user_id),
             )
             await connection.commit()
+
+    async def update_username(self, user_id: int, username: str) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            try:
+                await connection.execute(
+                    "UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (username, user_id),
+                )
+                await connection.commit()
+            except aiosqlite.IntegrityError as exc:
+                raise UserAlreadyExistsError(username) from exc
 
     async def get_settings(self, user_id: int) -> StoredProviderSettings:
         async with aiosqlite.connect(self.database_path) as connection:

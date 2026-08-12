@@ -120,6 +120,74 @@ def test_login_and_password_change_revoke_old_session(client: TestClient) -> Non
     assert response.status_code == 200
 
 
+def test_unbound_legacy_user_can_log_in_with_username(client: TestClient) -> None:
+    repository = app.dependency_overrides[get_user_repository]()
+    legacy = asyncio.run(repository.create("legacy", hash_password("oldpass6")))
+
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "legacy", "password": "oldpass6"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": "legacy",
+        "email": None,
+        "is_admin": False,
+        "api_key_configured": False,
+    }
+    assert client.get("/api/auth/me").json()["username"] == legacy.username
+
+
+def test_bound_user_cannot_log_in_with_username(client: TestClient) -> None:
+    assert register(client).status_code == 201
+    client.post("/api/auth/logout")
+
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "alice", "password": "secret6"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_profile_updates_username_without_changing_email(client: TestClient) -> None:
+    assert register(client).status_code == 201
+
+    response = client.put("/api/auth/profile", json={"username": "  alice-renamed  "})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "username": "alice-renamed",
+        "email": "alice@example.com",
+        "is_admin": False,
+        "api_key_configured": False,
+    }
+    assert client.get("/api/auth/me").json()["username"] == "alice-renamed"
+
+
+def test_profile_rejects_duplicate_username_and_email_updates(client: TestClient) -> None:
+    repository = app.dependency_overrides[get_user_repository]()
+    asyncio.run(repository.create("existing", hash_password("secret6")))
+    assert register(client).status_code == 201
+
+    duplicate = client.put("/api/auth/profile", json={"username": "existing"})
+    email_update = client.put(
+        "/api/auth/profile",
+        json={"username": "alice", "email": "changed@example.com"},
+    )
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "username_taken"
+    assert email_update.status_code == 422
+    assert client.get("/api/auth/me").json() == {
+        "username": "alice",
+        "email": "alice@example.com",
+        "is_admin": False,
+        "api_key_configured": False,
+    }
+
+
 def test_register_rejects_mismatched_or_short_password(client: TestClient) -> None:
     response = client.post(
         "/api/auth/register",

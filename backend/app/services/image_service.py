@@ -49,11 +49,28 @@ class ImageService:
         )
         try:
             async with asyncio.timeout(count * 300):
-                jobs = [
-                    self._generate_one(provider, effective_request, prompt, reference_image)
-                    for prompt in prompts
-                    for _ in range(count)
-                ]
+                provider_id = getattr(provider, "provider_id", "")
+                native_count = provider_id == "grok" or (
+                    provider_id in {"openai", "compatible"}
+                    and effective_request.model.casefold().startswith("gpt-image-")
+                )
+                if native_count:
+                    jobs = [
+                        self._generate_one(
+                            provider,
+                            effective_request,
+                            prompt,
+                            reference_image,
+                            count=count,
+                        )
+                        for prompt in prompts
+                    ]
+                else:
+                    jobs = [
+                        self._generate_one(provider, effective_request, prompt, reference_image)
+                        for prompt in prompts
+                        for _ in range(count)
+                    ]
                 responses = await asyncio.gather(*jobs)
         except TimeoutError:
             raise ProviderTimeoutError() from None
@@ -85,6 +102,8 @@ class ImageService:
         request: GenerateRequest,
         prompt: str,
         reference_image: ReferenceImageInput | None = None,
+        *,
+        count: int = 1,
     ) -> GenerateResponse:
         started_at = perf_counter()
         logger.info(
@@ -94,7 +113,7 @@ class ImageService:
             " ".join(f"{key}={value}" for key, value in log_context().items()),
         )
         try:
-            generation_request = request.model_copy(update={"prompt": prompt, "count": 1})
+            generation_request = request.model_copy(update={"prompt": prompt, "count": count})
             response = (
                 await provider.generate_image(generation_request, reference_image)
                 if reference_image is not None

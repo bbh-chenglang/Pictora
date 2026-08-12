@@ -23,7 +23,7 @@ describe("ProjectSidebar", () => {
     });
 
     expect(wrapper.get(".history-provider-model").text()).toBe("OpenAI · gpt-image-1.5");
-    expect(wrapper.get(".history-generation-meta").text()).toBe("比例 16:9 · 分辨率 4K · 2张");
+    expect(wrapper.get(".history-generation-meta").text()).toBe("尺寸 16:9 · 2张");
   });
 
   it("defaults to five history items and expands the rest", async () => {
@@ -84,6 +84,15 @@ describe("ProjectSidebar", () => {
     wrapper.unmount();
   });
 
+  it("shows Grok native aspect ratio and resolution", () => {
+    const grokHistory = [{ ...history(1)[0], provider: "grok", model: "grok-imagine-image", size: "20:9", resolution: "2K" }];
+    const wrapper = mount(ProjectSidebar, {
+      props: { projects: [{ id: 1, name: "Grok 项目", history: grokHistory, history_count: 1 }], selectedProjectId: 1 },
+    });
+
+    expect(wrapper.get(".history-generation-meta").text()).toBe("比例 20:9 · 分辨率 2K · 2张");
+  });
+
   it("shows a new-conversation button beside every project", async () => {
     const projects = [
       { id: 1, name: "项目一", history: history(1), history_count: 1 },
@@ -119,7 +128,7 @@ describe("ProjectSidebar", () => {
     expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(true);
   });
 
-  it("emits close after mobile navigation choices and from the close control", async () => {
+  it("keeps the sidebar open when selecting projects and conversations", async () => {
     const wrapper = mount(ProjectSidebar, {
       props: {
         projects: [{ id: 1, name: "项目一", history: history(1), history_count: 1 }],
@@ -129,13 +138,16 @@ describe("ProjectSidebar", () => {
     });
 
     await wrapper.get(".project-select").trigger("click");
+    expect(wrapper.emitted("select-project")?.[0]).toEqual([1]);
+    expect(wrapper.emitted("close")).toBeUndefined();
+
     await wrapper.get(".history-select").trigger("click");
     await wrapper.get(".running-generation").trigger("click");
-    await wrapper.get(".mobile-sidebar-close").trigger("click");
-
-    expect(wrapper.emitted("select-project")?.[0]).toEqual([1]);
     expect(wrapper.emitted("open-history")?.[0]).toEqual([1]);
     expect(wrapper.emitted("open-generation")?.[0]).toEqual([9]);
-    expect(wrapper.emitted("close")).toHaveLength(4);
+    expect(wrapper.emitted("close")).toBeUndefined();
+
+    await wrapper.get(".mobile-sidebar-close").trigger("click");
+    expect(wrapper.emitted("close")).toHaveLength(1);
   });
 });

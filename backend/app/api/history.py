@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.dependencies import get_current_user, get_history_repository
 from app.repositories.history_repository import HistoryRepository
-from app.schemas.history import HistoryDetail, HistoryImageEditSnapshot, HistorySummary
+from app.schemas.history import GenerationBatchDetail, HistoryDetail, HistoryImageEditSnapshot, HistorySummary
 from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/history", tags=["history"])
@@ -34,6 +34,22 @@ async def read_history(
             },
         )
     return record
+
+
+@router.get("/{history_id}/batches/{batch_id}", response_model=GenerationBatchDetail)
+async def read_generation_batch(
+    history_id: int,
+    batch_id: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> GenerationBatchDetail:
+    batch = await repository.get_generation_batch(user.id, history_id, batch_id)
+    if batch is None:
+        raise HTTPException(
+            404,
+            {"error": {"code": "generation_batch_not_found", "message": "生成批次不存在"}},
+        )
+    return batch
 
 
 @router.get("/{history_id}/images/{image_id}")

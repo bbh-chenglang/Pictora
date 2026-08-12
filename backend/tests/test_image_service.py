@@ -73,6 +73,11 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
             prompt="draw",
             detail="high",
             size="1536x1152",
+            count=1,
+            output_format=None,
+            background=None,
+            output_compression=None,
+            moderation=None,
         )
     )
     analysis = await provider.analyze_image("vision-model", "What is here?", b"abc", "image/png")
@@ -87,6 +92,7 @@ async def test_openai_provider_normalizes_generation_and_analysis() -> None:
     assert client.images.request == {
         "model": "gpt-image-1",
         "prompt": "draw",
+        "n": 1,
         "quality": "high",
         "size": "1536x1152",
     }
@@ -110,8 +116,11 @@ async def test_openai_provider_uses_image_edit_for_reference_generation() -> Non
             model="gpt-image-2",
             prompt="保留构图并增加自然光",
             detail="high",
-            aspect_ratio="16:9",
-            resolution="2K",
+            size="2048x1152",
+            output_format="webp",
+            background="opaque",
+            output_compression=82,
+            moderation="low",
         ),
         ReferenceImage(
             data=b"reference-bytes",
@@ -126,6 +135,11 @@ async def test_openai_provider_uses_image_edit_for_reference_generation() -> Non
     assert edit_request["prompt"] == "保留构图并增加自然光"
     assert edit_request["quality"] == "high"
     assert edit_request["size"] == "2048x1152"
+    assert edit_request["n"] == 1
+    assert edit_request["output_format"] == "webp"
+    assert edit_request["background"] == "opaque"
+    assert edit_request["output_compression"] == 82
+    assert "moderation" not in edit_request
     assert edit_request["image"].name == "room.jpg"
     assert edit_request["image"].read() == b"reference-bytes"
     assert response.images[0].base64_data == "cmVzdWx0"
@@ -145,7 +159,7 @@ async def test_openai_provider_forwards_multiple_reference_images() -> None:
         ReferenceImage(data=b"material", content_type="image/png", filename="material.png"),
     ]
 
-    await provider.generate_image(
+    response = await provider.generate_image(
         GenerateRequest(provider="openai", model="gpt-image-2", prompt="融合参考图"),
         references,
     )
@@ -161,22 +175,7 @@ async def test_openai_provider_forwards_multiple_reference_images() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("aspect_ratio", "resolution", "expected_size"),
-    [
-        ("16:9", "1K", "1280x720"),
-        ("9:16", "1K", "720x1280"),
-        ("16:9", "2K", "2048x1152"),
-        ("9:16", "4K", "2160x3840"),
-        ("3:2", "2K", "2016x1344"),
-        ("3:2", "4K", "3504x2336"),
-    ],
-)
-async def test_openai_provider_combines_aspect_ratio_and_resolution(
-    aspect_ratio: str,
-    resolution: str,
-    expected_size: str,
-) -> None:
+async def test_openai_provider_forwards_native_generation_parameters() -> None:
     client = FakeClient()
     provider = OpenAIProvider(
         api_key=SecretStr("do-not-leak"),
@@ -185,22 +184,33 @@ async def test_openai_provider_combines_aspect_ratio_and_resolution(
         client=client,
     )
 
-    await provider.generate_image(
+    response = await provider.generate_image(
         GenerateRequest(
             provider="openai",
             model="gpt-image-2",
             prompt="draw a wallpaper",
-            size=aspect_ratio,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
+            count=10,
+            size="3840x2160",
+            detail="medium",
+            output_format="jpeg",
+            background="opaque",
+            output_compression=73,
+            moderation="low",
         )
     )
 
     assert client.images.request == {
         "model": "gpt-image-2",
         "prompt": "draw a wallpaper",
-        "size": expected_size,
+        "n": 10,
+        "size": "3840x2160",
+        "quality": "medium",
+        "output_format": "jpeg",
+        "background": "opaque",
+        "output_compression": 73,
+        "moderation": "low",
     }
+    assert response.images[0].mime_type == "image/jpeg"
 
 
 @pytest.mark.asyncio
@@ -435,6 +445,41 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
     assert provider.calls == ["first", "first", "second", "second"]
     assert provider.max_active == 4
     assert all(image.generation_time_ms >= 1 for image in result.images)
+
+
+@pytest.mark.asyncio
+async def test_image_service_sends_grok_count_as_one_native_request_per_prompt() -> None:
+    class GrokProvider:
+        provider_id = "grok"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        async def generate_image(self, request):
+            self.calls.append((request.prompt, request.count))
+            return GenerateResponse(
+                provider="grok",
+                model=request.model,
+                images=[
+                    ImageResult(url=f"https://example.com/{request.prompt}-{index}.png")
+                    for index in range(request.count)
+                ],
+            )
+
+    provider = GrokProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    result = await service.generate(
+        GenerateRequest(
+            provider="grok",
+            model="grok-imagine-image",
+            prompt="first",
+            prompts=["first", "second"],
+            count=10,
+        )
+    )
+
+    assert provider.calls == [("first", 10), ("second", 10)]
+    assert len(result.images) == 20
 
 
 @pytest.mark.asyncio

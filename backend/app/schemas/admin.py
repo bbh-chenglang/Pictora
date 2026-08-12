@@ -1,9 +1,18 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class AdminUserSummary(BaseModel):
+class UtcTimestampModel(BaseModel):
+    @field_validator("*", mode="after")
+    @classmethod
+    def mark_naive_datetimes_as_utc(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class AdminUserSummary(UtcTimestampModel):
     id: int
     username: str
     email: str
@@ -20,7 +29,7 @@ class AdminUserSummary(BaseModel):
     models_used: list[str]
 
 
-class AdminUsageRecord(BaseModel):
+class AdminUsageRecord(UtcTimestampModel):
     id: int
     kind: str
     status: str
@@ -33,6 +42,16 @@ class AdminUsageRecord(BaseModel):
     elapsed_ms: int | None = None
     created_at: datetime
     completed_at: datetime | None = None
+
+
+class AdminUserPage(BaseModel):
+    items: list[AdminUserSummary]
+    total: int
+    result_total: int
+    admin_total: int
+    usage_total: int
+    page: int
+    page_size: int
 
 
 class AdminPasswordResetRequest(BaseModel):

@@ -11,6 +11,7 @@ ReferenceCategory = Literal["person", "environment", "object"]
 
 class HistoryImageMeta(BaseModel):
     id: int
+    batch_id: int | None = None
     role: HistoryImageRole
     mime_type: str
     filename: str | None = None
@@ -42,6 +43,16 @@ class HistoryDetail(HistorySummary):
     images: list[HistoryImageMeta]
 
 
+class GenerationBatchDetail(BaseModel):
+    id: int
+    history_id: int
+    status: HistoryStatus
+    elapsed_ms: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    images: list[HistoryImageMeta]
+
+
 class HistoryImageEditReference(BaseModel):
     id: int
     category: ReferenceCategory
@@ -62,4 +73,8 @@ class HistoryImageEditSnapshot(BaseModel):
     image_count: int
     size: str | None = None
     resolution: str | None = None
+    output_format: str | None = None
+    background: str | None = None
+    output_compression: int | None = None
+    moderation: str | None = None
     references: list[HistoryImageEditReference]

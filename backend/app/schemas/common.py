@@ -10,6 +10,7 @@ class ProviderModel(BaseModel):
 class ImageResult(BaseModel):
     url: str | None = None
     base64_data: str | None = None
+    mime_type: str | None = None
     revised_prompt: str | None = None
     generation_time_ms: int | None = None
 

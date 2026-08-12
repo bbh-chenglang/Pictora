@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +10,10 @@ import app.dependencies as dependencies
 from app.providers.base import ProviderNotFoundError
 from app.providers.compatible_provider import CompatibleProvider
 from app.providers.custom_provider import CustomProvider
+from app.providers.grok_provider import GrokProvider
 from app.providers.registry import ProviderRegistry
 from app.repositories.settings_repository import StoredProviderSettings
+from app.schemas.api_key_config import StoredApiKeyConfig
 
 
 def test_registry_registers_only_providers_with_non_empty_keys() -> None:
@@ -65,6 +68,24 @@ def test_registry_builds_fixed_compatible_provider_from_stored_settings() -> Non
     assert provider.model == "custom-image-model"
     assert [item.id for item in registry.list_models()] == ["compatible"]
     assert "stored-secret" not in repr(registry.list_models())
+
+
+def test_registry_builds_grok_from_an_api_key_config() -> None:
+    config = StoredApiKeyConfig(
+        id=1,
+        user_id=2,
+        alias="Grok",
+        api_key="secret",
+        provider_type="grok",
+        model="grok-imagine-image",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+
+    provider = ProviderRegistry.from_api_key_config(config)
+
+    assert isinstance(provider, GrokProvider)
+    assert provider.provider_id == "grok"
 
 
 @pytest.mark.asyncio

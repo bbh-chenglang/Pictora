@@ -5,6 +5,7 @@ import aiosqlite
 
 from app.database import DATABASE_PATH
 from app.schemas.history import (
+    GenerationBatchDetail,
     HistoryDetail,
     HistoryImageEditReference,
     HistoryImageEditSnapshot,
@@ -52,6 +53,10 @@ class HistoryRepository:
         image_count: int,
         size: str | None,
         resolution: str | None,
+        output_format: str | None,
+        background: str | None,
+        output_compression: int | None,
+        moderation: str | None,
     ) -> int:
         stored_config_id = None
         if api_key_config_id is not None:
@@ -64,13 +69,15 @@ class HistoryRepository:
             """
             INSERT INTO generation_batches (
                 history_id, api_key_config_id, prompt, provider, model, detail,
-                image_count, size, resolution
+                image_count, size, resolution, output_format, background,
+                output_compression, moderation
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 history_id, stored_config_id, prompt, provider, model, detail,
-                image_count, size, resolution,
+                image_count, size, resolution, output_format, background,
+                output_compression, moderation,
             ),
         )
         if cursor.lastrowid is None:
@@ -91,6 +98,10 @@ class HistoryRepository:
         api_key_config_id: int | None = None,
         size: str | None = None,
         resolution: str | None = None,
+        output_format: str | None = None,
+        background: str | None = None,
+        output_compression: int | None = None,
+        moderation: str | None = None,
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
             await connection.execute("PRAGMA foreign_keys = ON")
@@ -131,6 +142,10 @@ class HistoryRepository:
                 image_count=image_count,
                 size=size,
                 resolution=resolution,
+                output_format=output_format,
+                background=background,
+                output_compression=output_compression,
+                moderation=moderation,
             )
             await connection.commit()
             return history_id
@@ -149,6 +164,10 @@ class HistoryRepository:
         api_key_config_id: int | None = None,
         size: str | None = None,
         resolution: str | None = None,
+        output_format: str | None = None,
+        background: str | None = None,
+        output_compression: int | None = None,
+        moderation: str | None = None,
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
             await connection.execute("PRAGMA foreign_keys = ON")
@@ -164,9 +183,6 @@ class HistoryRepository:
             if row is None:
                 await connection.rollback()
                 raise HistoryConversationNotFoundError(history_id)
-            if row[0] == "pending":
-                await connection.rollback()
-                raise HistoryConversationBusyError(history_id)
             await connection.execute(
                 """
                 UPDATE history
@@ -201,9 +217,51 @@ class HistoryRepository:
                 image_count=image_count,
                 size=size,
                 resolution=resolution,
+                output_format=output_format,
+                background=background,
+                output_compression=output_compression,
+                moderation=moderation,
             )
             await connection.commit()
             return batch_id
+
+    async def get_generation_batch(
+        self,
+        user_id: int,
+        history_id: int,
+        batch_id: int,
+    ) -> GenerationBatchDetail | None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            connection.row_factory = aiosqlite.Row
+            row = await (await connection.execute(
+                """
+                SELECT batch.id, batch.history_id, batch.status, batch.elapsed_ms,
+                       batch.error_code, batch.error_message
+                FROM generation_batches AS batch
+                JOIN history ON history.id = batch.history_id
+                WHERE batch.id = ? AND batch.history_id = ? AND history.user_id = ?
+                """,
+                (batch_id, history_id, user_id),
+            )).fetchone()
+            if row is None:
+                return None
+            image_rows = await (await connection.execute(
+                """
+                SELECT id, batch_id, role, mime_type, filename, position, reference_category
+                FROM history_images
+                WHERE history_id = ? AND batch_id = ? AND role = 'generated'
+                ORDER BY position, id
+                """,
+                (history_id, batch_id),
+            )).fetchall()
+        images = [
+            HistoryImageMeta(
+                **dict(image_row),
+                url=f"/api/history/{history_id}/images/{image_row['id']}",
+            )
+            for image_row in image_rows
+        ]
+        return GenerationBatchDetail.model_validate({**dict(row), "images": images})
 
     async def latest_generation_batch_id(self, *, user_id: int, history_id: int) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
@@ -307,6 +365,39 @@ class HistoryRepository:
             )
             await connection.commit()
 
+    async def complete_generation_batch(
+        self,
+        history_id: int,
+        batch_id: int,
+        *,
+        elapsed_ms: int | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute(
+                """
+                UPDATE generation_batches
+                SET status = 'completed', elapsed_ms = ?, completed_at = CURRENT_TIMESTAMP,
+                    error_code = NULL, error_message = NULL
+                WHERE id = ? AND history_id = ? AND status = 'pending'
+                """,
+                (elapsed_ms, batch_id, history_id),
+            )
+            await connection.execute(
+                """
+                UPDATE history
+                SET status = 'completed', elapsed_ms = ?, error_code = NULL,
+                    error_message = NULL, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM generation_batches
+                      WHERE history_id = ? AND status = 'pending'
+                  )
+                """,
+                (elapsed_ms, history_id, history_id),
+            )
+            await connection.commit()
+
     async def fail(
         self,
         history_id: int,
@@ -328,6 +419,40 @@ class HistoryRepository:
             )
             await connection.commit()
 
+    async def fail_generation_batch(
+        self,
+        history_id: int,
+        batch_id: int,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute(
+                """
+                UPDATE generation_batches
+                SET status = 'failed', error_code = ?, error_message = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND history_id = ? AND status = 'pending'
+                """,
+                (error_code, error_message, batch_id, history_id),
+            )
+            await connection.execute(
+                """
+                UPDATE history
+                SET status = 'failed', error_code = ?, error_message = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM generation_batches
+                      WHERE history_id = ? AND status = 'pending'
+                  )
+                """,
+                (error_code, error_message, history_id, history_id),
+            )
+            await connection.commit()
+
     async def fail_pending_generations(
         self,
         *,
@@ -335,6 +460,20 @@ class HistoryRepository:
         error_message: str = "服务重启导致任务中断，请重新生成",
     ) -> int:
         async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute(
+                """
+                UPDATE generation_batches
+                SET status = 'failed', error_code = ?, error_message = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE status = 'pending' AND EXISTS (
+                    SELECT 1 FROM history
+                    WHERE history.id = generation_batches.history_id
+                      AND history.kind = 'generate' AND history.status = 'pending'
+                )
+                """,
+                (error_code, error_message),
+            )
             cursor = await connection.execute(
                 """
                 UPDATE history
@@ -394,7 +533,7 @@ class HistoryRepository:
                 return None
             image_cursor = await connection.execute(
                 """
-                SELECT image.id, image.role, image.mime_type, image.filename,
+                SELECT image.id, image.batch_id, image.role, image.mime_type, image.filename,
                        image.position, image.reference_category
                 FROM history_images AS image
                 WHERE image.history_id = ?
@@ -458,7 +597,8 @@ class HistoryRepository:
                 """
                 SELECT image.batch_id, config.id AS api_key_config_id, batch.prompt,
                        batch.provider, batch.model, batch.detail, batch.image_count,
-                       batch.size, batch.resolution
+                       batch.size, batch.resolution, batch.output_format,
+                       batch.background, batch.output_compression, batch.moderation
                 FROM history_images AS image
                 JOIN history ON history.id = image.history_id
                 JOIN generation_batches AS batch ON batch.id = image.batch_id

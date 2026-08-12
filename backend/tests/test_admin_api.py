@@ -71,7 +71,12 @@ def test_admin_lists_user_statistics_without_password_or_prompt(admin_client) ->
     response = client.get("/api/admin/users")
 
     assert response.status_code == 200
-    alice = next(user for user in response.json() if user["id"] == user_id)
+    payload = response.json()
+    assert payload["total"] == 2
+    assert payload["result_total"] == 2
+    assert payload["admin_total"] == 1
+    assert payload["usage_total"] == 1
+    alice = next(user for user in payload["items"] if user["id"] == user_id)
     assert alice["email"] == "alice@example.com"
     assert alice["password_status"] == "bcrypt 已加密"
     assert alice["usage_count"] == 1
@@ -84,6 +89,22 @@ def test_admin_lists_user_statistics_without_password_or_prompt(admin_client) ->
     assert usage[0]["resolution"] == "2K"
     assert usage[0]["elapsed_ms"] == 1250
     assert "prompt" not in usage[0]
+    assert alice["created_at"].endswith("Z")
+    assert usage[0]["created_at"].endswith("Z")
+
+
+def test_admin_user_list_supports_server_side_search_and_pagination(admin_client) -> None:
+    client, _, user_id = admin_client
+
+    searched = client.get("/api/admin/users", params={"search": "ALICE", "page_size": 10})
+    assert searched.status_code == 200
+    assert searched.json()["total"] == 2
+    assert searched.json()["result_total"] == 1
+    assert [user["id"] for user in searched.json()["items"]] == [user_id]
+
+    second_page = client.get("/api/admin/users", params={"page": 2, "page_size": 10})
+    assert second_page.status_code == 200
+    assert second_page.json()["items"] == []
 
 
 def test_admin_can_reset_password_and_revoke_sessions(admin_client) -> None:

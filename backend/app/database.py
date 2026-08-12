@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 11
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS api_key_configs (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     alias TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
-    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini')),
+    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini', 'grok')),
     model TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -94,7 +94,16 @@ CREATE TABLE IF NOT EXISTS generation_batches (
     image_count INTEGER NOT NULL,
     size TEXT,
     resolution TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    output_format TEXT,
+    background TEXT,
+    output_compression INTEGER,
+    moderation TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+    elapsed_ms INTEGER,
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS history_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,10 +190,38 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
             image_count INTEGER NOT NULL,
             size TEXT,
             resolution TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            output_format TEXT,
+            background TEXT,
+            output_compression INTEGER,
+            moderation TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+            elapsed_ms INTEGER,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
         )
         """
     )
+    batch_columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(generation_batches)")).fetchall()
+    }
+    for name, declaration in {
+        "output_format": "TEXT",
+        "background": "TEXT",
+        "output_compression": "INTEGER",
+        "moderation": "TEXT",
+        "status": "TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed'))",
+        "elapsed_ms": "INTEGER",
+        "error_code": "TEXT",
+        "error_message": "TEXT",
+        "completed_at": "TEXT",
+    }.items():
+        if name not in batch_columns:
+            await connection.execute(
+                f"ALTER TABLE generation_batches ADD COLUMN {name} {declaration}"
+            )
     image_columns = {
         row[1]
         for row in await (await connection.execute("PRAGMA table_info(history_images)")).fetchall()
@@ -235,6 +272,40 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
             WHERE batch_id IS NULL
             """
         )
+        if "status" in history_columns:
+            await connection.execute(
+                """
+                UPDATE generation_batches
+                SET status = CASE
+                    WHEN id = (
+                        SELECT latest.id FROM generation_batches AS latest
+                        WHERE latest.history_id = generation_batches.history_id
+                        ORDER BY latest.id DESC LIMIT 1
+                    ) THEN COALESCE((
+                        SELECT history.status FROM history
+                        WHERE history.id = generation_batches.history_id
+                    ), 'completed')
+                    ELSE 'completed'
+                END
+                WHERE status = 'pending'
+                  AND NOT (
+                      id = (
+                          SELECT latest.id FROM generation_batches AS latest
+                          WHERE latest.history_id = generation_batches.history_id
+                          ORDER BY latest.id DESC LIMIT 1
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM history
+                          WHERE history.id = generation_batches.history_id
+                            AND history.status = 'pending'
+                      )
+                  )
+                """
+            )
+        else:
+            await connection.execute(
+                "UPDATE generation_batches SET status = 'completed' WHERE status = 'pending'"
+            )
     await connection.execute(
         """
         UPDATE history_images
@@ -288,6 +359,78 @@ async def _migrate_email_auth(connection: aiosqlite.Connection) -> None:
         )
         """
     )
+
+
+async def _migrate_grok_provider(connection: aiosqlite.Connection) -> None:
+    table = await (await connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_key_configs'"
+    )).fetchone()
+    if table is None:
+        return
+    if "'grok'" in str(table[0]):
+        return
+
+    tables = {
+        row[0]
+        for row in await (await connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )).fetchall()
+    }
+    missing_config_links: set[int] = set()
+    if "generation_batches" in tables:
+        missing_config_links = {
+            int(row[0])
+            for row in await (await connection.execute(
+                """
+                SELECT batch.id
+                FROM generation_batches AS batch
+                LEFT JOIN api_key_configs AS config ON config.id = batch.api_key_config_id
+                WHERE batch.api_key_config_id IS NOT NULL AND config.id IS NULL
+                """
+            )).fetchall()
+        }
+
+    await connection.commit()
+    await connection.execute("PRAGMA foreign_keys = OFF")
+    await connection.executescript(
+        """
+        BEGIN;
+        CREATE TABLE api_key_configs_v9 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            alias TEXT NOT NULL,
+            api_key TEXT NOT NULL DEFAULT '',
+            provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini', 'grok')),
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (user_id, alias)
+        );
+        INSERT INTO api_key_configs_v9 (
+            id, user_id, alias, api_key, provider_type, model, created_at, updated_at
+        )
+        SELECT id, user_id, alias, api_key, provider_type, model, created_at, updated_at
+        FROM api_key_configs;
+        DROP TABLE api_key_configs;
+        ALTER TABLE api_key_configs_v9 RENAME TO api_key_configs;
+        COMMIT;
+        """
+    )
+    if "generation_batches" in tables:
+        migrated_missing_config_links = {
+            int(row[0])
+            for row in await (await connection.execute(
+                """
+                SELECT batch.id
+                FROM generation_batches AS batch
+                LEFT JOIN api_key_configs AS config ON config.id = batch.api_key_config_id
+                WHERE batch.api_key_config_id IS NOT NULL AND config.id IS NULL
+                """
+            )).fetchall()
+        }
+        if migrated_missing_config_links != missing_config_links:
+            raise RuntimeError("Grok provider migration changed API key configuration links")
+    await connection.execute("PRAGMA foreign_keys = ON")
 
 
 async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
@@ -404,6 +547,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             )
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -430,7 +574,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     alias TEXT NOT NULL,
                     api_key TEXT NOT NULL DEFAULT '',
-                    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini')),
+                    provider_type TEXT NOT NULL CHECK (provider_type IN ('gpt', 'gemini', 'grok')),
                     model TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -464,6 +608,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -478,6 +623,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -486,6 +632,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -493,12 +640,26 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await connection.execute("BEGIN")
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         elif version < 8:
             await connection.execute("BEGIN")
+            await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 9:
+            await _migrate_generation_batches(connection)
+            await _migrate_grok_provider(connection)
+            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.commit()
+            return
+        elif version < 10:
+            await _migrate_generation_batches(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
@@ -506,5 +667,6 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await connection.executescript(SCHEMA)
             await _migrate_generation_batches(connection)
             await _migrate_email_auth(connection)
+            await _migrate_grok_provider(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

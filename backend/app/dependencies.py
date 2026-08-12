@@ -82,7 +82,9 @@ async def get_current_user(
             401,
             {"error": {"code": "authentication_required", "message": "请先登录"}},
         )
-    should_be_admin = user.email.lower() in Settings().admin_email_set
+    should_be_admin = bool(
+        user.email and user.email.lower() in Settings().admin_email_set
+    )
     if user.is_admin != should_be_admin:
         await repository.set_admin(user.id, should_be_admin)
         user = user.model_copy(update={"is_admin": should_be_admin})

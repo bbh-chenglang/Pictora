@@ -12,7 +12,6 @@ from openai import (
 )
 from pydantic import SecretStr
 
-from app.image_dimensions import output_size
 from app.observability import log_context
 from app.schemas.analyze import AnalyzeResponse
 from app.providers.base import (
@@ -33,14 +32,6 @@ from app.schemas.generate import (
 
 
 logger = logging.getLogger(__name__)
-
-
-def _output_size(request: GenerateRequest) -> str:
-    return output_size(
-        getattr(request, "aspect_ratio", None),
-        getattr(request, "resolution", None),
-        request.size,
-    )
 
 
 class OpenAIProvider(ImageProvider):
@@ -72,14 +63,27 @@ class OpenAIProvider(ImageProvider):
         request: GenerateRequest,
         reference_image: ReferenceImageInput | None = None,
     ) -> GenerateResponse:
-        output_size = _output_size(request)
+        output_size = request.size or "auto"
         arguments: dict[str, Any] = {
             "model": request.model,
             "prompt": request.prompt,
+            "n": getattr(request, "count", 1),
             "size": output_size,
         }
-        if request.detail in {"low", "medium", "high"}:
+        if request.detail in {"auto", "low", "medium", "high"}:
             arguments["quality"] = request.detail
+        output_format = getattr(request, "output_format", None)
+        if output_format:
+            arguments["output_format"] = output_format
+        background = getattr(request, "background", None)
+        if background:
+            arguments["background"] = background
+        output_compression = getattr(request, "output_compression", None)
+        if output_compression is not None and output_format in {"jpeg", "webp"}:
+            arguments["output_compression"] = output_compression
+        moderation = getattr(request, "moderation", None)
+        if moderation:
+            arguments["moderation"] = moderation
         started_at = perf_counter()
         context = " ".join(f"{key}={value}" for key, value in log_context().items())
         logger.info(
@@ -100,9 +104,11 @@ class OpenAIProvider(ImageProvider):
                     image_file = BytesIO(image.data)
                     image_file.name = image.filename or f"reference-image-{index + 1}"
                     image_files.append(image_file)
+                edit_arguments = dict(arguments)
+                edit_arguments.pop("moderation", None)
                 response = await self.client.images.edit(
                     image=image_files[0] if len(image_files) == 1 else image_files,
-                    **arguments,
+                    **edit_arguments,
                 )
         except APIStatusError as exc:
             self._log_generation_failure(request, started_at, "api_status_error")
@@ -118,6 +124,12 @@ class OpenAIProvider(ImageProvider):
             self._log_generation_failure(request, started_at, "api_error")
             raise ProviderRequestError() from None
         images = normalize_image_results(response)
+        if output_format:
+            mime_type = f"image/{output_format}"
+            images = [
+                image if image.mime_type else image.model_copy(update={"mime_type": mime_type})
+                for image in images
+            ]
         logger.info(
             "image_generation step=provider_api_completed duration_ms=%d provider=%s model=%s image_count=%d %s",
             max(1, round((perf_counter() - started_at) * 1000)),
@@ -133,13 +145,19 @@ class OpenAIProvider(ImageProvider):
         request: GenerateRequest,
         started_at: float,
         error_type: str,
+        *,
+        status_code: int | None = None,
+        upstream_message: str | None = None,
     ) -> None:
         logger.error(
-            "image_generation step=provider_api_failed duration_ms=%d provider=%s model=%s error_type=%s %s",
+            "image_generation step=provider_api_failed duration_ms=%d provider=%s model=%s "
+            "error_type=%s status_code=%s upstream_message=%s %s",
             max(1, round((perf_counter() - started_at) * 1000)),
             self.provider_id,
             request.model,
             error_type,
+            status_code if status_code is not None else "none",
+            upstream_message or "none",
             " ".join(f"{key}={value}" for key, value in log_context().items()),
         )
 
