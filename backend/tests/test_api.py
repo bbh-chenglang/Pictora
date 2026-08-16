@@ -7,8 +7,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from app.api import upload_limits
+from app.api import history as history_api
 
 from app.database import initialize_database
+from app.image_thumbnails import WebPThumbnail
 from app.dependencies import (
     get_current_user,
     get_generation_task_manager,
@@ -1085,7 +1087,15 @@ def test_deleting_active_generation_cancels_worker_before_cascade(
 
 def test_history_detail_and_image_routes(
     history_repository_with_record: HistoryRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    thumbnail_generation_calls: list[bytes] = []
+
+    def create_thumbnail(image_data: bytes) -> WebPThumbnail:
+        thumbnail_generation_calls.append(image_data)
+        return WebPThumbnail(data=b"webp-thumbnail", width=512, height=256)
+
+    monkeypatch.setattr(history_api, "create_webp_thumbnail", create_thumbnail)
     app.dependency_overrides[get_history_repository] = (
         lambda: history_repository_with_record
     )
@@ -1093,20 +1103,58 @@ def test_history_detail_and_image_routes(
         with TestClient(app) as client:
             detail = client.get("/api/history/1")
             image = client.get("/api/history/1/images/1")
+            cached_image = client.get(
+                "/api/history/1/images/1",
+                headers={"If-None-Match": image.headers["etag"]},
+            )
+            thumbnail = client.get("/api/history/1/images/1/thumbnail?v=1")
+            stored_thumbnail = client.get("/api/history/1/images/1/thumbnail?v=1")
+            cached_thumbnail = client.get(
+                "/api/history/1/images/1/thumbnail?v=1",
+                headers={"If-None-Match": thumbnail.headers["etag"]},
+            )
     finally:
         app.dependency_overrides.clear()
 
     assert detail.status_code == 200
     assert detail.json()["images"][0]["url"] == "/api/history/1/images/1"
+    assert detail.json()["images"][0]["thumbnail_url"] == (
+        "/api/history/1/images/1/thumbnail?v=1"
+    )
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
-    assert image.headers["cache-control"] == "private, no-store"
+    assert image.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert image.headers["etag"] == '"history-1-image-1"'
+    assert image.headers["vary"] == "Cookie"
     assert image.content == b"png-bytes"
+    assert cached_image.status_code == 304
+    assert cached_image.headers["cache-control"] == image.headers["cache-control"]
+    assert cached_image.headers["etag"] == image.headers["etag"]
+    assert cached_image.headers["vary"] == "Cookie"
+    assert cached_image.content == b""
+    assert thumbnail.status_code == 200
+    assert thumbnail.headers["content-type"] == "image/webp"
+    assert thumbnail.headers["cache-control"] == image.headers["cache-control"]
+    assert thumbnail.headers["etag"] == '"history-1-image-1-thumbnail-v1"'
+    assert thumbnail.content == b"webp-thumbnail"
+    assert stored_thumbnail.content == thumbnail.content
+    assert cached_thumbnail.status_code == 304
+    assert cached_thumbnail.content == b""
+    assert thumbnail_generation_calls == [b"png-bytes"]
 
 
 def test_history_image_edit_snapshot_and_delete_routes(
     history_repository_with_record: HistoryRepository,
 ) -> None:
+    assert asyncio.run(history_repository_with_record.save_image_thumbnail(
+        user_id=1,
+        history_id=1,
+        image_id=1,
+        mime_type="image/webp",
+        width=1,
+        height=1,
+        data=b"thumbnail",
+    ))
     app.dependency_overrides[get_history_repository] = (
         lambda: history_repository_with_record
     )
@@ -1139,6 +1187,9 @@ def test_history_image_edit_snapshot_and_delete_routes(
     }
     assert deleted.status_code == 204
     assert missing.status_code == 404
+    assert asyncio.run(
+        history_repository_with_record.get_image_thumbnail(1, 1, 1)
+    ) is None
 
 
 def test_history_generation_slot_delete_route_only_removes_requested_slot(
@@ -1237,6 +1288,7 @@ def test_missing_history_resources_return_404(
         with TestClient(app) as client:
             detail = client.get("/api/history/999")
             image = client.get("/api/history/999/images/999")
+            thumbnail = client.get("/api/history/999/images/999/thumbnail?v=1")
     finally:
         app.dependency_overrides.clear()
 
@@ -1244,3 +1296,5 @@ def test_missing_history_resources_return_404(
     assert detail.json()["error"]["code"] == "history_not_found"
     assert image.status_code == 404
     assert image.json()["error"]["code"] == "history_image_not_found"
+    assert thumbnail.status_code == 404
+    assert thumbnail.json()["error"]["code"] == "history_image_not_found"

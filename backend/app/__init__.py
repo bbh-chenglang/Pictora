@@ -1,1 +1,1 @@
-"""GenImage backend application package."""
+"""Pictora backend application package."""

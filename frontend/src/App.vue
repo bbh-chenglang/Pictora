@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ArrowLeft,
+  BookmarkPlus,
   CircleAlert,
   Check,
   ChevronDown,
@@ -34,6 +35,11 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import FlowingGridBackground from "./components/FlowingGridBackground.vue";
 import ProjectDialog from "./components/ProjectDialog.vue";
 import SnowfallBackground from "./components/SnowfallBackground.vue";
+import SkillsView, { type SkillWorkflow } from "./components/SkillsView.vue";
+import PromptsView, { type PromptEntry } from "./components/PromptsView.vue";
+import PromptEditorDialog, { type PromptForm } from "./components/PromptEditorDialog.vue";
+import PromptPickerPopover, { type PromptPickerEntry } from "./components/PromptPickerPopover.vue";
+import pictoraMark from "./assets/pictora-mark.svg";
 
 type Provider = { id: string; label: string; models: string[] };
 type CapabilityOption = { value: string; label: string };
@@ -59,7 +65,7 @@ type ModelCapability = {
 type ApiKeyProvider = "gpt" | "gemini" | "grok";
 type BackgroundEffect = "gravity-grid" | "snowfall";
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
-type CurrentView = "workspace" | "settings" | "admin";
+type CurrentView = "workspace" | "settings" | "admin" | "skills" | "prompts";
 type ApiKeyConfig = {
   id: number;
   alias: string;
@@ -119,6 +125,7 @@ type ApiKeyConfigForm = {
 };
 type ImageResult = {
   url?: string | null;
+  thumbnail_url?: string | null;
   base64_data?: string | null;
   revised_prompt?: string | null;
   generation_time_ms?: number | null;
@@ -157,6 +164,7 @@ type HistoryImage = {
   position: number;
   batch_position?: number | null;
   url: string;
+  thumbnail_url?: string | null;
   reference_category?: ReferenceCategory | null;
 };
 type GenerationBatchSummary = {
@@ -452,6 +460,14 @@ const adminError = ref("");
 const adminResetPassword = ref("");
 const adminResetStatus = ref("");
 const adminResetting = ref(false);
+const promptEditorOpen = ref(false);
+const promptEditorInitial = ref<PromptForm | null>(null);
+const promptEditorEntryId = ref<number | null>(null);
+const promptSaveStatus = ref("");
+const promptCategorySuggestions = ref<string[]>([]);
+const promptPickerOpen = ref(false);
+const promptPickerConfirmOpen = ref(false);
+const pendingPromptSelection = ref<PromptPickerEntry | null>(null);
 const updateStatus = ref<UpdateStatus>("idle");
 const serverVersion = ref("");
 const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
@@ -627,6 +643,8 @@ function resetWorkspaceResultRatio() {
 function resolveCurrentView(): CurrentView {
   if (window.location.pathname === "/settings") return "settings";
   if (window.location.pathname === "/admin") return "admin";
+  if (window.location.pathname === "/skills") return "skills";
+  if (window.location.pathname === "/prompts") return "prompts";
   return "workspace";
 }
 
@@ -1825,7 +1843,7 @@ async function loadHistory() {
 
 function preloadHistoryImages(data: HistoryDetail) {
   for (const image of data.images.filter((item) => item.role === "generated")) {
-    const source = resourceUrl(image.url);
+    const source = resourceUrl(image.thumbnail_url || image.url);
     if (historyImagePreloads.has(source)) continue;
     const preload = new Image();
     preload.decoding = "async";
@@ -2580,6 +2598,7 @@ function historyImages(data: HistoryDetail): ImageResult[] {
     .filter((image) => image.role === "generated")
     .map((image) => ({
       url: resourceUrl(image.url),
+      thumbnail_url: resourceUrl(image.thumbnail_url || image.url),
       generation_time_ms: data.elapsed_ms,
       history_id: data.id,
       history_image_id: image.id,
@@ -2635,6 +2654,7 @@ function latestBatchImages(data: HistoryDetail): ImageResult[] {
     .filter((image) => image.batch_id === latestBatchId)
     .map((image) => ({
       url: resourceUrl(image.url),
+      thumbnail_url: resourceUrl(image.thumbnail_url || image.url),
       generation_time_ms: data.elapsed_ms,
       history_id: data.id,
       history_image_id: image.id,
@@ -2648,6 +2668,7 @@ function generationBatchImages(data: GenerationBatchDetail): ImageResult[] {
     .filter((image) => image.role === "generated")
     .map((image) => ({
       url: resourceUrl(image.url),
+      thumbnail_url: resourceUrl(image.thumbnail_url || image.url),
       generation_time_ms: data.elapsed_ms,
       history_id: data.history_id,
       history_image_id: image.id,
@@ -2661,6 +2682,7 @@ function syncGenerationTaskProgress(run: GenerationRun, task: GenerationTaskDeta
   run.cancelledPositions = new Set(task.cancelled_positions ?? []);
   const images = (task.images ?? []).map((image) => ({
     url: resourceUrl(image.url),
+    thumbnail_url: resourceUrl(image.thumbnail_url || image.url),
     history_id: task.history_id,
     history_image_id: image.id,
     batch_id: image.batch_id,
@@ -3506,6 +3528,163 @@ function imageSource(item: ImageResult) {
   return encoded.startsWith("data:") ? encoded : `data:image/png;base64,${encoded}`;
 }
 
+function navigateToSkills() {
+  window.history.pushState({}, "", "/skills");
+  currentView.value = "skills";
+}
+
+function navigateToPrompts() {
+  window.history.pushState({}, "", "/prompts");
+  currentView.value = "prompts";
+}
+
+async function loadPromptCategorySuggestions() {
+  try {
+    const response = await apiFetch(`${API_BASE}/api/prompts`);
+    const data = await parseJsonResponse(response);
+    if (!response.ok || !Array.isArray(data)) return;
+    promptCategorySuggestions.value = [...new Set(
+      data.map((entry: { category?: string }) => String(entry.category ?? "").trim()).filter(Boolean),
+    )].sort((left, right) => left.localeCompare(right, "zh-CN"));
+  } catch {
+    // Category suggestions are optional; free text entry remains available.
+  }
+}
+
+function openPromptEditor(sourcePrompt = prompt.value, entry?: PromptEntry | null) {
+  const text = sourcePrompt.trim();
+  if (!text) {
+    promptSaveStatus.value = "请先输入提示词";
+    return;
+  }
+  promptEditorEntryId.value = entry?.id ?? null;
+  promptEditorInitial.value = {
+    name: entry?.name ?? "",
+    prompt: text,
+    category: entry?.category ?? "",
+  };
+  promptEditorOpen.value = true;
+  promptSaveStatus.value = "";
+  void loadPromptCategorySuggestions();
+}
+
+async function savePromptEntry(form: PromptForm) {
+  try {
+    const editingId = promptEditorEntryId.value;
+    const response = await apiFetch(
+      `${API_BASE}/api/prompts${editingId === null ? "" : `/${editingId}`}`,
+      {
+        method: editingId === null ? "POST" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      },
+    );
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "提示词保存失败"));
+    promptEditorOpen.value = false;
+    promptEditorEntryId.value = null;
+    promptSaveStatus.value = editingId === null ? "提示词已保存" : "提示词已更新";
+    void loadPromptCategorySuggestions();
+  } catch (exception) {
+    promptSaveStatus.value = exception instanceof Error ? exception.message : "提示词保存失败";
+  }
+}
+
+function applySavedPrompt(savedPrompt: string, name: string) {
+  prompt.value = savedPrompt;
+  promptSaveStatus.value = `已应用“${name}”`;
+  navigateToWorkspace();
+}
+
+function openPromptPicker() {
+  promptPickerOpen.value = true;
+}
+
+function closePromptPicker() {
+  promptPickerOpen.value = false;
+}
+
+function applyPromptSelection(entry: PromptPickerEntry) {
+  const current = prompt.value.trim();
+  if (!current || current === entry.prompt.trim()) {
+    prompt.value = entry.prompt;
+    promptSaveStatus.value = `已导入“${entry.name}”`;
+    closePromptPicker();
+    return;
+  }
+  pendingPromptSelection.value = entry;
+  closePromptPicker();
+  promptPickerConfirmOpen.value = true;
+}
+
+function confirmPromptSelection() {
+  if (!pendingPromptSelection.value) return;
+  prompt.value = pendingPromptSelection.value.prompt;
+  promptSaveStatus.value = `已导入“${pendingPromptSelection.value.name}”`;
+  pendingPromptSelection.value = null;
+  promptPickerConfirmOpen.value = false;
+}
+
+function cancelPromptSelection() {
+  pendingPromptSelection.value = null;
+  promptPickerConfirmOpen.value = false;
+}
+
+function managePromptsFromPicker() {
+  closePromptPicker();
+  navigateToPrompts();
+}
+
+const currentSkillWorkflow = computed<SkillWorkflow>(() => ({
+  prompt_template: prompt.value.trim() || "请描述你想生成的画面",
+  provider_type: selectedProviderType.value,
+  model: model.value,
+  quality: quality.value,
+  size: size.value,
+  resolution: resolution.value,
+  image_count: multiViewEnabled.value ? Math.max(1, selectedMultiViewOptions.value.length) : imageCount.value,
+  reference_requirements: [...new Set(referencePreviews.value.map((item) => item.category))],
+  multi_view: {
+    enabled: multiViewEnabled.value,
+    target: multiViewTarget.value,
+    preset_keys: [...selectedMultiViewKeys.value],
+    custom_views: customMultiViews.value.map((item) => ({ ...item })),
+  },
+}));
+
+function applySkillWorkflow(workflow: SkillWorkflow, title: string) {
+  void (async () => {
+    await restoreHistoryApiConfig({ provider: workflow.provider_type, model: workflow.model }, true);
+    prompt.value = workflow.prompt_template;
+    quality.value = workflow.quality || quality.value;
+    size.value = supportedSizeFor(workflow.provider_type, workflow.model, workflow.size);
+    resolution.value = supportedResolutionFor(workflow.provider_type, workflow.model, workflow.resolution);
+    imageCount.value = Math.min(
+      workflow.image_count || 1,
+      (selectedCapability.value?.max_output_count ?? workflow.image_count ?? 1),
+    );
+    regularImageCount.value = imageCount.value;
+    restoreMultiViewState(workflow.multi_view?.enabled ? [
+        ...workflow.multi_view.preset_keys.map((key) => ({ key: `${workflow.multi_view.target}_${key}`, label: key, prompt: "" })),
+        ...workflow.multi_view.custom_views.map((view) => ({ key: `${workflow.multi_view.target}_${view.key}`, label: view.label, prompt: "" })),
+      ] : undefined);
+    error.value = `已应用技能“${title}”，请补充提示词变量或参考图后生成`;
+    navigateToWorkspace();
+  })();
+}
+
+function thumbnailSource(item: ImageResult) {
+  return item.thumbnail_url ? resourceUrl(item.thumbnail_url) : imageSource(item);
+}
+
+function handleThumbnailError(event: Event, item: ImageResult) {
+  const image = event.currentTarget;
+  const original = imageSource(item);
+  if (image instanceof HTMLImageElement && original && image.getAttribute("src") !== original) {
+    image.src = original;
+  }
+}
+
 function openLightbox(item: ImageResult) {
   const source = imageSource(item);
   if (source) lightboxUrl.value = source;
@@ -3521,7 +3700,9 @@ function closeLightbox() {
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
-  if (openParameterMenu.value) closeParameterMenu();
+  if (promptPickerOpen.value) closePromptPicker();
+  else if (promptPickerConfirmOpen.value) cancelPromptSelection();
+  else if (openParameterMenu.value) closeParameterMenu();
   else if (lightboxUrl.value) closeLightbox();
 }
 
@@ -3588,10 +3769,10 @@ onUnmounted(() => {
       <div v-if="authView === 'checking'" class="auth-loading" aria-live="polite">正在检查登录状态…</div>
       <div v-else class="auth-layout">
         <aside class="auth-intro">
-          <div class="auth-brand-mark">G</div>
-          <p class="auth-eyebrow">GenImage</p>
+          <img class="auth-brand-mark" :src="pictoraMark" alt="Pictora 图标" />
+          <p class="auth-eyebrow">画境 (Pictora)</p>
           <h1>把想法变成画面</h1>
-          <p class="auth-intro-copy">在一个清晰、专注的工作台里生成和管理你的图片。</p>
+          <p class="auth-intro-copy">生成的不仅是图片，而是画中意境。</p>
           <div class="auth-intro-rule" aria-hidden="true"></div>
           <p class="auth-intro-note">登录后即可继续使用你的项目与历史记录。</p>
         </aside>
@@ -3600,7 +3781,7 @@ onUnmounted(() => {
           <div class="auth-form-heading">
             <div>
               <p class="auth-kicker">欢迎回来</p>
-              <h2>{{ authView === 'register' ? '创建账号' : '登录 GenImage' }}</h2>
+              <h2>{{ authView === 'register' ? '创建 Pictora 账号' : '登录 Pictora' }}</h2>
             </div>
             <span class="auth-step">{{ authView === 'register' ? '02' : '01' }}</span>
           </div>
@@ -3627,8 +3808,8 @@ onUnmounted(() => {
     <header class="topbar">
       <div class="topbar-leading">
         <div class="brand">
-          <span class="brand-mark">G</span>
-          <div><strong>GenImage</strong><small>图像工作台</small></div>
+          <img class="brand-mark" :src="pictoraMark" alt="Pictora 图标" />
+          <div><strong>Pictora</strong><small>AI 创作工作台</small></div>
         </div>
       </div>
       <div class="topbar-actions">
@@ -3636,6 +3817,8 @@ onUnmounted(() => {
           <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
         <span class="user-chip" :title="currentEmail"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
+        <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="skills" title="技能" @click="navigateToSkills"><Sparkles :size="16" />技能</button>
+        <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="prompts" title="提示词管理" @click="navigateToPrompts"><BookmarkPlus :size="16" />提示词</button>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="settings" title="设置" @click="navigateToSettings"><Settings :size="16" />设置</button>
         <button v-if="currentIsAdmin && currentView !== 'admin'" type="button" class="secondary-action topbar-command" data-action="admin" title="用户管理" @click="navigateToAdmin"><ShieldCheck :size="16" />管理</button>
         <button v-if="currentView !== 'workspace'" type="button" class="secondary-action topbar-command" data-action="back-to-workspace" title="返回工作台" @click="navigateToWorkspace"><ArrowLeft :size="16" />返回工作台</button>
@@ -3643,7 +3826,7 @@ onUnmounted(() => {
     </header>
 
     <section v-if="currentView === 'settings'" class="settings-page">
-      <header class="settings-page-heading"><span>GenImage</span><h1>设置</h1></header>
+      <header class="settings-page-heading"><span>Pictora</span><h1>设置</h1></header>
       <section class="settings-section settings-interface">
         <div class="settings-heading"><h1>接口配置</h1><div class="settings-heading-actions"><button type="button" class="secondary-action" data-action="add-api-key" @click="beginAddConfig">添加 API Key</button><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div></div>
         <p>{{ apiKeyConfigured ? '已有可用配置' : '尚未配置 API Key' }}</p>
@@ -3737,7 +3920,7 @@ onUnmounted(() => {
       </div>
 
       <section class="settings-section community-section feedback-section settings-community settings-community-feedback">
-        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 GenImage 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
+        <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 Pictora 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
         <div class="community-feedback-panel">
           <div class="feedback-heading"><h2>留言</h2><p>告诉我们你的建议或遇到的问题。</p></div>
           <form class="feedback-form" @submit.prevent="submitFeedback">
@@ -3774,7 +3957,7 @@ onUnmounted(() => {
     </section>
     <section v-else-if="currentView === 'admin'" class="admin-page">
       <header class="admin-page-heading">
-        <div><span>GenImage</span><h1>用户管理</h1></div>
+        <div><span>Pictora</span><h1>用户管理</h1></div>
         <button type="button" class="secondary-action" :disabled="adminLoading" @click="loadAdminUsers()"><RefreshCw :class="{ spin: adminLoading }" :size="16" />刷新</button>
       </header>
 
@@ -3849,6 +4032,21 @@ onUnmounted(() => {
         </div>
       </section>
     </section>
+    <SkillsView
+      v-else-if="currentView === 'skills'"
+      :is-admin="currentIsAdmin"
+      :username="currentUsername"
+      :current-workflow="currentSkillWorkflow"
+      :cover-source="generated[0] ? imageSource(generated[0]) : undefined"
+      @apply="applySkillWorkflow"
+      @back="navigateToWorkspace"
+    />
+    <PromptsView
+      v-else-if="currentView === 'prompts'"
+      :current-prompt="prompt"
+      @apply="applySavedPrompt"
+      @back="navigateToWorkspace"
+    />
     <template v-else>
     <div class="studio-grid">
       <ProjectSidebar
@@ -3880,7 +4078,7 @@ onUnmounted(() => {
         <div class="result-panel" :class="{ 'has-error': Boolean(error) }">
           <div class="result-heading">
             <div><span class="result-kicker"><Sparkles :size="13" />作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
-            <span v-if="busy === 'analyze'" class="working">处理中</span>
+            <div class="result-heading-actions"><button v-if="activeHistoryId && prompt.trim()" type="button" class="secondary-action" data-action="save-history-prompt" @click="openPromptEditor(prompt)"><BookmarkPlus :size="15" />保存提示词</button><span v-if="busy === 'analyze'" class="working">处理中</span></div>
           </div>
 
           <p v-if="error" class="error-message generation-error result-error" role="alert">{{ error }}</p>
@@ -3898,7 +4096,7 @@ onUnmounted(() => {
               <template v-if="card.kind === 'image'">
                 <div class="image-frame">
                   <button v-if="imageSource(card.image)" type="button" class="image-preview-trigger" :aria-label="`全屏查看${cardViewLabel(card) || `生成图片 ${index + 1}`}`" @click="openLightbox(card.image)">
-                    <img :src="imageSource(card.image)" :alt="cardViewLabel(card) || `生成图片 ${index + 1}`" />
+                    <img :src="thumbnailSource(card.image)" :alt="cardViewLabel(card) || `生成图片 ${index + 1}`" decoding="async" @error="handleThumbnailError($event, card.image)" />
                   </button>
                   <div v-else class="missing-image">图片数据不可用</div>
                 </div>
@@ -4024,7 +4222,8 @@ onUnmounted(() => {
                 </div>
             </div>
             <div class="prompt-column">
-              <div class="prompt-row"><label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label></div>
+              <div class="prompt-row"><div class="prompt-row-heading"><span>提示词</span><button type="button" class="text-action" data-action="choose-prompt" @click="openPromptPicker"><BookmarkPlus :size="15" />选择提示词</button></div><label><textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label></div>
+              <div class="prompt-save-row"><button type="button" class="text-action" data-action="save-current-prompt" :disabled="!prompt.trim()" @click="openPromptEditor(prompt)"><BookmarkPlus :size="15" />保存到提示词管理</button><span v-if="promptSaveStatus" class="prompt-save-status" role="status">{{ promptSaveStatus }}</span></div>
               <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :disabled="busy === 'analyze' || !canGenerate" @click="handleGenerateClick"><LoaderCircle v-if="generationSubmitting" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ multiViewEnabled ? `生成 ${selectedMultiViewOptions.length} 个视角` : "生成图片" }}</button></div>
             </div>
             <div class="reference-row" :class="{ 'has-references': referencePreviews.length }" aria-label="参考图片分类">
@@ -4083,6 +4282,9 @@ onUnmounted(() => {
       <button type="button" class="lightbox-close" aria-label="关闭全屏预览" title="关闭" @click="closeLightbox"><X :size="22" /></button>
       <img :src="lightboxUrl" alt="图片全屏预览" />
     </div>
+    <PromptPickerPopover :open="promptPickerOpen" :current-prompt="prompt" @select="applyPromptSelection" @close="closePromptPicker" @manage="managePromptsFromPicker" />
+    <ConfirmDialog :open="promptPickerConfirmOpen" title="覆盖当前提示词" :message="`当前提示词已有内容，确认用“${pendingPromptSelection?.name ?? ''}”替换吗？`" confirm-label="覆盖" @confirm="confirmPromptSelection" @cancel="cancelPromptSelection" />
+    <PromptEditorDialog :open="promptEditorOpen" :initial="promptEditorInitial" :category-suggestions="promptCategorySuggestions" :title="promptEditorEntryId === null ? '保存提示词' : '编辑提示词'" @submit="savePromptEntry" @cancel="promptEditorOpen = false" />
     <ProjectDialog
       :open="projectDialogMode !== null"
       :title="projectDialogMode === 'rename' ? '重命名项目' : '新建项目'"

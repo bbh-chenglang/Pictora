@@ -26,12 +26,12 @@ class EmailSender:
             raise EmailSenderNotConfiguredError
 
         message = EmailMessage()
-        message["Subject"] = "GenImage 注册验证码"
+        message["Subject"] = "Pictora 注册验证码"
         message["From"] = sender
         message["To"] = email
         minutes = max(1, self.settings.verification_code_ttl_seconds // 60)
         message.set_content(
-            f"你的 GenImage 注册验证码是：{code}\n\n"
+            f"你的 Pictora 注册验证码是：{code}\n\n"
             f"验证码将在 {minutes} 分钟后失效。若不是你本人操作，请忽略此邮件。"
         )
 

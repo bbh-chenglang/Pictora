@@ -42,10 +42,16 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
         tables = {row[0] for row in await cursor.fetchall()}
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
         history_count = (await (await connection.execute("SELECT COUNT(*) FROM history")).fetchone())[0]
-    assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
+    assert {
+        "users",
+        "user_sessions",
+        "history",
+        "history_images",
+        "history_image_thumbnails",
+    }.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 16
+    assert version == 17
     assert "api_key_configs" in tables
     assert "generation_batches" in tables
     assert "email_verification_codes" in tables
@@ -86,7 +92,50 @@ async def test_database_adds_resolution_to_version_four_history(tmp_path: Path) 
         }
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
     assert "resolution" in columns
-    assert version == 16
+    assert version == 17
+
+
+@pytest.mark.asyncio
+async def test_database_migrates_fixed_prompt_categories_to_free_text(tmp_path: Path) -> None:
+    database_path = tmp_path / "prompt-category-migration.db"
+    await initialize_database(database_path)
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.execute("DROP INDEX IF EXISTS idx_prompt_entries_user_updated")
+        await connection.execute("DROP INDEX IF EXISTS idx_prompt_entries_user_category")
+        await connection.execute("DROP TABLE prompt_entries")
+        user_id = (await connection.execute(
+            "INSERT INTO users (username, password_hash) VALUES ('alice', 'hash')"
+        )).lastrowid
+        await connection.execute(
+            """
+            CREATE TABLE prompt_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                category TEXT NOT NULL CHECK (category IN ('portrait', 'product', 'marketing', 'illustration', 'other')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            "INSERT INTO prompt_entries (user_id, name, prompt, category) VALUES (?, '旧提示词', '旧内容', 'portrait')",
+            (user_id,),
+        )
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        row = await (await connection.execute(
+            "SELECT category FROM prompt_entries WHERE name = '旧提示词'"
+        )).fetchone()
+        schema = await (await connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'prompt_entries'"
+        )).fetchone()
+    assert row[0] == "portrait"
+    assert "CHECK" not in schema[0].upper()
 
 
 @pytest.mark.asyncio
@@ -143,7 +192,7 @@ async def test_database_removes_only_empty_generated_default_configs(tmp_path: P
         (preserved, "默认配置", "real-key", "gpt"),
     ]
     assert active_id == replacement
-    assert version == 16
+    assert version == 17
 
 
 @pytest.mark.asyncio
@@ -214,7 +263,7 @@ async def test_database_migrates_version_six_history_images_into_batches(tmp_pat
         )).fetchall()
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
-    assert version == 16
+    assert version == 17
     assert batch == ("旧提示词", "gemini", "gemini-image", "high", 2, "16:9", "2K")
     assert images[0][0:2] == ("reference", "person.jpg")
     assert images[0][2] is not None
@@ -312,7 +361,7 @@ async def test_database_adds_grok_without_losing_existing_config_links(tmp_path:
     assert config == (config_id, "gpt", "gpt-image-2")
     assert linked_config_id == config_id
     assert active_config_id == config_id
-    assert version == 16
+    assert version == 17
 
 
 @pytest.mark.asyncio
@@ -373,7 +422,7 @@ async def test_database_adds_native_image_parameters_to_version_nine_batches(tmp
             "status", "elapsed_ms", "error_code", "error_message", "completed_at",
             "views_json",
         }.issubset(columns)
-    assert version == 16
+    assert version == 17
 
 
 @pytest.mark.asyncio
@@ -401,7 +450,7 @@ async def test_database_migrates_version_twelve_generation_task_leases(
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
     assert {"worker_id", "heartbeat_at"}.issubset(columns)
-    assert version == 16
+    assert version == 17
 
 
 @pytest.mark.asyncio
@@ -437,7 +486,7 @@ async def test_database_migrates_generation_slot_deletions_from_version_thirteen
     assert "batch_position" in image_columns
     assert slot_table is not None
     assert cancelled_slot_table is not None
-    assert version == 16
+    assert version == 17
 
 
 @pytest.mark.asyncio

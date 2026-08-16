@@ -170,11 +170,9 @@ summary:focus-visible {
 
 .brand-mark,
 .auth-brand-mark {
-  display: grid;
-  place-items: center;
-  background: var(--blue);
-  color: #fff;
-  font-weight: 800;
+  display: block;
+  object-fit: contain;
+  background: transparent;
 }
 
 .brand-mark {
@@ -356,6 +354,11 @@ summary:focus-visible {
 body:has(.studio-grid) {
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+body:has(.prompts-page) {
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .studio-shell:has(.studio-grid) {
@@ -954,6 +957,12 @@ select option {
   color: #fff;
   font-size: 20px;
   line-height: 1.25;
+}
+
+.result-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .working {
@@ -1690,8 +1699,26 @@ body.workspace-is-resizing {
 .prompt-column {
   min-width: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 8px;
+}
+
+.prompt-save-row {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-save-row .text-action {
+  min-height: 22px;
+  padding: 3px 5px;
+  font-size: 11px;
+}
+
+.prompt-save-status {
+  color: var(--muted-dim);
+  font-size: 11px;
 }
 
 .prompt-row {
@@ -1714,6 +1741,22 @@ body.workspace-is-resizing {
   margin: 0;
   color: var(--muted);
   font-size: 10px;
+}
+
+.prompt-row-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-row-heading .text-action {
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: 11px;
 }
 
 .prompt-row textarea {

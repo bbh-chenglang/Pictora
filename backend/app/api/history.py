@@ -1,11 +1,39 @@
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from app.dependencies import get_current_user, get_history_repository
+from app.image_thumbnails import ThumbnailGenerationError, create_webp_thumbnail
 from app.repositories.history_repository import HistoryRepository
 from app.schemas.history import GenerationBatchDetail, HistoryDetail, HistoryImageEditSnapshot, HistorySummary
 from app.schemas.auth import StoredSessionUser
 
 router = APIRouter(prefix="/api/history", tags=["history"])
+
+HISTORY_IMAGE_CACHE_CONTROL = "private, max-age=31536000, immutable"
+
+
+def _history_image_headers(
+    history_id: int,
+    image_id: int,
+    *,
+    variant: str = "original",
+) -> dict[str, str]:
+    variant_suffix = "" if variant == "original" else f"-{variant}"
+    return {
+        "Cache-Control": HISTORY_IMAGE_CACHE_CONTROL,
+        "ETag": f'"history-{history_id}-image-{image_id}{variant_suffix}"',
+        "Vary": "Cookie",
+    }
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    if not if_none_match:
+        return False
+    normalized_etag = etag.removeprefix("W/")
+    return any(
+        candidate == "*" or candidate.removeprefix("W/") == normalized_etag
+        for candidate in (value.strip() for value in if_none_match.split(","))
+    )
 
 
 @router.get("", response_model=list[HistorySummary])
@@ -56,6 +84,7 @@ async def read_generation_batch(
 async def read_history_image(
     history_id: int,
     image_id: int,
+    request: Request,
     user: StoredSessionUser = Depends(get_current_user),
     repository: HistoryRepository = Depends(get_history_repository),
 ) -> Response:
@@ -70,11 +99,68 @@ async def read_history_image(
                 }
             },
         )
+    headers = _history_image_headers(history_id, image_id)
+    if _etag_matches(request.headers.get("if-none-match"), headers["ETag"]):
+        return Response(status_code=304, headers=headers)
     return Response(
         content=image.data,
         media_type=image.mime_type,
-        headers={"Cache-Control": "private, no-store"},
+        headers=headers,
     )
+
+
+@router.get("/{history_id}/images/{image_id}/thumbnail")
+async def read_history_image_thumbnail(
+    history_id: int,
+    image_id: int,
+    request: Request,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> Response:
+    thumbnail = await repository.get_image_thumbnail(user.id, history_id, image_id)
+    if thumbnail is None:
+        image = await repository.get_image(user.id, history_id, image_id)
+        if image is None:
+            raise HTTPException(
+                404,
+                {
+                    "error": {
+                        "code": "history_image_not_found",
+                        "message": "历史图片不存在",
+                    }
+                },
+            )
+        try:
+            generated = await run_in_threadpool(create_webp_thumbnail, image.data)
+        except ThumbnailGenerationError as exc:
+            raise HTTPException(
+                422,
+                {
+                    "error": {
+                        "code": "history_image_thumbnail_failed",
+                        "message": "无法生成图片缩略图",
+                    }
+                },
+            ) from exc
+        await repository.save_image_thumbnail(
+            user_id=user.id,
+            history_id=history_id,
+            image_id=image_id,
+            mime_type="image/webp",
+            width=generated.width,
+            height=generated.height,
+            data=generated.data,
+        )
+        content = generated.data
+        media_type = "image/webp"
+    else:
+        content = thumbnail.data
+        media_type = thumbnail.mime_type
+
+    headers = _history_image_headers(history_id, image_id, variant="thumbnail-v1")
+    if _etag_matches(request.headers.get("if-none-match"), headers["ETag"]):
+        return Response(status_code=304, headers=headers)
+    return Response(content=content, media_type=media_type, headers=headers)
 
 
 @router.get(

@@ -1,1 +1,1 @@
-"""SQLite repositories for local GenImage state."""
+"""SQLite repositories for local Pictora state."""

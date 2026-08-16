@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -134,6 +134,14 @@ CREATE TABLE IF NOT EXISTS history_images (
     batch_position INTEGER,
     data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS history_image_thumbnails (
+    image_id INTEGER PRIMARY KEY REFERENCES history_images(id) ON DELETE CASCADE,
+    mime_type TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS generation_batch_deleted_slots (
     batch_id INTEGER NOT NULL REFERENCES generation_batches(id) ON DELETE CASCADE,
     position INTEGER NOT NULL CHECK (position >= 0),
@@ -146,6 +154,42 @@ CREATE TABLE IF NOT EXISTS generation_batch_cancelled_slots (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (batch_id, position)
 );
+CREATE TABLE IF NOT EXISTS skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ('portrait', 'product', 'marketing', 'illustration', 'other')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'published', 'rejected')),
+    workflow_json TEXT NOT NULL,
+    cover_mime_type TEXT,
+    cover_data BLOB,
+    moderation_note TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    published_at TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_favorites (
+    skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (skill_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS skill_uses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS prompt_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_history_user_created_at ON history(user_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_project_created_at ON history(project_id, created_at DESC, id DESC);
@@ -155,6 +199,11 @@ CREATE INDEX IF NOT EXISTS idx_generation_tasks_user_created ON generation_tasks
 CREATE INDEX IF NOT EXISTS idx_generation_tasks_history ON generation_tasks(history_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_deleted_slots_batch ON generation_batch_deleted_slots(batch_id, position);
 CREATE INDEX IF NOT EXISTS idx_cancelled_slots_batch ON generation_batch_cancelled_slots(batch_id, position);
+CREATE INDEX IF NOT EXISTS idx_skills_status_updated ON skills(status, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_user_updated ON skills(user_id, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_uses_skill ON skill_uses(skill_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prompt_entries_user_updated ON prompt_entries(user_id, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_prompt_entries_user_category ON prompt_entries(user_id, category);
 CREATE TRIGGER IF NOT EXISTS trg_users_default_project
 AFTER INSERT ON users
 BEGIN
@@ -240,7 +289,23 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_history_image_thumbnails(connection: aiosqlite.Connection) -> None:
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history_image_thumbnails (
+            image_id INTEGER PRIMARY KEY REFERENCES history_images(id) ON DELETE CASCADE,
+            mime_type TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
 async def _migrate_generation_tasks(connection: aiosqlite.Connection) -> None:
+    await _migrate_history_image_thumbnails(connection)
     await connection.execute(
         """
         CREATE TABLE IF NOT EXISTS generation_tasks (
@@ -531,6 +596,8 @@ async def _migrate_generation_tasks(connection: aiosqlite.Connection) -> None:
         ON history_images(batch_id, role, position)
         """
     )
+    await _migrate_skills(connection)
+    await _migrate_prompts(connection)
 
 
 async def _migrate_email_auth(connection: aiosqlite.Connection) -> None:
@@ -643,6 +710,114 @@ async def _migrate_grok_provider(connection: aiosqlite.Connection) -> None:
         if migrated_missing_config_links != missing_config_links:
             raise RuntimeError("Grok provider migration changed API key configuration links")
     await connection.execute("PRAGMA foreign_keys = ON")
+
+
+async def _migrate_skills(connection: aiosqlite.Connection) -> None:
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            category TEXT NOT NULL CHECK (category IN ('portrait', 'product', 'marketing', 'illustration', 'other')),
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending', 'published', 'rejected')),
+            workflow_json TEXT NOT NULL,
+            cover_mime_type TEXT,
+            cover_data BLOB,
+            moderation_note TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            published_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS skill_favorites (
+            skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (skill_id, user_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS skill_uses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_skills_status_updated
+        ON skills(status, updated_at DESC, id DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_skills_user_updated
+        ON skills(user_id, updated_at DESC, id DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_skill_uses_skill
+        ON skill_uses(skill_id, created_at DESC)
+        """,
+    ]
+    for statement in statements:
+        await connection.execute(statement)
+
+
+async def _migrate_prompts(connection: aiosqlite.Connection) -> None:
+    existing = await (await connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'prompt_entries'"
+    )).fetchone()
+    existing_sql = str(existing[0] or "") if existing else ""
+    if "CATEGORY IN" in existing_sql.upper():
+        await connection.execute("ALTER TABLE prompt_entries RENAME TO prompt_entries_legacy")
+        await connection.execute(
+            """
+            CREATE TABLE prompt_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO prompt_entries (id, user_id, name, prompt, category, created_at, updated_at)
+            SELECT id, user_id, name, prompt, COALESCE(TRIM(category), ''), created_at, updated_at
+            FROM prompt_entries_legacy
+            """
+        )
+        await connection.execute("DROP TABLE prompt_entries_legacy")
+    else:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prompt_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    statements = [
+        """
+        CREATE INDEX IF NOT EXISTS idx_prompt_entries_user_updated
+        ON prompt_entries(user_id, updated_at DESC, id DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_prompt_entries_user_category
+        ON prompt_entries(user_id, category)
+        """,
+    ]
+    for statement in statements:
+        await connection.execute(statement)
 
 
 async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
@@ -889,5 +1064,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
+        await _migrate_skills(connection)
+        await _migrate_prompts(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

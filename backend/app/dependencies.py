@@ -19,6 +19,8 @@ from app.repositories.history_repository import HistoryRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.admin_repository import AdminRepository
+from app.repositories.skill_repository import SkillRepository
+from app.repositories.prompt_repository import PromptRepository
 from app.repositories.verification_code_repository import VerificationCodeRepository
 from app.schemas.auth import StoredSessionUser
 from app.services.email_sender import EmailSender
@@ -61,6 +63,16 @@ def get_verification_code_repository() -> VerificationCodeRepository:
 @lru_cache
 def get_admin_repository() -> AdminRepository:
     return AdminRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_skill_repository() -> SkillRepository:
+    return SkillRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_prompt_repository() -> PromptRepository:
+    return PromptRepository(DATABASE_PATH)
 
 
 @lru_cache
@@ -170,5 +182,7 @@ def clear_dependency_caches() -> None:
     get_user_repository.cache_clear()
     get_verification_code_repository.cache_clear()
     get_admin_repository.cache_clear()
+    get_skill_repository.cache_clear()
+    get_prompt_repository.cache_clear()
     get_email_sender.cache_clear()
     get_auth_rate_limiter.cache_clear()

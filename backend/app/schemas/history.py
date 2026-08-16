@@ -20,6 +20,7 @@ class HistoryImageMeta(BaseModel):
     position: int
     batch_position: int | None = None
     url: str
+    thumbnail_url: str
     reference_category: ReferenceCategory | None = None
 
 

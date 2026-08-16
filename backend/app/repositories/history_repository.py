@@ -52,6 +52,15 @@ class StoredHistoryImage:
     data: bytes
 
 
+@dataclass(frozen=True)
+class StoredHistoryImageThumbnail:
+    image_id: int
+    mime_type: str
+    width: int
+    height: int
+    data: bytes
+
+
 class HistoryConversationNotFoundError(Exception):
     pass
 
@@ -380,6 +389,7 @@ class HistoryRepository:
             HistoryImageMeta(
                 **dict(image_row),
                 url=f"/api/history/{history_id}/images/{image_row['id']}",
+                thumbnail_url=f"/api/history/{history_id}/images/{image_row['id']}/thumbnail?v=1",
             )
             for image_row in image_rows
         ]
@@ -477,6 +487,7 @@ class HistoryRepository:
             HistoryImageMeta(
                 **dict(image_row),
                 url=f"/api/history/{row['history_id']}/images/{image_row['id']}",
+                thumbnail_url=f"/api/history/{row['history_id']}/images/{image_row['id']}/thumbnail?v=1",
             )
             for image_row in image_rows
         ]
@@ -542,6 +553,7 @@ class HistoryRepository:
                     HistoryImageMeta(
                         **dict(image_row),
                         url=f"/api/history/{row['history_id']}/images/{image_row['id']}",
+                        thumbnail_url=f"/api/history/{row['history_id']}/images/{image_row['id']}/thumbnail?v=1",
                     )
                     for image_row in image_rows
                 ]
@@ -1349,6 +1361,7 @@ class HistoryRepository:
             HistoryImageMeta(
                 **dict(image_row),
                 url=f"/api/history/{history_id}/images/{image_row['id']}",
+                thumbnail_url=f"/api/history/{history_id}/images/{image_row['id']}/thumbnail?v=1",
             )
             for image_row in image_rows
         ]
@@ -1391,6 +1404,56 @@ class HistoryRepository:
         if row is None:
             return None
         return StoredHistoryImage(**dict(row))
+
+    async def get_image_thumbnail(
+        self,
+        user_id: int,
+        history_id: int,
+        image_id: int,
+    ) -> StoredHistoryImageThumbnail | None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            connection.row_factory = aiosqlite.Row
+            row = await (await connection.execute(
+                """
+                SELECT thumbnail.image_id, thumbnail.mime_type, thumbnail.width,
+                       thumbnail.height, thumbnail.data
+                FROM history_image_thumbnails AS thumbnail
+                JOIN history_images AS image ON image.id = thumbnail.image_id
+                JOIN history ON history.id = image.history_id
+                WHERE image.history_id = ? AND image.id = ? AND history.user_id = ?
+                """,
+                (history_id, image_id, user_id),
+            )).fetchone()
+        if row is None:
+            return None
+        return StoredHistoryImageThumbnail(**dict(row))
+
+    async def save_image_thumbnail(
+        self,
+        *,
+        user_id: int,
+        history_id: int,
+        image_id: int,
+        mime_type: str,
+        width: int,
+        height: int,
+        data: bytes,
+    ) -> bool:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute("PRAGMA foreign_keys = ON")
+            cursor = await connection.execute(
+                """
+                INSERT OR IGNORE INTO history_image_thumbnails
+                    (image_id, mime_type, width, height, data)
+                SELECT image.id, ?, ?, ?, ?
+                FROM history_images AS image
+                JOIN history ON history.id = image.history_id
+                WHERE image.history_id = ? AND image.id = ? AND history.user_id = ?
+                """,
+                (mime_type, width, height, data, history_id, image_id, user_id),
+            )
+            await connection.commit()
+        return cursor.rowcount == 1
 
     async def get_image_edit_snapshot(
         self,

@@ -24,7 +24,7 @@ async def submit_feedback(
 
     content = "\n".join(
         [
-            "GenImage 留言反馈",
+            "Pictora 留言反馈",
             f"用户：{user.username}",
             f"联系方式：{request.contact or '未提供'}",
             f"留言：{request.message}",

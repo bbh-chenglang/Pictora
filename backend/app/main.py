@@ -17,6 +17,8 @@ from app.api.history import router as history_router
 from app.api.projects import router as projects_router
 from app.api.feedback import router as feedback_router
 from app.api.admin import router as admin_router
+from app.api.skills import router as skills_router
+from app.api.prompts import router as prompts_router
 from app.providers.base import ProviderError
 from app.config import Settings
 from app.database import initialize_database
@@ -56,7 +58,7 @@ async def lifespan(_: FastAPI):
         await get_generation_task_manager().shutdown()
 
 
-app = FastAPI(title="GenImage API", lifespan=lifespan)
+app = FastAPI(title="Pictora API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -110,6 +112,8 @@ app.include_router(history_router)
 app.include_router(projects_router)
 app.include_router(feedback_router)
 app.include_router(admin_router)
+app.include_router(skills_router)
+app.include_router(prompts_router)
 
 
 @app.get("/health")

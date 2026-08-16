@@ -29,7 +29,7 @@ const jsonResponse = (body: unknown) => {
   );
 };
 
-describe("GenImage workspace", () => {
+describe("Pictora workspace", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.stubGlobal(
@@ -69,11 +69,29 @@ describe("GenImage workspace", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  it("shows the complete Pictora branding on the login screen", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return Promise.resolve(new Response(null, { status: 401 }));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get(".auth-eyebrow").text()).toBe("画境 (Pictora)");
+    expect(wrapper.get(".auth-intro-copy").text()).toContain("生成的不仅是图片，而是画中意境");
+    expect(wrapper.get(".auth-brand-mark").attributes("alt")).toBe("Pictora 图标");
+    wrapper.unmount();
+  });
+
   it("includes session credentials on every API request", async () => {
     const fetchMock = vi.mocked(fetch);
     const wrapper = mount(App);
     await flushPromises();
 
+    expect(wrapper.get(".brand strong").text()).toBe("Pictora");
+    expect(wrapper.get(".brand small").text()).toBe("AI 创作工作台");
     const apiRequests = fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/"));
     expect(apiRequests.length).toBeGreaterThan(0);
     expect(apiRequests.every(([, init]) => init?.credentials === "include")).toBe(true);
@@ -480,6 +498,15 @@ describe("GenImage workspace", () => {
     await collapseToggle.trigger("click");
     expect(wrapper.get(".workspace-panel").classes()).not.toContain("is-composer-collapsed");
     expect(wrapper.get<HTMLElement>(".workspace-composer-panel").element.style.display).not.toBe("none");
+  });
+
+  it("shows the prompt picker beside the workspace prompt input", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const pickerButton = wrapper.get("[data-action='choose-prompt']");
+    expect(pickerButton.text()).toContain("选择提示词");
+    expect(wrapper.get(".prompt-row-heading").text()).toContain("提示词");
   });
 
   it("labels a configured API key explicitly", async () => {
@@ -1935,6 +1962,7 @@ describe("GenImage workspace", () => {
               filename: "result.png",
               position: 0,
               url: "/api/history/7/images/9",
+              thumbnail_url: "/api/history/7/images/9/thumbnail?v=1",
             },
           ],
         });
@@ -1984,6 +2012,10 @@ describe("GenImage workspace", () => {
     expect(wrapper.get(".result-heading h2").text()).toBe("历史结果");
     const prompt = wrapper.get<HTMLTextAreaElement>(".prompt-row textarea");
     expect(prompt.element.value).toBe("蓝色海面");
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe(
+      "/api/history/7/images/9/thumbnail?v=1",
+    );
+    await wrapper.get(".image-grid img").trigger("error");
     expect(wrapper.get(".image-grid img").attributes("src")).toBe(
       "/api/history/7/images/9",
     );
