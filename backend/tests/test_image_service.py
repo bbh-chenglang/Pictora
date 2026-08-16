@@ -10,8 +10,8 @@ from app.providers.compatible_provider import CompatibleProvider
 from app.providers.base import ProviderRequestError, ProviderTimeoutError
 from app.providers.openai_provider import OpenAIProvider
 from app.schemas.analyze import AnalyzeResponse
-from app.schemas.common import ImageResult
-from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage
+from app.schemas.common import GenerationViewSpec, ImageResult
+from app.schemas.generate import GenerateRequest, GenerateResponse, ReferenceImage, normalize_reference_images
 from app.services.image_service import ImageService
 
 
@@ -411,8 +411,9 @@ async def test_injected_falsy_client_is_preserved() -> None:
 
 
 @pytest.mark.asyncio
-async def test_image_service_generates_prompt_batches_concurrently_with_timings() -> None:
+async def test_image_service_generates_gemini_slots_concurrently_with_timings() -> None:
     class ConcurrentProvider:
+        provider_id = "gemini"
         active = 0
         max_active = 0
         calls = []
@@ -424,7 +425,7 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
             await asyncio.sleep(0.01)
             self.active -= 1
             return GenerateResponse(
-                provider="fake",
+                provider="gemini",
                 model=request.model,
                 images=[ImageResult(url=f"https://example.com/{request.prompt}.png")],
             )
@@ -433,8 +434,8 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
     service = ImageService(SimpleNamespace(resolve=lambda _: provider))
     result = await service.generate(
         GenerateRequest(
-            provider="fake",
-            model="image-model",
+            provider="gemini",
+            model="gemini-3.1-flash-image",
             prompt="first",
             prompts=["first", "second"],
             count=2,
@@ -448,38 +449,257 @@ async def test_image_service_generates_prompt_batches_concurrently_with_timings(
 
 
 @pytest.mark.asyncio
-async def test_image_service_sends_grok_count_as_one_native_request_per_prompt() -> None:
-    class GrokProvider:
-        provider_id = "grok"
+async def test_image_service_generates_one_slot_for_each_view_with_shared_references() -> None:
+    class MultiViewProvider:
+        provider_id = "gemini"
 
         def __init__(self) -> None:
-            self.calls: list[tuple[str, int]] = []
+            self.calls: list[tuple[str, int, list[str]]] = []
 
-        async def generate_image(self, request):
-            self.calls.append((request.prompt, request.count))
+        async def generate_image(self, request, reference_image=None):
+            references = normalize_reference_images(reference_image)
+            self.calls.append((request.prompt, request.count, [item.filename or "" for item in references]))
             return GenerateResponse(
-                provider="grok",
+                provider="gemini",
                 model=request.model,
-                images=[
-                    ImageResult(url=f"https://example.com/{request.prompt}-{index}.png")
-                    for index in range(request.count)
-                ],
+                images=[ImageResult(url=f"https://example.com/{len(self.calls)}.png")],
             )
 
-    provider = GrokProvider()
+    provider = MultiViewProvider()
     service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    views = [
+        GenerationViewSpec(key="person_front", label="正面", prompt="正面提示词"),
+        GenerationViewSpec(key="person_back", label="背面", prompt="背面提示词"),
+    ]
+    references = [
+        ReferenceImage(data=b"front", content_type="image/png", filename="front.png", category="person"),
+        ReferenceImage(data=b"side", content_type="image/png", filename="side.png", category="person"),
+    ]
+
     result = await service.generate(
         GenerateRequest(
-            provider="grok",
-            model="grok-imagine-image",
+            provider="gemini",
+            model="gemini-3.1-flash-image",
+            prompt="基础提示词",
+            views=views,
+        ),
+        references,
+    )
+
+    assert len(result.images) == 2
+    assert provider.calls == [
+        ("正面提示词", 1, ["front.png", "side.png"]),
+        ("背面提示词", 1, ["front.png", "side.png"]),
+    ]
+    assert [image.generation_position for image in result.images] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_image_service_requires_subject_reference_for_multi_view() -> None:
+    provider = SimpleNamespace(provider_id="gemini")
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    request = GenerateRequest(
+        provider="gemini",
+        model="gemini-3.1-flash-image",
+        prompt="基础提示词",
+        views=[GenerationViewSpec(key="person_front", label="正面", prompt="正面提示词")],
+    )
+
+    with pytest.raises(ValueError, match="person or object reference"):
+        await service.normalize_request(request)
+    with pytest.raises(ValueError, match="person or object reference"):
+        await service.normalize_request(
+            request,
+            ReferenceImage(data=b"room", content_type="image/png", category="environment"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model"),
+    [
+        ("openai", "gpt-image-2"),
+        ("compatible", "gpt-image-2"),
+        ("grok", "grok-imagine-image"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_image_service_serializes_single_image_requests_for_gpt_and_grok(
+    provider_id: str,
+    model: str,
+) -> None:
+    class SerialProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+            self.active = 0
+            self.max_active = 0
+            self.provider_id = provider_id
+
+        async def generate_image(self, request):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.calls.append((request.prompt, request.count))
+            await asyncio.sleep(0.001)
+            self.active -= 1
+            return GenerateResponse(
+                provider=provider_id,
+                model=request.model,
+                images=[ImageResult(url=f"https://example.com/{len(self.calls)}.png")],
+            )
+
+    provider = SerialProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    reported_positions: list[int | None] = []
+
+    async def report_image(image: ImageResult) -> None:
+        reported_positions.append(image.generation_position)
+
+    result = await service.generate(
+        GenerateRequest(
+            provider=provider_id,
+            model=model,
             prompt="first",
             prompts=["first", "second"],
-            count=10,
+            count=2,
+        ),
+        on_image=report_image,
+    )
+
+    assert provider.calls == [
+        ("first", 1),
+        ("first", 1),
+        ("second", 1),
+        ("second", 1),
+    ]
+    assert provider.max_active == 1
+    assert reported_positions == [0, 1, 2, 3]
+    assert len(result.images) == 4
+
+
+@pytest.mark.asyncio
+async def test_image_service_continues_serial_slots_after_provider_error() -> None:
+    class OneFailedSlotProvider:
+        provider_id = "compatible"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderRequestError(status_code=400)
+            return GenerateResponse(
+                provider=self.provider_id,
+                model=request.model,
+                images=[ImageResult(url="https://example.com/result.png")],
+            )
+
+    provider = OneFailedSlotProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    result = await service.generate(
+        GenerateRequest(
+            provider="compatible",
+            model="gpt-image-2",
+            prompt="draw",
+            count=2,
         )
     )
 
-    assert provider.calls == [("first", 10), ("second", 10)]
-    assert len(result.images) == 20
+    assert provider.calls == 2
+    assert [image.generation_position for image in result.images] == [1]
+    assert [(failure.position, failure.error_code) for failure in result.failures] == [
+        (0, "provider_request")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_image_service_retries_only_the_slot_with_an_empty_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def skip_sleep(_: float) -> None:
+        return None
+
+    class EmptyOnceProvider:
+        provider_id = "compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def generate_image(self, request):
+            self.calls.append(request.count)
+            call_number = len(self.calls)
+            images = [] if call_number == 2 else [
+                ImageResult(url=f"https://example.com/image-{call_number}.png")
+            ]
+            return GenerateResponse(
+                provider=self.provider_id,
+                model=request.model,
+                images=images,
+            )
+
+    monkeypatch.setattr(asyncio, "sleep", skip_sleep)
+    monkeypatch.setattr("app.services.image_service.random.uniform", lambda *_: 0.0)
+    provider = EmptyOnceProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    result = await service.generate(
+        GenerateRequest(
+            provider="compatible",
+            model="gpt-image-2",
+            prompt="draw",
+            count=2,
+        )
+    )
+
+    assert provider.calls == [1, 1, 1]
+    assert [image.generation_position for image in result.images] == [0, 1]
+    assert result.failures == []
+
+
+@pytest.mark.asyncio
+async def test_image_service_marks_a_slot_failed_after_empty_response_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def skip_sleep(_: float) -> None:
+        return None
+
+    class OneSlotAlwaysEmptyProvider:
+        provider_id = "compatible"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            return GenerateResponse(
+                provider=self.provider_id,
+                model=request.model,
+                images=(
+                    [ImageResult(url="https://example.com/image.png")]
+                    if self.calls == 1
+                    else []
+                ),
+            )
+
+    monkeypatch.setattr(asyncio, "sleep", skip_sleep)
+    monkeypatch.setattr("app.services.image_service.random.uniform", lambda *_: 0.0)
+    provider = OneSlotAlwaysEmptyProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    result = await service.generate(
+        GenerateRequest(
+            provider="compatible",
+            model="gpt-image-2",
+            prompt="draw",
+            count=2,
+        )
+    )
+
+    assert provider.calls == 5
+    assert [image.generation_position for image in result.images] == [0]
+    assert [(failure.position, failure.error_code) for failure in result.failures] == [
+        (1, "partial_generation")
+    ]
 
 
 @pytest.mark.asyncio
@@ -502,7 +722,7 @@ async def test_image_service_allows_five_minutes_per_generated_image(
     class ImmediateProvider:
         async def generate_image(self, request):
             return GenerateResponse(
-                provider="fake",
+                provider="openai",
                 model=request.model,
                 images=[ImageResult(url="https://example.com/image.png")],
             )
@@ -512,14 +732,74 @@ async def test_image_service_allows_five_minutes_per_generated_image(
 
     await service.generate(
         GenerateRequest(
-            provider="fake",
-            model="image-model",
+                provider="openai",
+                model="gpt-image-1",
             prompt="draw",
             count=3,
         )
     )
 
     assert timeout_values == [900]
+
+
+@pytest.mark.asyncio
+async def test_image_service_skips_only_cancelled_serial_slot() -> None:
+    class SerialProvider:
+        provider_id = "compatible"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            return GenerateResponse(
+                provider="compatible",
+                model=request.model,
+                images=[ImageResult(url=f"https://example.com/{self.calls}.png")],
+            )
+
+    async def should_skip(position: int) -> bool:
+        return position == 1
+
+    provider = SerialProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+    result = await service.generate(
+        GenerateRequest(provider="compatible", model="gpt-image-2", prompt="draw", count=3),
+        should_skip=should_skip,
+    )
+
+    assert provider.calls == 2
+    assert [image.generation_position for image in result.images] == [0, 2]
+    assert [(failure.position, failure.error_code) for failure in result.failures] == [
+        (1, "generation_cancelled")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_image_service_treats_provider_error_as_cancelled_after_active_slot_cancel() -> None:
+    class FailingProvider:
+        provider_id = "compatible"
+
+        async def generate_image(self, request):
+            raise ProviderRequestError(status_code=400)
+
+    checks = 0
+
+    async def should_skip(position: int) -> bool:
+        nonlocal checks
+        checks += 1
+        return checks > 1
+
+    service = ImageService(SimpleNamespace(resolve=lambda _: FailingProvider()))
+    result = await service.generate(
+        GenerateRequest(provider="compatible", model="gpt-image-2", prompt="draw"),
+        should_skip=should_skip,
+    )
+
+    assert result.images == []
+    assert [(failure.position, failure.error_code) for failure in result.failures] == [
+        (0, "generation_cancelled")
+    ]
 
 
 @pytest.mark.asyncio
@@ -547,7 +827,7 @@ async def test_image_service_maps_batch_timeout_to_provider_timeout(
 
     with pytest.raises(ProviderTimeoutError):
         await service.generate(
-            GenerateRequest(provider="fake", model="image-model", prompt="draw")
+            GenerateRequest(provider="openai", model="gpt-image-1", prompt="draw")
         )
 
 
@@ -556,7 +836,7 @@ async def test_image_service_infers_explicit_chinese_image_count() -> None:
     class CountProvider:
         async def generate_image(self, request):
             return GenerateResponse(
-                provider="fake",
+                provider="openai",
                 model=request.model,
                 images=[ImageResult(url="https://example.com/image.png")],
             )
@@ -564,7 +844,168 @@ async def test_image_service_infers_explicit_chinese_image_count() -> None:
     provider = CountProvider()
     service = ImageService(SimpleNamespace(resolve=lambda _: provider))
     result = await service.generate(
-        GenerateRequest(provider="fake", model="image-model", prompt="帮我生成两张图片")
+        GenerateRequest(provider="openai", model="gpt-image-1", prompt="帮我生成两张图片")
     )
 
     assert len(result.images) == 2
+
+
+@pytest.mark.parametrize("status_code", [429, 502, 503, 504, 524])
+@pytest.mark.asyncio
+async def test_image_service_retries_transient_provider_statuses(
+    status_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    class FlakyProvider:
+        provider_id = "gemini"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderRequestError(status_code=status_code)
+            return GenerateResponse(
+                provider="gemini",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/result.png")],
+            )
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    monkeypatch.setattr("app.services.image_service.random.uniform", lambda *_: 0.0)
+    provider = FlakyProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    result = await service.generate(
+        GenerateRequest(provider="gemini", model="gemini-3.1-flash-image", prompt="draw")
+    )
+
+    assert provider.calls == 2
+    assert delays == [1.0]
+    assert len(result.images) == 1
+
+
+@pytest.mark.asyncio
+async def test_image_service_caps_rate_limit_retry_after_at_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    class RateLimitedOnceProvider:
+        provider_id = "gemini"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderRequestError(
+                    status_code=429,
+                    retry_after_seconds=90,
+                )
+            return GenerateResponse(
+                provider="gemini",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/result.png")],
+            )
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    provider = RateLimitedOnceProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    await service.generate(
+        GenerateRequest(provider="gemini", model="gemini-3.1-flash-image", prompt="draw")
+    )
+
+    assert provider.calls == 2
+    assert delays == [30.0]
+
+
+@pytest.mark.asyncio
+async def test_image_service_stops_after_three_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    class UnavailableProvider:
+        provider_id = "gemini"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_image(self, request):
+            self.calls += 1
+            raise ProviderRequestError(status_code=502)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    monkeypatch.setattr("app.services.image_service.random.uniform", lambda *_: 0.0)
+    provider = UnavailableProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    with pytest.raises(ProviderRequestError) as raised:
+        await service.generate(
+            GenerateRequest(provider="gemini", model="gemini-3.1-flash-image", prompt="draw")
+        )
+
+    assert raised.value.status_code == 502
+    assert provider.calls == 4
+    assert delays == [1.0, 2.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_image_service_keeps_successful_slots_when_one_slot_exhausts_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def skip_sleep(_: float) -> None:
+        return None
+
+    class PartiallyUnavailableProvider:
+        provider_id = "gemini"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def generate_image(self, request):
+            self.calls.append(request.prompt)
+            if request.prompt == "second":
+                raise ProviderRequestError(status_code=502)
+            return GenerateResponse(
+                provider="gemini",
+                model=request.model,
+                images=[ImageResult(url=f"https://example.com/{request.prompt}.png")],
+            )
+
+    monkeypatch.setattr(asyncio, "sleep", skip_sleep)
+    monkeypatch.setattr("app.services.image_service.random.uniform", lambda *_: 0.0)
+    provider = PartiallyUnavailableProvider()
+    service = ImageService(SimpleNamespace(resolve=lambda _: provider))
+
+    result = await service.generate(
+        GenerateRequest(
+            provider="gemini",
+            model="gemini-3.1-flash-image",
+            prompt="first",
+            prompts=["first", "second", "third"],
+        )
+    )
+
+    assert [image.generation_position for image in result.images] == [0, 2]
+    assert [(failure.position, failure.error_code) for failure in result.failures] == [
+        (1, "provider_request")
+    ]
+    assert provider.calls.count("first") == 1
+    assert provider.calls.count("second") == 4
+    assert provider.calls.count("third") == 1

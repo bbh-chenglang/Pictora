@@ -2,18 +2,19 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ArrowLeft,
+  CircleAlert,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Download,
   ExternalLink,
   Grid3X3,
   ImagePlus,
   LoaderCircle,
-  PanelLeft,
-  PanelLeftClose,
   Pencil,
+  Plus,
   RefreshCw,
   KeyRound,
   Settings,
@@ -35,6 +36,26 @@ import ProjectDialog from "./components/ProjectDialog.vue";
 import SnowfallBackground from "./components/SnowfallBackground.vue";
 
 type Provider = { id: string; label: string; models: string[] };
+type CapabilityOption = { value: string; label: string };
+type ModelCapability = {
+  provider_type: ApiKeyProvider;
+  model: string;
+  label: string;
+  max_output_count: number;
+  max_reference_images: number;
+  sizes: CapabilityOption[];
+  aspect_ratios: string[];
+  resolutions: string[];
+  qualities: CapabilityOption[];
+  output_formats: string[];
+  backgrounds: string[];
+  supports_output_compression: boolean;
+  moderation_levels: string[];
+  default_size?: string | null;
+  default_aspect_ratio?: string | null;
+  default_resolution?: string | null;
+  default_quality: string;
+};
 type ApiKeyProvider = "gpt" | "gemini" | "grok";
 type BackgroundEffect = "gravity-grid" | "snowfall";
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
@@ -104,6 +125,12 @@ type ImageResult = {
   history_id?: number;
   history_image_id?: number;
   batch_id?: number | null;
+  batch_position?: number | null;
+};
+type GenerationViewSpec = {
+  key: string;
+  label: string;
+  prompt: string;
 };
 type HistorySummary = {
   id: number;
@@ -128,22 +155,55 @@ type HistoryImage = {
   mime_type: string;
   filename?: string | null;
   position: number;
+  batch_position?: number | null;
   url: string;
   reference_category?: ReferenceCategory | null;
+};
+type GenerationBatchSummary = {
+  id: number;
+  status: "pending" | "completed" | "failed";
+  image_count: number;
+  generated_count: number;
+  elapsed_ms?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  deleted_positions?: number[];
+  cancelled_positions?: number[];
+  views?: GenerationViewSpec[];
 };
 type HistoryDetail = HistorySummary & {
   analysis_text?: string | null;
   completed_at?: string | null;
   images: HistoryImage[];
+  batches?: GenerationBatchSummary[];
 };
-type GenerationBatchDetail = {
+type GenerationBatchDetail = GenerationBatchSummary & {
+  history_id: number;
+  images: HistoryImage[];
+};
+type GenerationTaskDetail = {
   id: number;
   history_id: number;
-  status: "pending" | "completed" | "failed";
-  elapsed_ms?: number | null;
+  project_id?: number;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  batch_id?: number | null;
+  api_key_config_id?: number | null;
+  prompt?: string;
+  provider?: string;
+  model?: string;
+  detail?: string;
+  image_count?: number;
+  generated_count?: number;
+  images?: HistoryImage[];
+  size?: string | null;
+  resolution?: string | null;
   error_code?: string | null;
   error_message?: string | null;
-  images: HistoryImage[];
+  created_at?: string;
+  deleted_positions?: number[];
+  cancelled_positions?: number[];
+  views?: GenerationViewSpec[];
 };
 type ReferenceCategory = "person" | "environment" | "object";
 type ReferencePreview = {
@@ -172,6 +232,7 @@ type HistoryImageEditSnapshot = {
   background?: string | null;
   output_compression?: number | null;
   moderation?: string | null;
+  view_label?: string | null;
   references: Array<{
     id: number;
     category: ReferenceCategory;
@@ -182,41 +243,6 @@ type HistoryImageEditSnapshot = {
   }>;
 };
 
-const MODEL_OPTIONS = [
-  "gpt-image-2",
-  "gpt-image-1.5",
-  "gpt-image-1",
-  "gpt-image-1Mini",
-] as const;
-const DEFAULT_MODEL = MODEL_OPTIONS[0];
-const GEMINI_ASPECT_RATIO_OPTIONS = [
-  "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
-] as const;
-const GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS = [
-  ...GEMINI_ASPECT_RATIO_OPTIONS,
-  "1:4", "1:8", "4:1", "8:1",
-] as const;
-const GPT_STANDARD_SIZE_OPTIONS = [
-  { label: "自动", value: "auto" },
-  { label: "正方形", value: "1024x1024" },
-  { label: "横向", value: "1536x1024" },
-  { label: "纵向", value: "1024x1536" },
-] as const;
-const GPT_IMAGE_2_SIZE_OPTIONS = [
-  ...GPT_STANDARD_SIZE_OPTIONS,
-  { label: "2K 正方形", value: "2048x2048" },
-  { label: "2K 横向", value: "2048x1152" },
-  { label: "2K 纵向", value: "1152x2048" },
-  { label: "4K 横向", value: "3840x2160" },
-  { label: "4K 纵向", value: "2160x3840" },
-] as const;
-const DEFAULT_GPT_SIZE = "auto";
-const DEFAULT_GEMINI_ASPECT_RATIO = "1:1";
-const GROK_ASPECT_RATIO_OPTIONS = [
-  "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3",
-  "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20",
-] as const;
-const DEFAULT_GROK_ASPECT_RATIO = "auto";
 const LEGACY_SIZE_TO_ASPECT_RATIO: Record<string, string> = {
   "1024x1024": "1:1",
   "1536x1024": "3:2",
@@ -226,9 +252,6 @@ const LEGACY_SIZE_TO_ASPECT_RATIO: Record<string, string> = {
   "720x1280": "9:16",
   "1280x720": "16:9",
 };
-const RESOLUTION_OPTIONS = ["1K", "2K", "4K"] as const;
-const GROK_RESOLUTION_OPTIONS = ["1K", "2K"] as const;
-const DEFAULT_RESOLUTION = "1K";
 const REFERENCE_CATEGORIES: Array<{
   id: ReferenceCategory;
   label: string;
@@ -237,22 +260,19 @@ const REFERENCE_CATEGORIES: Array<{
   { id: "environment", label: "环境" },
   { id: "object", label: "物品" },
 ];
-const QUALITY_OPTIONS = [
-  { label: "自动", value: "auto" },
-  { label: "低", value: "low" },
-  { label: "中", value: "medium" },
-  { label: "高", value: "high" },
-] as const;
-const GROK_QUALITY_OPTIONS = [
-  { label: "低", value: "low" },
-  { label: "中", value: "medium" },
-] as const;
-const GEMINI_IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
-const GPT_IMAGE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
-const MAX_GPT_REFERENCE_IMAGES = 16;
-const MAX_GEMINI_REFERENCE_IMAGES = 14;
-const MAX_LEGACY_GEMINI_REFERENCE_IMAGES = 3;
-const MAX_GROK_REFERENCE_IMAGES = 3;
+type MultiViewTarget = "person" | "object";
+type MultiViewPreset = { key: string; label: string; instruction: string };
+const MULTI_VIEW_PRESETS: MultiViewPreset[] = [
+  { key: "front", label: "正面", instruction: "相机正对主体，完整展示正面" },
+  { key: "left_three_quarter", label: "左前 45°", instruction: "相机位于主体左前方约 45 度" },
+  { key: "right_three_quarter", label: "右前 45°", instruction: "相机位于主体右前方约 45 度" },
+  { key: "left_profile", label: "左侧面", instruction: "相机正对主体左侧，展示完整左侧面" },
+  { key: "right_profile", label: "右侧面", instruction: "相机正对主体右侧，展示完整右侧面" },
+  { key: "back", label: "背面", instruction: "相机位于主体正后方，完整展示背面" },
+  { key: "top", label: "俯视", instruction: "相机从主体上方向下俯视" },
+  { key: "low", label: "仰视", instruction: "相机从主体下方向上仰视" },
+];
+const DEFAULT_MULTI_VIEW_KEYS = ["front", "left_three_quarter", "right_three_quarter", "back"];
 const SUPPORTED_REFERENCE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 type ParameterMenu = "apiKey" | "model" | "size" | "resolution" | "quality" | "count";
 type GenerationRun = {
@@ -264,34 +284,98 @@ type GenerationRun = {
   elapsedMs: number;
   timer?: number;
   polling: boolean;
+  taskApi: boolean;
   projectId: number | null;
   provider: string;
   model: string;
   apiKeyConfigId: number | null;
   prompt: string;
   batchPrompts: string;
+  views: GenerationViewSpec[];
   imageCount: number;
   quality: string;
   size: string;
   resolution: string;
   referenceFiles: ReferenceFileSnapshot[];
   images: ImageResult[];
+  failureCount: number;
   error: string;
+  state: "running" | "failed" | "cancelled";
+  deletedPositions: Set<number>;
+  cancelledPositions: Set<number>;
 };
+type HistoryFailureGroup = {
+  historyId: number;
+  batchId: number;
+  positions: number[];
+  message: string;
+  state: "failed" | "cancelled";
+  elapsedMs?: number | null;
+  views: GenerationViewSpec[];
+};
+type GenerationDisplayCard =
+  | {
+      key: string;
+      kind: "image";
+      batchId: number | null;
+      slotPosition: number;
+      image: ImageResult;
+    }
+  | {
+      key: string;
+      kind: "run";
+      batchId: number | null;
+      slotPosition: number;
+      runId: number;
+      run: GenerationRun;
+    }
+  | {
+      key: string;
+      kind: "history-failure";
+      batchId: number;
+      slotPosition: number;
+      group: HistoryFailureGroup;
+    };
+
+function rememberGenerationBatchViews(batchId: number | null | undefined, views: GenerationViewSpec[] | undefined) {
+  if (batchId == null || !views?.length) return;
+  generationBatchViews.value = { ...generationBatchViews.value, [batchId]: views };
+}
+
+function rememberHistoryViews(data: HistoryDetail) {
+  for (const batch of data.batches ?? []) rememberGenerationBatchViews(batch.id, batch.views);
+}
+
+function cardViewLabel(card: GenerationDisplayCard) {
+  if (card.kind === "run") return card.run.views[card.slotPosition]?.label ?? "";
+  if (card.kind === "history-failure") return card.group.views[card.slotPosition]?.label ?? "";
+  if (card.batchId === null) return "";
+  return generationBatchViews.value[card.batchId]?.[card.slotPosition]?.label ?? "";
+}
 
 const providers = ref<Provider[]>([]);
+const capabilities = ref<ModelCapability[]>([]);
 const provider = ref("compatible");
-const model = ref<string>(DEFAULT_MODEL);
+const model = ref<string>("");
 const prompt = ref("");
 const batchPrompts = ref("");
 const imageCount = ref(1);
+const regularImageCount = ref(1);
+const multiViewEnabled = ref(false);
+const multiViewTarget = ref<MultiViewTarget>("person");
+const selectedMultiViewKeys = ref<string[]>([...DEFAULT_MULTI_VIEW_KEYS]);
+const customMultiViews = ref<Array<{ key: string; label: string }>>([]);
+const customMultiViewInput = ref("");
+const multiViewInputError = ref("");
 const quality = ref("auto");
-const size = ref<string>(DEFAULT_GPT_SIZE);
-const resolution = ref<string>(DEFAULT_RESOLUTION);
+const size = ref<string>("");
+const resolution = ref<string>("");
 const referencePreviews = ref<ReferencePreview[]>([]);
 const referenceDragActiveCategory = ref<ReferenceCategory | null>(null);
 const generated = ref<ImageResult[]>([]);
 const deletingImageIds = ref<number[]>([]);
+const deletingSlotKeys = ref<string[]>([]);
+const cancellingSlotKeys = ref<string[]>([]);
 const modifyingImageIds = ref<number[]>([]);
 const busy = ref<"generate" | "analyze" | "">("");
 const generationSubmitting = ref(false);
@@ -304,10 +388,11 @@ const selectedProjectId = ref<number | null>(null);
 const projectError = ref("");
 const projectDialogMode = ref<"create" | "rename" | null>(null);
 const projectDialogProject = ref<ProjectSummary | null>(null);
-const confirmAction = ref<"project" | "history" | "api-key" | null>(null);
+const confirmAction = ref<"project" | "history" | "api-key" | "image" | null>(null);
 const confirmProject = ref<ProjectSummary | null>(null);
 const confirmHistoryIds = ref<number[]>([]);
 const confirmConfig = ref<ApiKeyConfig | null>(null);
+const confirmImage = ref<{ item: ImageResult; slotPosition?: number } | null>(null);
 const actionBusy = ref(false);
 const activeHistoryId = ref<number | null>(null);
 const currentConversationId = ref<number | null>(null);
@@ -330,12 +415,11 @@ const authSubmitting = ref(false);
 const verificationSending = ref(false);
 const verificationCooldown = ref(0);
 const currentView = ref<CurrentView>(resolveCurrentView());
-const projectDrawerOpen = ref(false);
 const apiKeyConfigs = ref<ApiKeyConfig[]>([]);
 const activeApiKeyConfigId = ref<number | null>(null);
 const legacySettingsMode = ref(false);
 const settingsApiKey = ref("");
-const configForm = ref<ApiKeyConfigForm>({ alias: "", api_key: "", provider_type: null, model: DEFAULT_MODEL });
+const configForm = ref<ApiKeyConfigForm>({ alias: "", api_key: "", provider_type: null, model: "" });
 const editingConfigId = ref<number | null>(null);
 const showConfigForm = ref(false);
 const discoveredModels = ref<DiscoveredModel[]>([]);
@@ -372,23 +456,63 @@ const updateStatus = ref<UpdateStatus>("idle");
 const serverVersion = ref("");
 const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
 const WORKSPACE_RESULT_RATIO_KEY = "genimage-workspace-result-ratio";
+const WORKSPACE_COMPOSER_COLLAPSED_KEY = "genimage-workspace-composer-collapsed";
+const WORKSPACE_SELECTION_PREFIX = "genimage-workspace-selection:";
 const DEFAULT_WORKSPACE_RESULT_RATIO = 48;
 const backgroundEffect = ref<BackgroundEffect>(loadBackgroundEffect());
 const workspaceResultRatio = ref(loadWorkspaceResultRatio());
+const workspaceComposerCollapsed = ref(loadWorkspaceComposerCollapsed());
 const workspacePanel = ref<HTMLElement | null>(null);
 const workspaceResizing = ref(false);
 let settingsSaveQueue: Promise<void> = Promise.resolve();
+let apiKeySelectionQueue: Promise<void> = Promise.resolve();
+let apiKeySelectionVersion = 0;
 let referencePreviewSequence = 0;
 let verificationCooldownTimer: number | undefined;
 let adminSearchTimer: number | undefined;
+let hasStoredWorkspaceSelection = false;
 const referenceDragDepth: Record<ReferenceCategory, number> = {
   person: 0,
   environment: 0,
   object: 0,
 };
 
+function workspaceSelectionKey() {
+  return `${WORKSPACE_SELECTION_PREFIX}${currentUsername.value || "anonymous"}`;
+}
+
+function restoreWorkspaceSelection() {
+  hasStoredWorkspaceSelection = false;
+  try {
+    const raw = window.localStorage.getItem(workspaceSelectionKey());
+    if (!raw) return;
+    hasStoredWorkspaceSelection = true;
+    const saved = JSON.parse(raw) as { projectId?: number; conversationId?: number | null };
+    if (Number.isInteger(saved.projectId) && saved.projectId! > 0) selectedProjectId.value = saved.projectId!;
+    if (saved.conversationId == null || (Number.isInteger(saved.conversationId) && saved.conversationId > 0)) {
+      currentConversationId.value = saved.conversationId ?? null;
+    }
+  } catch {
+    // Invalid or unavailable storage should not prevent the workspace from loading.
+  }
+}
+
+function persistWorkspaceSelection() {
+  try {
+    window.localStorage.setItem(workspaceSelectionKey(), JSON.stringify({
+      projectId: selectedProjectId.value,
+      conversationId: currentConversationId.value,
+    }));
+    hasStoredWorkspaceSelection = true;
+  } catch {
+    // Workspace state remains available for the current session when storage is unavailable.
+  }
+}
+
 const generationRuns = new Map<number, GenerationRun>();
 const generationVersion = ref(0);
+const historyFailureGroups = ref<HistoryFailureGroup[]>([]);
+const generationBatchViews = ref<Record<number, GenerationViewSpec[]>>({});
 const activeGenerationRunId = ref<number | null>(null);
 const historyDetailCache = new Map<number, Promise<HistoryDetail>>();
 const historyImagePreloads = new Map<string, HTMLImageElement>();
@@ -410,6 +534,27 @@ function loadWorkspaceResultRatio() {
       : DEFAULT_WORKSPACE_RESULT_RATIO;
   } catch {
     return DEFAULT_WORKSPACE_RESULT_RATIO;
+  }
+}
+
+function loadWorkspaceComposerCollapsed() {
+  try {
+    return window.localStorage.getItem(WORKSPACE_COMPOSER_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function toggleWorkspaceComposer() {
+  workspaceComposerCollapsed.value = !workspaceComposerCollapsed.value;
+  if (workspaceComposerCollapsed.value) finishWorkspaceResize();
+  try {
+    window.localStorage.setItem(
+      WORKSPACE_COMPOSER_COLLAPSED_KEY,
+      String(workspaceComposerCollapsed.value),
+    );
+  } catch {
+    // The collapsed state still applies for the current session when storage is unavailable.
   }
 }
 
@@ -454,7 +599,7 @@ function finishWorkspaceResize() {
 }
 
 function startWorkspaceResize(event: PointerEvent) {
-  if (event.button !== 0) return;
+  if (workspaceComposerCollapsed.value || event.button !== 0) return;
   event.preventDefault();
   workspaceResizing.value = true;
   document.body.classList.add("workspace-is-resizing");
@@ -465,6 +610,7 @@ function startWorkspaceResize(event: PointerEvent) {
 }
 
 function handleWorkspaceResizeKeydown(event: KeyboardEvent) {
+  if (workspaceComposerCollapsed.value) return;
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
     event.preventDefault();
     setWorkspaceResultRatio(workspaceResultRatio.value + (event.key === "ArrowDown" ? 2 : -2), true);
@@ -506,6 +652,78 @@ const visibleGenerationRuns = computed(() => {
   const run = generationRuns.get(activeGenerationRunId.value);
   return run ? [{ id: activeGenerationRunId.value, run }] : [];
 });
+const visibleHistoryFailureGroups = computed(() => {
+  generationVersion.value;
+  if (currentConversationId.value === null) return [];
+  const liveBatchIds = new Set(
+    [...generationRuns.values()]
+      .filter((run) => run.conversationId === currentConversationId.value && run.batchId !== null)
+      .map((run) => run.batchId as number),
+  );
+  return historyFailureGroups.value.filter((group) => !liveBatchIds.has(group.batchId));
+});
+const visibleGenerationCards = computed<GenerationDisplayCard[]>(() => {
+  generationVersion.value;
+  const cards: GenerationDisplayCard[] = [];
+  const fallbackPositions = new Map<string, number>();
+  for (const image of generated.value) {
+    const batchId = image.batch_id ?? null;
+    const fallbackKey = batchId === null ? "legacy" : String(batchId);
+    const fallbackPosition = fallbackPositions.get(fallbackKey) ?? 0;
+    fallbackPositions.set(fallbackKey, fallbackPosition + 1);
+    const slotPosition = image.batch_position ?? fallbackPosition;
+    cards.push({
+      key: `image-${image.history_image_id ?? imageSource(image) ?? `${fallbackKey}-${slotPosition}`}`,
+      kind: "image",
+      batchId,
+      slotPosition,
+      image,
+    });
+  }
+  for (const { id: runId, run } of visibleGenerationRuns.value) {
+    const generatedPositions = new Set(
+      generated.value
+        .filter((image) => run.batchId !== null && image.batch_id === run.batchId)
+        .map((image, index) => image.batch_position ?? index),
+    );
+    for (let slotPosition = 0; slotPosition < run.imageCount; slotPosition += 1) {
+      if (run.deletedPositions.has(slotPosition)
+        || run.cancelledPositions.has(slotPosition)
+        || generatedPositions.has(slotPosition)) continue;
+      cards.push({
+        key: `run-${runId}-${slotPosition}`,
+        kind: "run",
+        batchId: run.batchId,
+        slotPosition,
+        runId,
+        run,
+      });
+    }
+  }
+  for (const group of visibleHistoryFailureGroups.value) {
+    for (const slotPosition of group.positions) {
+      cards.push({
+        key: `history-failure-${group.batchId}-${slotPosition}`,
+        kind: "history-failure",
+        batchId: group.batchId,
+        slotPosition,
+        group,
+      });
+    }
+  }
+  return cards.sort((left, right) => {
+    if (left.batchId === null || right.batchId === null) {
+      if (left.batchId === null && right.batchId !== null) return -1;
+      if (left.batchId !== null && right.batchId === null) return 1;
+      const leftRunId = left.kind === "run" ? left.runId : 0;
+      const rightRunId = right.kind === "run" ? right.runId : 0;
+      if (leftRunId !== rightRunId) return rightRunId - leftRunId;
+    } else if (left.batchId !== right.batchId) {
+      return right.batchId - left.batchId;
+    }
+    return left.slotPosition - right.slotPosition;
+  });
+});
 const selectedAdminUser = computed(() =>
   adminUsers.value.find((user) => user.id === selectedAdminUserId.value) ?? null,
 );
@@ -517,6 +735,7 @@ const runningGenerations = computed<RunningGenerationSummary[]>(() => {
   generationVersion.value;
   const conversations = new Map<string, { id: number; run: GenerationRun }>();
   for (const [id, run] of generationRuns.entries()) {
+    if (run.state !== "running") continue;
     const conversationId = run.conversationId ?? run.taskId;
     const key = conversationId === null ? `run-${id}` : `conversation-${conversationId}`;
     const current = conversations.get(key);
@@ -541,70 +760,187 @@ const selectedProviderType = computed<ApiKeyProvider>(() =>
   selectedConfig.value?.provider_type
     ?? (provider.value === "gemini" ? "gemini" : provider.value === "grok" ? "grok" : "gpt"),
 );
-const normalizedModel = computed(() => model.value.toLowerCase());
-const isGptImage2 = computed(() => normalizedModel.value.startsWith("gpt-image-2"));
-const isGemini31FlashImage = computed(() => normalizedModel.value.includes("gemini-3.1-flash-image"));
-const supportsGeminiResolution = computed(() => (
-  selectedProviderType.value === "gemini"
-  && normalizedModel.value.includes("gemini-3")
-  && !normalizedModel.value.includes("lite-image")
-));
-const supportsGrokQuality = computed(() => (
-  selectedProviderType.value === "grok" && normalizedModel.value === "grok-imagine-image-2.0"
-));
-const geminiAspectRatioOptions = computed<readonly string[]>(() => (
-  isGemini31FlashImage.value
-    ? GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS
-    : GEMINI_ASPECT_RATIO_OPTIONS
-));
-const nativeAspectRatioOptions = computed<readonly string[]>(() => (
-  selectedProviderType.value === "grok" ? GROK_ASPECT_RATIO_OPTIONS : geminiAspectRatioOptions.value
-));
-const resolutionOptions = computed<readonly string[]>(() => (
-  selectedProviderType.value === "grok" ? GROK_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS
-));
-const qualityOptions = computed(() => (
-  supportsGrokQuality.value ? GROK_QUALITY_OPTIONS : QUALITY_OPTIONS
-));
-const gptSizeOptions = computed(() => (
-  isGptImage2.value ? GPT_IMAGE_2_SIZE_OPTIONS : GPT_STANDARD_SIZE_OPTIONS
-));
+const selectedCapability = computed(() => capabilities.value.find(
+  (item) => item.provider_type === selectedProviderType.value && item.model.toLowerCase() === model.value.toLowerCase(),
+) ?? null);
+const nativeAspectRatioOptions = computed(() => selectedCapability.value?.aspect_ratios ?? []);
+const resolutionOptions = computed(() => selectedCapability.value?.resolutions ?? []);
+const qualityOptions = computed(() => selectedCapability.value?.qualities ?? []);
+const gptSizeOptions = computed(() => selectedCapability.value?.sizes ?? []);
 const selectedGptSizeLabel = computed(() => (
   gptSizeOptions.value.find((option) => option.value === size.value)?.label ?? size.value
 ));
-const imageCountOptions = computed<readonly number[]>(() =>
-  selectedProviderType.value === "gemini" ? GEMINI_IMAGE_COUNT_OPTIONS : GPT_IMAGE_COUNT_OPTIONS,
-);
-const maxReferenceImages = computed(() => {
-  if (selectedProviderType.value === "grok") return MAX_GROK_REFERENCE_IMAGES;
-  if (selectedProviderType.value === "gpt") return MAX_GPT_REFERENCE_IMAGES;
-  return normalizedModel.value.includes("gemini-3")
-    ? MAX_GEMINI_REFERENCE_IMAGES
-    : MAX_LEGACY_GEMINI_REFERENCE_IMAGES;
+const imageCountOptions = computed(() => Array.from(
+  { length: selectedCapability.value?.max_output_count ?? 1 },
+  (_, index) => index + 1,
+));
+const maxReferenceImages = computed(() => selectedCapability.value?.max_reference_images ?? 0);
+const hasPersonReferences = computed(() => referencePreviews.value.some((item) => item.category === "person"));
+const hasObjectReferences = computed(() => referencePreviews.value.some((item) => item.category === "object"));
+const selectedMultiViewOptions = computed(() => [
+  ...MULTI_VIEW_PRESETS.filter((preset) => selectedMultiViewKeys.value.includes(preset.key)),
+  ...customMultiViews.value.map((view) => ({
+    key: view.key,
+    label: view.label,
+    instruction: view.label,
+  })),
+]);
+const multiViewValidationMessage = computed(() => {
+  if (!multiViewEnabled.value) return "";
+  if (!hasPersonReferences.value && !hasObjectReferences.value) return "请先添加人物或物品参考图";
+  if (multiViewTarget.value === "person" && !hasPersonReferences.value) return "请先添加人物参考图";
+  if (multiViewTarget.value === "object" && !hasObjectReferences.value) return "请先添加物品参考图";
+  if (selectedMultiViewOptions.value.length === 0) return "请至少选择一个视角";
+  return "";
 });
-watch([selectedProviderType, normalizedModel], () => {
-  imageCount.value = Math.min(imageCount.value, imageCountOptions.value.at(-1) ?? 4);
-  if (selectedProviderType.value === "gpt") {
-    if (!gptSizeOptions.value.some((option) => option.value === size.value)) size.value = DEFAULT_GPT_SIZE;
-  } else if (selectedProviderType.value === "gemini") {
-    const candidate = LEGACY_SIZE_TO_ASPECT_RATIO[size.value] ?? size.value;
-    size.value = geminiAspectRatioOptions.value.includes(candidate) ? candidate : DEFAULT_GEMINI_ASPECT_RATIO;
-  } else if (selectedProviderType.value === "grok") {
-    size.value = GROK_ASPECT_RATIO_OPTIONS.includes(size.value as typeof GROK_ASPECT_RATIO_OPTIONS[number])
-      ? size.value
-      : DEFAULT_GROK_ASPECT_RATIO;
-    if (!GROK_RESOLUTION_OPTIONS.includes(resolution.value as typeof GROK_RESOLUTION_OPTIONS[number])) {
-      resolution.value = DEFAULT_RESOLUTION;
-    }
-    quality.value = supportsGrokQuality.value && GROK_QUALITY_OPTIONS.some((option) => option.value === quality.value)
-      ? quality.value
-      : supportsGrokQuality.value ? "medium" : "auto";
+const canGenerate = computed(() => Boolean(selectedCapability.value)
+  && !generationSubmitting.value
+  && !multiViewValidationMessage.value);
+
+watch([hasPersonReferences, hasObjectReferences], ([hasPerson, hasObject]) => {
+  if (hasPerson && !hasObject) multiViewTarget.value = "person";
+  else if (hasObject && !hasPerson) multiViewTarget.value = "object";
+});
+
+function toggleMultiView() {
+  if (multiViewEnabled.value) {
+    multiViewEnabled.value = false;
+    imageCount.value = Math.min(
+      regularImageCount.value,
+      selectedCapability.value?.max_output_count ?? regularImageCount.value,
+    );
+    regularImageCount.value = imageCount.value;
+    multiViewInputError.value = "";
+    return;
   }
-  const supportedMenus = selectedProviderType.value === "grok"
-    ? ["apiKey", "model", "size", "resolution", ...(supportsGrokQuality.value ? ["quality"] : []), "count"]
-    : selectedProviderType.value === "gemini"
-      ? ["apiKey", "model", "size", ...(supportsGeminiResolution.value ? ["resolution"] : []), "count"]
-      : ["apiKey", "model", "size", "quality", "count"];
+  regularImageCount.value = imageCount.value;
+  multiViewEnabled.value = true;
+  if (hasObjectReferences.value && !hasPersonReferences.value) multiViewTarget.value = "object";
+  else if (hasPersonReferences.value) multiViewTarget.value = "person";
+}
+
+function disableMultiView() {
+  if (multiViewEnabled.value) {
+    imageCount.value = Math.min(
+      regularImageCount.value,
+      selectedCapability.value?.max_output_count ?? regularImageCount.value,
+    );
+    regularImageCount.value = imageCount.value;
+  }
+  multiViewEnabled.value = false;
+  multiViewInputError.value = "";
+}
+
+function toggleMultiViewPreset(key: string) {
+  if (selectedMultiViewKeys.value.includes(key)) {
+    selectedMultiViewKeys.value = selectedMultiViewKeys.value.filter((item) => item !== key);
+    multiViewInputError.value = "";
+    return;
+  }
+  if (selectedMultiViewOptions.value.length >= 8) {
+    multiViewInputError.value = "最多选择 8 个视角";
+    return;
+  }
+  selectedMultiViewKeys.value = [...selectedMultiViewKeys.value, key];
+  multiViewInputError.value = "";
+}
+
+function addCustomMultiView() {
+  const label = customMultiViewInput.value.trim();
+  if (!label) {
+    multiViewInputError.value = "请输入自定义视角";
+    return;
+  }
+  if (label.length > 40) {
+    multiViewInputError.value = "自定义视角最多 40 个字";
+    return;
+  }
+  const normalized = label.toLocaleLowerCase();
+  const duplicate = MULTI_VIEW_PRESETS.some((preset) => preset.label.toLocaleLowerCase() === normalized)
+    || customMultiViews.value.some((view) => view.label.toLocaleLowerCase() === normalized);
+  if (duplicate) {
+    multiViewInputError.value = "这个视角已经存在";
+    return;
+  }
+  if (selectedMultiViewOptions.value.length >= 8) {
+    multiViewInputError.value = "最多选择 8 个视角";
+    return;
+  }
+  const key = `custom_${Date.now().toString(36)}_${customMultiViews.value.length + 1}`;
+  customMultiViews.value = [...customMultiViews.value, { key, label }];
+  customMultiViewInput.value = "";
+  multiViewInputError.value = "";
+}
+
+function removeCustomMultiView(key: string) {
+  customMultiViews.value = customMultiViews.value.filter((view) => view.key !== key);
+  multiViewInputError.value = "";
+}
+
+function buildGenerationViews(basePrompt: string): GenerationViewSpec[] {
+  const targetLabel = multiViewTarget.value === "person" ? "人物主体" : "物品主体";
+  return selectedMultiViewOptions.value.map((view) => {
+    const requirements = [
+      "多视角生成要求：",
+      `- 本张仅展示同一个${targetLabel}的一个独立视角，不要拼图、分镜、文字、多面板或同时展示多个视角。`,
+      "- 同一分类内的多张参考图是同一主体的补充证据，严格保持身份、面部、发型、服装、配饰、材质、颜色和比例一致。",
+      "- 保持原提示词指定的环境、构图尺度、光线和视觉风格，仅改变相机观察方向以及实现该视角所必需的姿态。",
+      `- 当前视角：${view.instruction}。`,
+    ].join("\n");
+    return {
+      key: `${multiViewTarget.value}_${view.key}`,
+      label: view.label,
+      prompt: `${basePrompt}\n\n${requirements}`,
+    };
+  });
+}
+
+function restoreMultiViewState(views: GenerationViewSpec[] | undefined) {
+  if (!views?.length) {
+    disableMultiView();
+    return;
+  }
+  regularImageCount.value = imageCount.value;
+  multiViewEnabled.value = true;
+  const target = views[0].key.startsWith("object_") ? "object" : "person";
+  multiViewTarget.value = target;
+  const prefix = `${target}_`;
+  const presetKeys = new Set(MULTI_VIEW_PRESETS.map((preset) => preset.key));
+  selectedMultiViewKeys.value = [];
+  customMultiViews.value = [];
+  for (const view of views) {
+    const rawKey = view.key.startsWith(prefix) ? view.key.slice(prefix.length) : view.key;
+    if (presetKeys.has(rawKey)) selectedMultiViewKeys.value.push(rawKey);
+    else customMultiViews.value.push({ key: rawKey, label: view.label });
+  }
+  multiViewInputError.value = "";
+}
+watch(selectedCapability, (capability) => {
+  if (!capability) return;
+  imageCount.value = Math.min(imageCount.value, capability.max_output_count);
+  const candidateSize = LEGACY_SIZE_TO_ASPECT_RATIO[size.value] ?? size.value;
+  if (capability.sizes.length) {
+    size.value = capability.sizes.some((option) => option.value === size.value)
+      ? size.value
+      : capability.default_size ?? capability.sizes[0]?.value ?? "";
+  } else {
+    size.value = capability.aspect_ratios.includes(candidateSize)
+      ? candidateSize
+      : capability.default_aspect_ratio ?? capability.aspect_ratios[0] ?? "";
+  }
+  resolution.value = capability.resolutions.includes(resolution.value)
+    ? resolution.value
+    : capability.default_resolution ?? capability.resolutions[0] ?? "";
+  quality.value = capability.qualities.some((option) => option.value === quality.value)
+    ? quality.value
+    : capability.default_quality;
+  const supportedMenus = [
+    "apiKey", "model",
+    ...(capability.sizes.length || capability.aspect_ratios.length ? ["size"] : []),
+    ...(capability.resolutions.length ? ["resolution"] : []),
+    ...(capability.qualities.length ? ["quality"] : []),
+    "count",
+  ];
   if (openParameterMenu.value && !supportedMenus.includes(openParameterMenu.value)) {
     openParameterMenu.value = null;
   }
@@ -614,18 +950,25 @@ const selectedModelLabel = computed(() => model.value);
 const modelOptions = computed(() => {
   if (selectedConfig.value) {
     return availableModels.value.filter(
-      (item) => item.provider_type === selectedConfig.value?.provider_type,
+      (item) => item.provider_type === selectedConfig.value?.provider_type
+        && capabilities.value.some((capability) => capability.provider_type === item.provider_type && capability.model === item.id),
     );
   }
   const providerModels = providers.value.find((item) => item.id === provider.value)?.models;
-  const models = providerModels?.length ? providerModels : MODEL_OPTIONS;
+  const models = providerModels?.length
+    ? providerModels
+    : capabilities.value.filter((item) => item.provider_type === selectedProviderType.value).map((item) => item.model);
   return models.map((id) => ({
     id,
-    provider_type: provider.value === "gemini" ? "gemini" : "gpt",
+    provider_type: selectedProviderType.value,
   })) ?? [];
 });
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 const CLIENT_VERSION = (import.meta.env.VITE_APP_VERSION ?? "dev").trim() || "dev";
+
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return window.fetch(input, { credentials: "include", ...init });
+}
 const versionActionLabel = computed(() => {
   if (updateStatus.value === "checking") return "检查中...";
   if (updateStatus.value === "current") return "已是最新版本";
@@ -654,6 +997,7 @@ function readableError(data: any, fallback: string) {
     username_taken: "用户名已存在",
     legacy_password_required: "旧账号需使用原密码绑定邮箱",
     verification_code_cooldown: "验证码发送过于频繁，请稍后重试",
+    auth_rate_limited: "请求过于频繁，请稍后重试",
     smtp_not_configured: "邮件服务尚未配置",
     email_delivery_failed: "验证码邮件发送失败",
     admin_required: "需要管理员权限",
@@ -685,7 +1029,7 @@ async function checkForUpdate() {
   updateStatus.value = "checking";
   serverVersion.value = "";
   try {
-    const response = await fetch(`${API_BASE}/api/version?t=${Date.now()}`, {
+    const response = await apiFetch(`${API_BASE}/api/version?t=${Date.now()}`, {
       cache: "no-store",
     });
     const data = await parseJsonResponse(response);
@@ -717,6 +1061,19 @@ function promptWithAnalysis(currentPrompt: string, analysisText?: string | null)
   return `${currentPrompt.trimEnd()}\n\n${result}`;
 }
 
+function promptImageCount(value: string) {
+  const match = value.match(/(?:生成|绘制|输出|创建)[^\n]{0,8}?(\d+|一|两|二|三|四)\s*(?:张|幅|个)/);
+  if (!match) return 1;
+  const chineseCounts: Record<string, number> = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4 };
+  return chineseCounts[match[1]] ?? Number(match[1]);
+}
+
+function expectedGenerationImageCount(requestPrompt: string, prompts: string[], count: number) {
+  const effectivePrompts = prompts.length ? prompts : [requestPrompt];
+  const perPrompt = count > 1 ? count : Math.max(count, ...effectivePrompts.map(promptImageCount));
+  return effectivePrompts.length * perPrompt;
+}
+
 async function submitAuth(mode: "login" | "register") {
   authError.value = "";
   if (authSubmitting.value) return;
@@ -741,7 +1098,7 @@ async function submitAuth(mode: "login" | "register") {
     : { email: email.value.trim(), password: password.value };
   authSubmitting.value = true;
   try {
-    const response = await fetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await apiFetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await parseJsonResponse(response);
     if (!response.ok) { authError.value = readableError(data, "登录失败"); return; }
     applyCurrentUser(data);
@@ -750,7 +1107,9 @@ async function submitAuth(mode: "login" | "register") {
     verificationCode.value = "";
     authView.value = "workspace";
     if (currentView.value === "admin" && !currentIsAdmin.value) navigateToWorkspace();
-    await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
+    await loadProviders();
+    await loadRuntimeSettings();
+    await loadProjects(true);
     if (currentView.value === "admin") await loadAdminUsers();
   } catch {
     authError.value = "无法连接服务器";
@@ -764,6 +1123,7 @@ function applyCurrentUser(data: any) {
   currentEmail.value = String(data?.email ?? "");
   profileUsername.value = currentUsername.value;
   currentIsAdmin.value = Boolean(data?.is_admin);
+  restoreWorkspaceSelection();
 }
 
 function startVerificationCooldown(seconds: number) {
@@ -786,7 +1146,7 @@ async function sendVerificationCode() {
   }
   verificationSending.value = true;
   try {
-    const response = await fetch(`${API_BASE}/api/auth/verification-code`, {
+    const response = await apiFetch(`${API_BASE}/api/auth/verification-code`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email.value.trim() }),
@@ -807,20 +1167,20 @@ async function sendVerificationCode() {
 }
 
 async function logout() {
-  await fetch(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "include" });
-  authView.value = "login";
-  history.value = [];
-  currentUsername.value = "";
-  currentEmail.value = "";
-  profileUsername.value = "";
-  profileStatus.value = "";
-  currentIsAdmin.value = false;
-  adminUsers.value = [];
-  adminUsage.value = [];
+  try {
+    await apiFetch(`${API_BASE}/api/auth/logout`, { method: "POST" });
+  } finally {
+    resetAccountWorkspace();
+    currentUsername.value = "";
+    currentEmail.value = "";
+    profileUsername.value = "";
+    profileStatus.value = "";
+    currentIsAdmin.value = false;
+    authView.value = "login";
+  }
 }
 
 function navigateToSettings() {
-  projectDrawerOpen.value = false;
   window.history.pushState({}, "", "/settings");
   currentView.value = "settings";
   settingsApiKey.value = "";
@@ -829,17 +1189,15 @@ function navigateToSettings() {
 }
 
 function navigateToWorkspace() {
-  projectDrawerOpen.value = false;
   window.history.pushState({}, "", "/");
   currentView.value = "workspace";
   if (activeGenerationRunId.value !== null) {
-    restoreGenerationRun(activeGenerationRunId.value);
+    void restoreGenerationRun(activeGenerationRunId.value);
   }
 }
 
 async function navigateToAdmin() {
   if (!currentIsAdmin.value) return;
-  projectDrawerOpen.value = false;
   window.history.pushState({}, "", "/admin");
   currentView.value = "admin";
   await loadAdminUsers();
@@ -855,7 +1213,7 @@ async function loadAdminUsers(page = adminPage.value) {
     if (adminPage.value > 1) parameters.set("page", String(adminPage.value));
     if (adminSearch.value.trim()) parameters.set("search", adminSearch.value.trim());
     const query = parameters.size ? `?${parameters.toString()}` : "";
-    const response = await fetch(`${API_BASE}/api/admin/users${query}`, { credentials: "include" });
+    const response = await apiFetch(`${API_BASE}/api/admin/users${query}`);
     const data = await parseJsonResponse(response);
     if (!response.ok) throw new Error(readableError(data, "无法加载用户信息"));
     const legacyItems = Array.isArray(data) ? data as AdminUser[] : null;
@@ -899,7 +1257,7 @@ function changeAdminPage(page: number) {
 
 async function loadAdminUsage(userId: number) {
   adminError.value = "";
-  const response = await fetch(`${API_BASE}/api/admin/users/${userId}/usage`, { credentials: "include" });
+  const response = await apiFetch(`${API_BASE}/api/admin/users/${userId}/usage`);
   const data = await parseJsonResponse(response);
   if (!response.ok) {
     adminError.value = readableError(data, "无法加载使用记录");
@@ -924,7 +1282,7 @@ async function resetAdminUserPassword() {
   adminResetting.value = true;
   adminResetStatus.value = "";
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE}/api/admin/users/${selectedAdminUserId.value}/reset-password`,
       {
         method: "POST",
@@ -978,7 +1336,7 @@ function closeParameterMenu() {
 }
 
 async function persistConfigModel(config: ApiKeyConfig, value: string) {
-  const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}`, {
+  const response = await apiFetch(`${API_BASE}/api/settings/api-keys/${config.id}`, {
     method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -993,49 +1351,79 @@ async function persistConfigModel(config: ApiKeyConfig, value: string) {
   return savedModel;
 }
 
-async function loadConfigModels(config: ApiKeyConfig) {
+async function loadConfigModels(config: ApiKeyConfig, selectionVersion: number) {
+  const isCurrentSelection = () => (
+    selectionVersion === apiKeySelectionVersion
+    && activeApiKeyConfigId.value === config.id
+  );
+  if (!isCurrentSelection()) return;
   availableModels.value = [];
   model.value = config.model;
+  loadingConfigModels.value = false;
   if (!config.api_key_configured) return;
   loadingConfigModels.value = true;
   try {
-    const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}/models`, { credentials: "include" });
+    const response = await apiFetch(`${API_BASE}/api/settings/api-keys/${config.id}/models`);
     const data = await parseJsonResponse(response);
     if (!response.ok) throw new Error(readableError(data, "无法获取模型列表"));
     const models = (data?.models ?? []) as DiscoveredModel[];
+    if (!isCurrentSelection()) return;
     availableModels.value = models.filter((item) => item.provider_type === config.provider_type);
     if (availableModels.value.length && !availableModels.value.some((item) => item.id === config.model)) {
-      model.value = availableModels.value[0].id;
+      const fallbackModel = availableModels.value[0].id;
+      model.value = fallbackModel;
       try {
-        model.value = await persistConfigModel(config, model.value);
+        const savedModel = await persistConfigModel(config, fallbackModel);
+        if (isCurrentSelection()) model.value = savedModel;
       } catch (exception) {
-        error.value = exception instanceof Error ? exception.message : "保存模型失败";
+        if (isCurrentSelection()) {
+          error.value = exception instanceof Error ? exception.message : "保存模型失败";
+        }
       }
     }
   } catch {
+    if (!isCurrentSelection()) return;
     availableModels.value = [{ id: config.model, provider_type: config.provider_type }];
     model.value = config.model;
   } finally {
-    loadingConfigModels.value = false;
+    if (isCurrentSelection()) loadingConfigModels.value = false;
   }
 }
 
 async function selectApiKeyConfig(selected: ApiKeyConfig) {
   if (legacySettingsMode.value) return;
+  const selectionVersion = ++apiKeySelectionVersion;
   activeApiKeyConfigId.value = selected.id;
   model.value = selected.model;
+  loadingConfigModels.value = false;
   provider.value = selected.provider_type === "gemini"
     ? "gemini"
     : selected.provider_type === "grok" ? "grok" : "compatible";
   apiKeyConfigured.value = selected.api_key_configured;
-  await fetch(`${API_BASE}/api/settings/active`, {
-    method: "PUT",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config_id: selected.id }),
+  const selection = apiKeySelectionQueue.then(async () => {
+    const response = await apiFetch(`${API_BASE}/api/settings/active`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config_id: selected.id }),
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(readableError(data, "切换 API Key 失败"));
+    if (selectionVersion !== apiKeySelectionVersion) return;
+    await loadConfigModels(selected, selectionVersion);
+    if (selectionVersion === apiKeySelectionVersion) closeParameterMenu();
   });
-  await loadConfigModels(selected);
-  closeParameterMenu();
+  apiKeySelectionQueue = selection.catch(() => undefined);
+  try {
+    await selection;
+  } catch (exception) {
+    if (selectionVersion !== apiKeySelectionVersion) return;
+    error.value = exception instanceof Error ? exception.message : "切换 API Key 失败";
+    try {
+      await loadRuntimeSettings();
+    } catch {
+      // Keep the actionable activation error when the recovery request also fails.
+    }
+  }
 }
 
 function historyProviderType(item: Pick<HistorySummary, "provider" | "model">): ApiKeyProvider {
@@ -1047,28 +1435,29 @@ function historyProviderType(item: Pick<HistorySummary, "provider" | "model">): 
 }
 
 function supportedSizeFor(providerType: ApiKeyProvider, modelId: string, value?: string | null) {
-  if (providerType === "grok") {
-    return GROK_ASPECT_RATIO_OPTIONS.includes(value as typeof GROK_ASPECT_RATIO_OPTIONS[number])
-      ? value ?? DEFAULT_GROK_ASPECT_RATIO
-      : DEFAULT_GROK_ASPECT_RATIO;
+  const capability = capabilities.value.find(
+    (item) => item.provider_type === providerType && item.model.toLowerCase() === modelId.toLowerCase(),
+  );
+  if (!capability) return "";
+  const candidate = value ? LEGACY_SIZE_TO_ASPECT_RATIO[value] ?? value : null;
+  if (capability.sizes.length) {
+    return capability.sizes.some((option) => option.value === candidate)
+      ? candidate ?? ""
+      : capability.default_size ?? capability.sizes[0]?.value ?? "";
   }
-  if (providerType === "gemini") {
-    const candidate = value ? LEGACY_SIZE_TO_ASPECT_RATIO[value] ?? value : DEFAULT_GEMINI_ASPECT_RATIO;
-    const options: readonly string[] = modelId.toLowerCase().includes("gemini-3.1-flash-image")
-      ? GEMINI_31_FLASH_ASPECT_RATIO_OPTIONS
-      : GEMINI_ASPECT_RATIO_OPTIONS;
-    return options.includes(candidate) ? candidate : DEFAULT_GEMINI_ASPECT_RATIO;
-  }
-  const candidate = value ?? DEFAULT_GPT_SIZE;
-  const options = modelId.toLowerCase().startsWith("gpt-image-2")
-    ? GPT_IMAGE_2_SIZE_OPTIONS
-    : GPT_STANDARD_SIZE_OPTIONS;
-  return options.some((option) => option.value === candidate) ? candidate : DEFAULT_GPT_SIZE;
+  return capability.aspect_ratios.includes(candidate ?? "")
+    ? candidate ?? ""
+    : capability.default_aspect_ratio ?? capability.aspect_ratios[0] ?? "";
 }
 
-function supportedResolutionFor(providerType: ApiKeyProvider, value?: string | null) {
-  const options: readonly string[] = providerType === "grok" ? GROK_RESOLUTION_OPTIONS : RESOLUTION_OPTIONS;
-  return options.includes(value ?? "") ? value ?? DEFAULT_RESOLUTION : DEFAULT_RESOLUTION;
+function supportedResolutionFor(providerType: ApiKeyProvider, modelId: string, value?: string | null) {
+  const capability = capabilities.value.find(
+    (item) => item.provider_type === providerType && item.model.toLowerCase() === modelId.toLowerCase(),
+  );
+  if (!capability?.resolutions.length) return "";
+  return capability.resolutions.includes(value ?? "")
+    ? value ?? ""
+    : capability.default_resolution ?? capability.resolutions[0] ?? "";
 }
 
 async function restoreHistoryApiConfig(
@@ -1077,9 +1466,9 @@ async function restoreHistoryApiConfig(
 ) {
   if (legacySettingsMode.value) {
     provider.value = item.provider;
-    model.value = (MODEL_OPTIONS as readonly string[]).includes(item.model)
+    model.value = capabilities.value.some((capability) => capability.provider_type === "gpt" && capability.model === item.model)
       ? item.model
-      : DEFAULT_MODEL;
+      : capabilities.value.find((capability) => capability.provider_type === "gpt")?.model ?? "";
     return;
   }
 
@@ -1145,13 +1534,14 @@ function selectQuality(value: string) {
 
 function selectImageCount(value: number) {
   imageCount.value = value;
+  regularImageCount.value = value;
   closeParameterMenu();
 }
 
 async function saveSettingsApiKey() {
   if (!legacySettingsMode.value) return;
   const apiKey = settingsApiKey.value.trim() || null;
-  const response = await fetch(`${API_BASE}/api/settings`, {
+  const response = await apiFetch(`${API_BASE}/api/settings`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -1165,9 +1555,10 @@ async function saveSettingsApiKey() {
 
 async function changePassword() {
   if (newPassword.value.length < 6 || newPassword.value !== newPasswordConfirmation.value) { authError.value = "新密码至少 6 位且两次输入一致"; return; }
-  const response = await fetch(`${API_BASE}/api/auth/password`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_password: oldPassword.value, new_password: newPassword.value, new_password_confirmation: newPasswordConfirmation.value }) });
+  const response = await apiFetch(`${API_BASE}/api/auth/password`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_password: oldPassword.value, new_password: newPassword.value, new_password_confirmation: newPasswordConfirmation.value }) });
   if (!response.ok) { authError.value = readableError(await parseJsonResponse(response), "修改密码失败"); return; }
   oldPassword.value = newPassword.value = newPasswordConfirmation.value = "";
+  resetAccountWorkspace();
   authView.value = "login";
 }
 
@@ -1181,7 +1572,7 @@ async function updateProfile() {
   if (nextUsername === currentUsername.value || profileSaving.value) return;
   profileSaving.value = true;
   try {
-    const response = await fetch(`${API_BASE}/api/auth/profile`, {
+    const response = await apiFetch(`${API_BASE}/api/auth/profile`, {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1207,7 +1598,7 @@ async function submitFeedback() {
   feedbackStatus.value = "正在提交留言...";
   feedbackSubmitting.value = true;
   try {
-    const response = await fetch(`${API_BASE}/api/feedback`, {
+    const response = await apiFetch(`${API_BASE}/api/feedback`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1226,7 +1617,8 @@ async function submitFeedback() {
 }
 
 async function loadRuntimeSettings() {
-  const response = await fetch(`${API_BASE}/api/settings`);
+  const selectionVersion = ++apiKeySelectionVersion;
+  const response = await apiFetch(`${API_BASE}/api/settings`);
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载运行时配置"));
   const hasConfigsField = Object.prototype.hasOwnProperty.call(data, "configs");
@@ -1234,15 +1626,17 @@ async function loadRuntimeSettings() {
   legacySettingsMode.value = !hasConfigsField;
   apiKeyConfigs.value = hasConfigsField
     ? configs
-    : MODEL_OPTIONS.map((item, index) => ({ id: 0 - index, alias: item, provider_type: "gpt", model: item, api_key_configured: Boolean(data.api_key_configured) }));
+    : capabilities.value.filter((capability) => capability.provider_type === "gpt").map((capability, index) => ({ id: 0 - index, alias: capability.label, provider_type: "gpt", model: capability.model, api_key_configured: Boolean(data.api_key_configured) }));
   activeApiKeyConfigId.value = configs.length ? (data.active_config_id ?? configs[0].id) : null;
   const active = configs.find((item) => item.id === activeApiKeyConfigId.value);
-  model.value = active?.model ?? ((MODEL_OPTIONS as readonly string[]).includes(data.model) ? data.model : DEFAULT_MODEL);
+  model.value = active?.model ?? (capabilities.value.some((capability) => capability.provider_type === "gpt" && capability.model === data.model)
+    ? data.model
+    : capabilities.value.find((capability) => capability.provider_type === "gpt")?.model ?? "");
   if (active) {
     provider.value = active.provider_type === "gemini"
       ? "gemini"
       : active.provider_type === "grok" ? "grok" : "compatible";
-    await loadConfigModels(active);
+    await loadConfigModels(active, selectionVersion);
   } else {
     availableModels.value = [];
   }
@@ -1252,7 +1646,7 @@ async function loadRuntimeSettings() {
 function resetConfigForm() {
   editingConfigId.value = null;
   showConfigForm.value = false;
-  configForm.value = { alias: "", api_key: "", provider_type: null, model: DEFAULT_MODEL };
+  configForm.value = { alias: "", api_key: "", provider_type: null, model: "" };
   settingsConfigError.value = "";
 }
 
@@ -1281,7 +1675,7 @@ async function discoverConfigModels() {
   discoveringModels.value = true;
   settingsConfigError.value = "";
   try {
-    const response = await fetch(`${API_BASE}/api/settings/api-keys/models`, {
+    const response = await apiFetch(`${API_BASE}/api/settings/api-keys/models`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1311,7 +1705,7 @@ async function testConfig(config: ApiKeyConfig) {
     [config.id]: { message: "正在测试 API Key...", models: [] },
   };
   try {
-    const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}/test`, { method: "POST", credentials: "include" });
+    const response = await apiFetch(`${API_BASE}/api/settings/api-keys/${config.id}/test`, { method: "POST" });
     const data = await parseJsonResponse(response);
     apiKeyTestResults.value = {
       ...apiKeyTestResults.value,
@@ -1365,7 +1759,7 @@ async function saveConfig() {
   }
   const editing = editingConfigId.value !== null;
   const body = JSON.stringify({ alias: form.alias, api_key: form.api_key, provider_type: providerType });
-  let response = await fetch(`${API_BASE}/api/settings/api-keys${editing ? `/${editingConfigId.value}` : ""}`, {
+  let response = await apiFetch(`${API_BASE}/api/settings/api-keys${editing ? `/${editingConfigId.value}` : ""}`, {
     method: editing ? "PATCH" : "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -1373,7 +1767,7 @@ async function saveConfig() {
   });
   let data = await parseJsonResponse(response);
   if (editing && response.status === 404 && apiErrorCode(data) === "api_key_config_not_found") {
-    response = await fetch(`${API_BASE}/api/settings/api-keys`, {
+    response = await apiFetch(`${API_BASE}/api/settings/api-keys`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1395,7 +1789,7 @@ async function deleteConfig(config: ApiKeyConfig) {
 }
 
 async function deleteConfigNow(config: ApiKeyConfig) {
-  const response = await fetch(`${API_BASE}/api/settings/api-keys/${config.id}`, { method: "DELETE", credentials: "include" });
+  const response = await apiFetch(`${API_BASE}/api/settings/api-keys/${config.id}`, { method: "DELETE" });
   if (!response.ok) {
     settingsConfigError.value = readableError(await parseJsonResponse(response), "删除配置失败");
     return;
@@ -1404,10 +1798,11 @@ async function deleteConfigNow(config: ApiKeyConfig) {
 }
 
 async function loadProviders() {
-  const response = await fetch(`${API_BASE}/api/providers`);
+  const response = await apiFetch(`${API_BASE}/api/providers`);
   const data = await response.json();
   if (!response.ok) throw new Error(readableError(data, "无法加载服务商"));
   providers.value = data.providers ?? [];
+  capabilities.value = Array.isArray(data.capabilities) ? data.capabilities : [];
   provider.value = selectedConfig.value?.provider_type === "gemini"
     ? "gemini"
     : selectedConfig.value?.provider_type === "grok"
@@ -1417,7 +1812,7 @@ async function loadProviders() {
 
 async function loadHistory() {
   try {
-    const response = await fetch(`${API_BASE}/api/history`);
+    const response = await apiFetch(`${API_BASE}/api/history`);
     const data = await response.json();
     if (!response.ok) throw new Error(readableError(data, "无法加载历史记录"));
     history.value = data;
@@ -1450,7 +1845,7 @@ function fetchHistoryDetail(historyId: number) {
   const cached = historyDetailCache.get(historyId);
   if (cached) return cached;
   const request = (async () => {
-    const response = await fetch(`${API_BASE}/api/history/${historyId}`, { credentials: "include" });
+    const response = await apiFetch(`${API_BASE}/api/history/${historyId}`);
     const data = await parseJsonResponse(response);
     if (!response.ok) throw new Error(readableError(data, "无法加载历史详情"));
     const detail = data as HistoryDetail;
@@ -1481,17 +1876,31 @@ async function openHistory(historyId: number) {
     const data = await fetchHistoryDetail(historyId);
     if (openVersion !== historyOpenVersion) return;
 
+    const project = projects.value.find((candidate) => candidate.history.some((item) => item.id === historyId));
+    if (project) {
+      selectedProjectId.value = project.id;
+      history.value = project.history;
+    }
     activeHistoryId.value = historyId;
     currentConversationId.value = data.kind === "generate" ? historyId : null;
+    persistWorkspaceSelection();
     prompt.value = promptWithAnalysis(data.prompt, data.analysis_text);
-    if (QUALITY_OPTIONS.some((option) => option.value === data.detail)) {
+    const providerType = historyProviderType(data);
+    const capability = capabilities.value.find((item) => item.provider_type === providerType && item.model.toLowerCase() === data.model.toLowerCase());
+    if (capability?.qualities.some((option) => option.value === data.detail)) {
       quality.value = data.detail;
     }
-    const providerType = historyProviderType(data);
     size.value = supportedSizeFor(providerType, data.model, data.size);
-    resolution.value = supportedResolutionFor(providerType, data.resolution);
-    imageCount.value = Math.min(providerType === "gemini" ? 4 : 10, Math.max(1, data.image_count));
+    resolution.value = supportedResolutionFor(providerType, data.model, data.resolution);
+    const latestBatch = data.batches?.at(-1);
+    rememberHistoryViews(data);
+    restoreMultiViewState(latestBatch?.views);
+    if (!latestBatch?.views?.length) {
+      imageCount.value = Math.min(capability?.max_output_count ?? 1, Math.max(1, data.image_count));
+      regularImageCount.value = imageCount.value;
+    }
     generated.value = historyImages(data);
+    restoreHistoryFailureGroups(data);
 
     clearReferencePreviews();
     referencePreviews.value = data.images
@@ -1517,15 +1926,70 @@ async function openHistory(historyId: number) {
   }
 }
 
-async function loadProjects() {
+async function loadProjects(restoreWorkspace = false) {
+  const restoreStoredSelection = restoreWorkspace && hasStoredWorkspaceSelection;
+  const storedProjectId = selectedProjectId.value;
+  const storedConversationId = currentConversationId.value;
   try {
-    const response = await fetch(`${API_BASE}/api/projects`);
+    const response = await apiFetch(`${API_BASE}/api/projects`);
     const data = await response.json();
     if (!response.ok) throw new Error("无法加载项目");
     projects.value = Array.isArray(data) ? data : [];
-    if (!projects.value.some((project) => project.id === selectedProjectId.value)) selectedProjectId.value = projects.value[0]?.id ?? null;
+    const storedConversationProject = storedConversationId === null
+      ? null
+      : projects.value.find((project) => project.history.some((item) => item.id === storedConversationId)) ?? null;
+    const storedProjectExists = projects.value.some((project) => project.id === storedProjectId);
+    const restoredProjectId = storedProjectExists
+      ? storedProjectId
+      : storedConversationProject?.id ?? projects.value[0]?.id ?? null;
+    const restoredConversationId = storedConversationProject?.id === restoredProjectId
+      ? storedConversationId
+      : null;
+    if (restoreStoredSelection) {
+      selectedProjectId.value = restoredProjectId;
+      currentConversationId.value = restoredConversationId;
+    } else if (!projects.value.some((project) => project.id === selectedProjectId.value)) {
+      selectedProjectId.value = projects.value[0]?.id ?? null;
+    }
     history.value = projects.value.find((project) => project.id === selectedProjectId.value)?.history ?? [];
-    restorePendingGenerationTasks();
+    await restorePendingGenerationTasks(restoreWorkspace && !restoreStoredSelection);
+    const activeConversationIds = new Set(
+      [...generationRuns.values()]
+        .filter((run) => run.state === "running")
+        .map((run) => run.conversationId)
+        .filter((id): id is number => id !== null),
+    );
+    if (restoreStoredSelection) {
+      selectedProjectId.value = restoredProjectId;
+      history.value = projects.value.find((project) => project.id === selectedProjectId.value)?.history ?? [];
+      currentConversationId.value = restoredConversationId;
+      if (restoredConversationId !== null) {
+        const selectedHistory = history.value.find((item) => item.id === restoredConversationId);
+        if (selectedHistory?.kind === "generate" && activeConversationIds.has(restoredConversationId)) {
+          const activeRun = [...generationRuns.entries()]
+            .filter(([, run]) => run.state === "running" && run.conversationId === restoredConversationId)
+            .sort(([, left], [, right]) => right.startedAt - left.startedAt)[0];
+          if (activeRun) await restoreGenerationRun(activeRun[0]);
+        } else if (selectedHistory?.kind === "generate") {
+          await openHistory(selectedHistory.id);
+        } else {
+          currentConversationId.value = null;
+          persistWorkspaceSelection();
+        }
+      } else {
+        activeGenerationRunId.value = null;
+        activeHistoryId.value = null;
+        persistWorkspaceSelection();
+      }
+    } else if (restoreWorkspace && currentConversationId.value !== null && !activeConversationIds.has(currentConversationId.value)) {
+      const selectedHistory = history.value.find((item) => item.id === currentConversationId.value);
+      if (selectedHistory?.kind === "generate") {
+        await openHistory(selectedHistory.id);
+      } else if (selectedHistory == null) {
+        currentConversationId.value = null;
+        persistWorkspaceSelection();
+      }
+    }
     projectError.value = "";
   } catch (exception) {
     projectError.value = exception instanceof Error ? exception.message : "无法加载项目";
@@ -1538,14 +2002,59 @@ async function refreshConversationLists() {
 
 function clearWorkspace() {
   generated.value = [];
+  historyFailureGroups.value = [];
   activeHistoryId.value = null;
   currentConversationId.value = null;
   prompt.value = "";
   batchPrompts.value = "";
+  disableMultiView();
+  selectedMultiViewKeys.value = [...DEFAULT_MULTI_VIEW_KEYS];
+  customMultiViews.value = [];
+  customMultiViewInput.value = "";
   clearReferencePreviews();
+  persistWorkspaceSelection();
 }
 
-function restoreGenerationRun(runId: number) {
+function resetAccountWorkspace() {
+  discardGenerationRuns(() => true);
+  generated.value = [];
+  historyFailureGroups.value = [];
+  history.value = [];
+  projects.value = [];
+  selectedProjectId.value = null;
+  activeHistoryId.value = null;
+  currentConversationId.value = null;
+  activeGenerationRunId.value = null;
+  prompt.value = "";
+  batchPrompts.value = "";
+  disableMultiView();
+  selectedMultiViewKeys.value = [...DEFAULT_MULTI_VIEW_KEYS];
+  customMultiViews.value = [];
+  customMultiViewInput.value = "";
+  generationBatchViews.value = {};
+  clearReferencePreviews();
+  lightboxUrl.value = "";
+  openParameterMenu.value = null;
+  historyDetailCache.clear();
+  for (const image of historyImagePreloads.values()) image.src = "";
+  historyImagePreloads.clear();
+  apiKeyConfigs.value = [];
+  activeApiKeyConfigId.value = null;
+  availableModels.value = [];
+  discoveredModels.value = [];
+  apiKeyConfigured.value = false;
+  generationSubmitting.value = false;
+  busy.value = "";
+  error.value = "";
+  historyError.value = "";
+  projectError.value = "";
+  adminUsers.value = [];
+  adminUsage.value = [];
+  selectedAdminUserId.value = null;
+  generationVersion.value++;
+}
+
+async function restoreGenerationRun(runId: number) {
   const run = generationRuns.get(runId);
   if (!run) return;
 
@@ -1568,7 +2077,12 @@ function restoreGenerationRun(runId: number) {
   }
   prompt.value = run.prompt;
   batchPrompts.value = run.batchPrompts;
-  imageCount.value = run.imageCount;
+  restoreMultiViewState(run.views);
+  if (!run.views.length) {
+    imageCount.value = run.imageCount;
+    regularImageCount.value = imageCount.value;
+  }
+  rememberGenerationBatchViews(run.batchId, run.views);
   quality.value = run.quality;
   size.value = run.size;
   resolution.value = run.resolution;
@@ -1581,20 +2095,58 @@ function restoreGenerationRun(runId: number) {
   }));
   generated.value = run.images;
   error.value = run.error;
+  persistWorkspaceSelection();
   generationVersion.value++;
+
+  const conversationId = run.conversationId ?? run.taskId;
+  if (conversationId === null) return;
+  try {
+    const detail = await fetchHistoryDetail(conversationId);
+    const stillShowingConversation = currentConversationId.value === conversationId && activeHistoryId.value === null;
+    if (activeGenerationRunId.value !== runId && !stillShowingConversation) return;
+    const hydratedImages = historyImages(detail);
+    run.images = mergeImageResults(hydratedImages, run.images);
+    generated.value = mergeImageResults(hydratedImages, generated.value);
+    restoreHistoryFailureGroups(detail);
+    clearReferencePreviews();
+    referencePreviews.value = detail.images
+      .filter((image) => image.role === "reference")
+      .sort((left, right) => left.position - right.position)
+      .map((image) => ({
+        key: `restored-${image.id}`,
+        category: image.reference_category ?? "person",
+        name: image.filename ?? `历史参考图 ${image.position + 1}`,
+        url: resourceUrl(image.url),
+        file: null,
+      }));
+    preloadHistoryImages(detail);
+    generationVersion.value++;
+  } catch {
+    // Keep the in-memory images when history hydration is temporarily unavailable.
+  }
 }
 
 function selectProject(projectId: number) {
+  const previousProjectId = selectedProjectId.value;
   selectedProjectId.value = projectId;
   const selectedHistory = projects.value.find((project) => project.id === projectId)?.history ?? [];
   history.value = selectedHistory;
+  const conversationBelongsToProject = currentConversationId.value !== null
+    && selectedHistory.some((item) => item.id === currentConversationId.value);
+  if (previousProjectId !== projectId && !conversationBelongsToProject) {
+    historyOpenVersion++;
+    activeGenerationRunId.value = null;
+    clearWorkspace();
+    history.value = selectedHistory;
+  }
+  persistWorkspaceSelection();
   const firstCompleted = selectedHistory.find((item) => item.status === "completed");
   if (firstCompleted) prefetchHistory(firstCompleted.id);
 }
 
 async function submitCreateProject(name: string) {
   if (!name) return;
-  const response = await fetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  const response = await apiFetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   if (!response.ok) { projectError.value = "创建项目失败"; return; }
   const data = await response.json();
   await loadProjects();
@@ -1603,23 +2155,26 @@ async function submitCreateProject(name: string) {
 
 async function submitRenameProject(project: ProjectSummary, name: string) {
   if (!name || name === project.name) return;
-  const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  const response = await apiFetch(`${API_BASE}/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   if (!response.ok) { projectError.value = "重命名项目失败"; return; }
   await loadProjects();
 }
 
 async function submitDeleteProject(project: ProjectSummary) {
-  const response = await fetch(`${API_BASE}/api/projects/${project.id}`, { method: "DELETE" });
+  const response = await apiFetch(`${API_BASE}/api/projects/${project.id}`, { method: "DELETE" });
   if (!response.ok) { projectError.value = "删除项目失败"; return; }
   const data = await response.json();
+  discardGenerationRuns((run) => run.projectId === project.id);
   selectedProjectId.value = data.selected_project_id;
   await loadProjects();
   clearWorkspace();
 }
 
 async function submitDeleteHistory(project: ProjectSummary, ids: number[]) {
-  const response = await fetch(`${API_BASE}/api/projects/${project.id}/history`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ history_ids: ids }) });
+  const response = await apiFetch(`${API_BASE}/api/projects/${project.id}/history`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ history_ids: ids }) });
   if (!response.ok) { projectError.value = "删除历史记录失败"; return; }
+  const deletedIds = new Set(ids);
+  discardGenerationRuns((run) => run.conversationId !== null && deletedIds.has(run.conversationId));
   for (const id of ids) historyDetailCache.delete(id);
   if (ids.includes(activeHistoryId.value ?? -1) || ids.includes(currentConversationId.value ?? -1)) clearWorkspace();
   await loadProjects();
@@ -1666,10 +2221,23 @@ function cancelConfirm() {
   confirmProject.value = null;
   confirmHistoryIds.value = [];
   confirmConfig.value = null;
+  confirmImage.value = null;
 }
 
 async function confirmDeletion() {
   if (actionBusy.value || !confirmAction.value) return;
+  if (confirmAction.value === "image") {
+    if (!confirmImage.value) return;
+    const target = confirmImage.value;
+    actionBusy.value = true;
+    try {
+      await deleteGeneratedImage(target.item, target.slotPosition);
+    } finally {
+      actionBusy.value = false;
+      cancelConfirm();
+    }
+    return;
+  }
   if (confirmAction.value === "api-key") {
     if (!confirmConfig.value) return;
     actionBusy.value = true;
@@ -1700,6 +2268,7 @@ function startNewConversation(projectId: number) {
   historyOpenVersion++;
   activeGenerationRunId.value = null;
   clearWorkspace();
+  persistWorkspaceSelection();
   if (currentView.value !== "workspace") navigateToWorkspace();
 }
 
@@ -1710,16 +2279,14 @@ async function applyRuntimeSettings() {
   error.value = "";
   const save = settingsSaveQueue.then(async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/settings`, {
+      const response = await apiFetch(`${API_BASE}/api/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: submittedModel, api_key: null }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(readableError(data, "配置应用失败"));
-      model.value = (MODEL_OPTIONS as readonly string[]).includes(data.model)
-        ? data.model
-        : DEFAULT_MODEL;
+      model.value = data.model;
       apiKeyConfigured.value = Boolean(data.api_key_configured);
       await loadProviders();
     } catch (exception) {
@@ -1834,7 +2401,7 @@ function clearReferencePreviews() {
 async function referenceFilesForRequest() {
   return Promise.all(referencePreviews.value.map(async (preview, index) => {
     if (preview.file) return preview.file;
-    const response = await fetch(preview.url, { credentials: "include" });
+    const response = await apiFetch(preview.url);
     if (!response.ok) throw new Error(`无法读取参考图片 ${index + 1}`);
     const blob = await response.blob();
     const file = new File([blob], preview.name || `reference-${index + 1}`, {
@@ -1862,7 +2429,7 @@ function formatHistoryTime(value: string) {
 function startGenerationRun(
   runId: number,
   controller: AbortController,
-  snapshot: Omit<GenerationRun, "controller" | "startedAt" | "elapsedMs" | "timer" | "images" | "error">,
+  snapshot: Omit<GenerationRun, "controller" | "startedAt" | "elapsedMs" | "timer" | "images" | "failureCount" | "error" | "state" | "deletedPositions" | "cancelledPositions">,
   initialElapsedMs = 0,
   activate = true,
 ) {
@@ -1871,7 +2438,11 @@ function startGenerationRun(
     startedAt: performance.now() - initialElapsedMs,
     elapsedMs: initialElapsedMs,
     images: [],
+    failureCount: 0,
     error: "",
+    state: "running",
+    deletedPositions: new Set<number>(),
+    cancelledPositions: new Set<number>(),
     ...snapshot,
   };
   run.timer = window.setInterval(() => {
@@ -1892,12 +2463,84 @@ function stopGenerationRun(runId: number) {
   generationVersion.value++;
 }
 
-function attachGenerationTask(runId: number, taskId: number, batchId: number | null) {
+function discardGenerationRuns(predicate: (run: GenerationRun) => boolean) {
+  for (const [runId, run] of [...generationRuns.entries()]) {
+    if (!predicate(run)) continue;
+    run.controller.abort();
+    stopGenerationRun(runId);
+  }
+  if (activeGenerationRunId.value !== null && !generationRuns.has(activeGenerationRunId.value)) {
+    activeGenerationRunId.value = null;
+  }
+}
+
+function failGenerationRun(
+  runId: number,
+  message: string,
+  historyId?: number,
+  state: "failed" | "cancelled" = "failed",
+  failureCount?: number,
+) {
+  const run = generationRuns.get(runId);
+  if (!run) return;
+  if (run.timer !== undefined) window.clearInterval(run.timer);
+  run.timer = undefined;
+  run.elapsedMs = performance.now() - run.startedAt;
+  run.polling = false;
+  run.error = message;
+  run.state = state;
+  run.failureCount = failureCount ?? run.imageCount;
+  if (historyId !== undefined) run.conversationId = historyId;
+  generationVersion.value++;
+}
+
+function retainMissingGenerationSlots(
+  runId: number,
+  generatedCount: number,
+  expectedCount?: number,
+  historyId?: number,
+) {
+  const run = generationRuns.get(runId);
+  if (!run) return false;
+  const requestedCount = Math.max(
+    0,
+    (expectedCount ?? run.imageCount) - run.deletedPositions.size - run.cancelledPositions.size,
+  );
+  const missingCount = Math.max(0, requestedCount - generatedCount);
+  if (missingCount === 0) return false;
+  failGenerationRun(
+    runId,
+    `本次请求 ${requestedCount} 张，服务商只返回 ${generatedCount} 张，其余 ${missingCount} 张生成失败`,
+    historyId,
+    "failed",
+    missingCount,
+  );
+  return true;
+}
+
+function attachGenerationTask(
+  runId: number,
+  taskId: number,
+  batchId: number | null,
+  historyId?: number,
+  taskApi = false,
+) {
   const run = generationRuns.get(runId);
   if (!run) return null;
   run.taskId = taskId;
   run.batchId = batchId;
-  run.conversationId = taskId;
+  rememberGenerationBatchViews(batchId, run.views);
+  run.taskApi = taskApi;
+  run.conversationId = historyId ?? taskId;
+  if (run.batchId !== null && run.conversationId !== null) {
+    for (const position of run.deletedPositions) {
+      void persistGenerationSlotDeletion(run.conversationId, run.batchId, position).catch((exception) => {
+        run.deletedPositions.delete(position);
+        error.value = exception instanceof Error ? exception.message : "删除卡片失败";
+        generationVersion.value++;
+      });
+    }
+  }
   generationVersion.value++;
   return run;
 }
@@ -1941,7 +2584,43 @@ function historyImages(data: HistoryDetail): ImageResult[] {
       history_id: data.id,
       history_image_id: image.id,
       batch_id: image.batch_id,
+      batch_position: image.batch_position,
     }));
+}
+
+function restoreHistoryFailureGroups(data: HistoryDetail) {
+  rememberHistoryViews(data);
+  historyFailureGroups.value = (data.batches ?? []).flatMap((batch) => {
+    if (batch.status === "pending") return [];
+    const deletedPositions = new Set(batch.deleted_positions ?? []);
+    const cancelledPositions = new Set(batch.cancelled_positions ?? []);
+    const generatedPositions = new Set(
+      data.images
+        .filter((image) => image.role === "generated" && image.batch_id === batch.id)
+        .map((image, index) => image.batch_position ?? index),
+    );
+    const positions = Array.from({ length: batch.image_count }, (_, position) => position)
+      .filter((position) => !deletedPositions.has(position)
+        && !cancelledPositions.has(position)
+        && !generatedPositions.has(position));
+    const groups: HistoryFailureGroup[] = [];
+    if (positions.length === 0) return groups;
+    const cancelled = batch.error_code?.includes("cancel") ?? false;
+    const message = batch.error_message
+      || (batch.status === "completed"
+        ? `本次请求 ${batch.image_count} 张，服务商只返回 ${batch.generated_count} 张，其余 ${positions.length} 张生成失败`
+        : cancelled ? "生成任务已取消" : "生成失败");
+    groups.push({
+      historyId: data.id,
+      batchId: batch.id,
+      positions,
+      message,
+      state: cancelled ? "cancelled" as const : "failed" as const,
+      elapsedMs: batch.elapsed_ms,
+      views: batch.views ?? [],
+    });
+    return groups;
+  });
 }
 
 function latestBatchImages(data: HistoryDetail): ImageResult[] {
@@ -1960,6 +2639,7 @@ function latestBatchImages(data: HistoryDetail): ImageResult[] {
       history_id: data.id,
       history_image_id: image.id,
       batch_id: image.batch_id,
+      batch_position: image.batch_position,
     }));
 }
 
@@ -1972,17 +2652,33 @@ function generationBatchImages(data: GenerationBatchDetail): ImageResult[] {
       history_id: data.history_id,
       history_image_id: image.id,
       batch_id: image.batch_id,
+      batch_position: image.batch_position,
     }));
 }
 
-async function deleteGeneratedImage(item: ImageResult) {
+function syncGenerationTaskProgress(run: GenerationRun, task: GenerationTaskDetail) {
+  run.deletedPositions = new Set(task.deleted_positions ?? []);
+  run.cancelledPositions = new Set(task.cancelled_positions ?? []);
+  const images = (task.images ?? []).map((image) => ({
+    url: resourceUrl(image.url),
+    history_id: task.history_id,
+    history_image_id: image.id,
+    batch_id: image.batch_id,
+    batch_position: image.batch_position,
+  }));
+  run.images = mergeImageResults(run.images, images);
+  appendConversationImages(task.history_id, images);
+  historyDetailCache.delete(task.history_id);
+}
+
+async function deleteGeneratedImage(item: ImageResult, slotPosition?: number) {
   const historyId = item.history_id;
   const imageId = item.history_image_id;
   if (historyId == null || imageId == null || deletingImageIds.value.includes(imageId)) return;
 
   deletingImageIds.value = [...deletingImageIds.value, imageId];
   try {
-    const response = await fetch(`${API_BASE}/api/history/${historyId}/images/${imageId}`, {
+    const response = await apiFetch(`${API_BASE}/api/history/${historyId}/images/${imageId}`, {
       method: "DELETE",
       credentials: "include",
     });
@@ -1993,6 +2689,19 @@ async function deleteGeneratedImage(item: ImageResult) {
     generated.value = generated.value.filter((image) => image.history_image_id !== imageId);
     for (const run of generationRuns.values()) {
       run.images = run.images.filter((image) => image.history_image_id !== imageId);
+      if (item.batch_id != null && run.batchId === item.batch_id && slotPosition != null) {
+        run.deletedPositions.add(slotPosition);
+      }
+    }
+    if (item.batch_id != null && slotPosition != null) {
+      for (const group of historyFailureGroups.value) {
+        if (group.batchId === item.batch_id) {
+          group.positions = group.positions.filter((position) => position !== slotPosition);
+        }
+      }
+      historyFailureGroups.value = historyFailureGroups.value.filter(
+        (group) => group.positions.length > 0,
+      );
     }
     if (source && lightboxUrl.value === source) lightboxUrl.value = "";
     generationVersion.value++;
@@ -2006,6 +2715,100 @@ async function deleteGeneratedImage(item: ImageResult) {
   }
 }
 
+function requestGeneratedImageDeletion(item: ImageResult, slotPosition?: number) {
+  confirmImage.value = { item, slotPosition };
+  confirmAction.value = "image";
+}
+
+function generationSlotKey(historyId: number, batchId: number, position: number) {
+  return `${historyId}-${batchId}-${position}`;
+}
+
+async function persistGenerationSlotDeletion(
+  historyId: number,
+  batchId: number,
+  position: number,
+) {
+  const key = generationSlotKey(historyId, batchId, position);
+  if (deletingSlotKeys.value.includes(key)) return;
+  deletingSlotKeys.value = [...deletingSlotKeys.value, key];
+  try {
+    const response = await apiFetch(
+      `${API_BASE}/api/history/${historyId}/batches/${batchId}/slots/${position}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      throw new Error(readableError(await parseJsonResponse(response), "删除卡片失败"));
+    }
+    historyDetailCache.delete(historyId);
+  } finally {
+    deletingSlotKeys.value = deletingSlotKeys.value.filter((item) => item !== key);
+  }
+}
+
+async function deleteGenerationRunSlot(runId: number, position: number) {
+  const run = generationRuns.get(runId);
+  if (!run || run.deletedPositions.has(position)) return;
+  run.deletedPositions.add(position);
+  generationVersion.value++;
+  if (run.conversationId === null || run.batchId === null) return;
+  try {
+    await persistGenerationSlotDeletion(run.conversationId, run.batchId, position);
+    error.value = "";
+  } catch (exception) {
+    run.deletedPositions.delete(position);
+    error.value = exception instanceof Error ? exception.message : "删除卡片失败";
+    generationVersion.value++;
+  }
+}
+
+async function cancelGenerationRunSlot(runId: number, position: number) {
+  const run = generationRuns.get(runId);
+  if (!run || run.state !== "running" || run.cancelledPositions.has(position)) return;
+  if (run.conversationId === null || run.batchId === null) return;
+  const key = `run-${runId}-${position}`;
+  if (cancellingSlotKeys.value.includes(key)) return;
+
+  run.cancelledPositions.add(position);
+  cancellingSlotKeys.value = [...cancellingSlotKeys.value, key];
+  generationVersion.value++;
+  try {
+    const response = await apiFetch(
+      `${API_BASE}/api/history/${run.conversationId}/batches/${run.batchId}/slots/${position}/cancel`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!response.ok) {
+      throw new Error(readableError(await parseJsonResponse(response), "取消当前图片失败"));
+    }
+    historyDetailCache.delete(run.conversationId);
+    error.value = "";
+  } catch (exception) {
+    run.cancelledPositions.delete(position);
+    error.value = exception instanceof Error ? exception.message : "取消当前图片失败";
+    generationVersion.value++;
+  } finally {
+    cancellingSlotKeys.value = cancellingSlotKeys.value.filter((item) => item !== key);
+  }
+}
+
+async function deleteHistoryFailureSlot(group: HistoryFailureGroup, position: number) {
+  const historyId = group.historyId;
+  const key = generationSlotKey(historyId, group.batchId, position);
+  if (deletingSlotKeys.value.includes(key)) return;
+  try {
+    await persistGenerationSlotDeletion(historyId, group.batchId, position);
+    group.positions = group.positions.filter((item) => item !== position);
+    historyFailureGroups.value = historyFailureGroups.value.filter(
+      (item) => item.positions.length > 0,
+    );
+    generationVersion.value++;
+    await refreshConversationLists();
+    error.value = "";
+  } catch (exception) {
+    error.value = exception instanceof Error ? exception.message : "删除卡片失败";
+  }
+}
+
 async function modifyGeneratedImage(item: ImageResult) {
   const historyId = item.history_id;
   const imageId = item.history_image_id;
@@ -2013,23 +2816,27 @@ async function modifyGeneratedImage(item: ImageResult) {
 
   modifyingImageIds.value = [...modifyingImageIds.value, imageId];
   try {
-    const response = await fetch(`${API_BASE}/api/history/${historyId}/images/${imageId}/edit`, {
+    const response = await apiFetch(`${API_BASE}/api/history/${historyId}/images/${imageId}/edit`, {
       credentials: "include",
     });
     const data = await parseJsonResponse(response);
     if (!response.ok) throw new Error(readableError(data, "无法恢复图片参数"));
     const snapshot = data as HistoryImageEditSnapshot;
 
+    disableMultiView();
     prompt.value = snapshot.prompt;
     batchPrompts.value = "";
-    quality.value = QUALITY_OPTIONS.some((option) => option.value === snapshot.detail)
-      ? snapshot.detail
-      : "auto";
     const snapshotProviderType = historyProviderType(snapshot);
+    const snapshotCapability = capabilities.value.find((item) => item.provider_type === snapshotProviderType && item.model.toLowerCase() === snapshot.model.toLowerCase());
+    quality.value = snapshotCapability?.qualities.some((option) => option.value === snapshot.detail)
+      ? snapshot.detail
+      : snapshotCapability?.default_quality ?? "auto";
     size.value = supportedSizeFor(snapshotProviderType, snapshot.model, snapshot.size);
-    resolution.value = supportedResolutionFor(snapshotProviderType, snapshot.resolution);
-    imageCount.value = Math.min(snapshotProviderType === "gemini" ? 4 : 10, Math.max(1, snapshot.image_count));
+    resolution.value = supportedResolutionFor(snapshotProviderType, snapshot.model, snapshot.resolution);
+    imageCount.value = Math.min(snapshotCapability?.max_output_count ?? 1, Math.max(1, snapshot.image_count));
+    regularImageCount.value = imageCount.value;
     currentConversationId.value = snapshot.history_id;
+    persistWorkspaceSelection();
 
     clearReferencePreviews();
     referencePreviews.value = [...snapshot.references]
@@ -2085,68 +2892,178 @@ async function pollGenerationTask(runId: number) {
       if (!run) return;
       if (run.taskId === null) return;
       try {
-        const statusPath = run.batchId === null
-          ? `/api/history/${run.taskId}`
-          : `/api/history/${run.taskId}/batches/${run.batchId}`;
-        const response = await fetch(`${API_BASE}${statusPath}`, {
+        if (!run.taskApi) {
+          const legacyPath = run.batchId === null ? `/api/history/${run.taskId}` : `/api/history/${run.taskId}/batches/${run.batchId}`;
+          const legacyResponse = await apiFetch(`${API_BASE}${legacyPath}`, { signal: run.controller.signal });
+          const legacyData = await parseJsonResponse(legacyResponse);
+          if (!legacyResponse.ok) throw new Error(readableError(legacyData, `无法查询生成任务（HTTP ${legacyResponse.status}）`));
+          const detail = legacyData as HistoryDetail | GenerationBatchDetail;
+          transientFailures = 0;
+          run.error = "";
+          if (detail.status === "pending") { await pollDelay(run.controller.signal, 1500); continue; }
+          if (detail.status === "completed") {
+            run.images = run.batchId === null ? latestBatchImages(detail as HistoryDetail) : generationBatchImages(detail as GenerationBatchDetail);
+            appendConversationImages(run.conversationId ?? run.taskId, run.images);
+            const completedBatch = "history_id" in detail
+              ? detail
+              : detail.batches?.find((batch) => batch.id === run.batchId) ?? detail.batches?.at(-1);
+            run.deletedPositions = new Set(completedBatch?.deleted_positions ?? []);
+            run.cancelledPositions = new Set(completedBatch?.cancelled_positions ?? []);
+            const hasMissingImages = retainMissingGenerationSlots(
+              runId,
+              completedBatch?.generated_count ?? run.images.length,
+              completedBatch?.image_count ?? detail.image_count ?? run.imageCount,
+              run.conversationId ?? run.taskId,
+            );
+            if (!hasMissingImages) {
+              stopGenerationRun(runId);
+              if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
+            }
+          } else {
+            const failedBatch = "history_id" in detail
+              ? detail
+              : detail.batches?.find((batch) => batch.id === run.batchId) ?? detail.batches?.at(-1);
+            const partialImages = "history_id" in detail
+              ? generationBatchImages(detail as GenerationBatchDetail)
+              : run.batchId === null
+                ? latestBatchImages(detail as HistoryDetail)
+                : historyImages(detail as HistoryDetail).filter((image) => image.batch_id === run.batchId);
+            if (partialImages.length) {
+              run.images = partialImages;
+              appendConversationImages(run.conversationId ?? run.taskId, partialImages);
+            }
+            failGenerationRun(
+              runId,
+              detail.error_message || "生成失败",
+              run.conversationId ?? run.taskId,
+              "failed",
+              Math.max(1, (failedBatch?.image_count ?? run.imageCount) - (failedBatch?.generated_count ?? partialImages.length)),
+            );
+          }
+          return;
+        }
+        const taskResponse = await apiFetch(`${API_BASE}/api/generation-tasks/${run.taskId}`, {
           credentials: "include",
           signal: run.controller.signal,
         });
-        const data = await parseJsonResponse(response);
-        if (!response.ok) {
-          if (response.status >= 500 && transientFailures < 5) {
-            transientFailures++;
-            await pollDelay(run.controller.signal, 2500);
-            continue;
-          }
-          throw new Error(readableError(data, `无法查询生成任务（HTTP ${response.status}）`));
+        const taskData = await parseJsonResponse(taskResponse) as GenerationTaskDetail | null;
+        if (!taskResponse.ok) {
+          if (taskResponse.status === 404) { run.taskApi = false; continue; }
+          throw new Error(readableError(taskData, `无法查询生成任务（HTTP ${taskResponse.status}）`));
         }
-        const detail = data as HistoryDetail | GenerationBatchDetail;
-        transientFailures = 0;
-        if (detail.status === "pending") {
+        if (!taskData) throw new Error("服务返回了无效任务状态");
+        if (taskData.batch_id != null) run.batchId = taskData.batch_id;
+        if (taskData.views?.length) run.views = taskData.views;
+        rememberGenerationBatchViews(run.batchId, run.views);
+        if (Array.isArray(taskData.deleted_positions)) {
+          run.deletedPositions = new Set(taskData.deleted_positions);
+        }
+        if (Array.isArray(taskData.cancelled_positions)) {
+          run.cancelledPositions = new Set(taskData.cancelled_positions);
+        }
+        if (["queued", "running"].includes(taskData.status)) {
+          transientFailures = 0;
+          run.error = "";
+          if (taskData.status === "running") {
+            syncGenerationTaskProgress(run, taskData);
+          }
           await pollDelay(run.controller.signal, 1500);
           continue;
         }
+        if (taskData.status === "failed" || taskData.status === "cancelled") {
+          const message = taskData.error_message
+            || (taskData.status === "cancelled" ? "生成任务已取消" : "生成任务失败");
+          let failureCount = taskData.image_count ?? run.imageCount;
+          if (run.batchId !== null) {
+            try {
+              const batchResponse = await apiFetch(
+                `${API_BASE}/api/history/${taskData.history_id}/batches/${run.batchId}`,
+                { credentials: "include", signal: run.controller.signal },
+              );
+              const batchDetail = await parseJsonResponse(batchResponse) as GenerationBatchDetail;
+              if (batchResponse.ok) {
+                if (batchDetail.views?.length) run.views = batchDetail.views;
+                rememberGenerationBatchViews(run.batchId, run.views);
+                run.deletedPositions = new Set(batchDetail.deleted_positions ?? []);
+                run.cancelledPositions = new Set(batchDetail.cancelled_positions ?? []);
+                run.images = generationBatchImages(batchDetail);
+                appendConversationImages(taskData.history_id, run.images);
+                failureCount = Math.max(1, batchDetail.image_count - batchDetail.generated_count);
+              }
+            } catch (exception) {
+              if (exception instanceof DOMException && exception.name === "AbortError") return;
+            }
+          }
+          failGenerationRun(
+            runId,
+            message,
+            taskData.history_id,
+            taskData.status === "cancelled" ? "cancelled" : "failed",
+            failureCount,
+          );
+          await refreshConversationLists();
+          return;
+        }
+        const detailPath = run.batchId === null ? `/api/history/${taskData.history_id}` : `/api/history/${taskData.history_id}/batches/${run.batchId}`;
+        const detailResponse = await apiFetch(`${API_BASE}${detailPath}`, { signal: run.controller.signal });
+        const detail = await parseJsonResponse(detailResponse) as HistoryDetail | GenerationBatchDetail;
+        if (!detailResponse.ok) throw new Error(readableError(detail, "无法查询生成结果"));
+        if ("history_id" in detail) {
+          if (detail.views?.length) run.views = detail.views;
+          rememberGenerationBatchViews(run.batchId, run.views);
+          run.deletedPositions = new Set(detail.deleted_positions ?? []);
+          run.cancelledPositions = new Set(detail.cancelled_positions ?? []);
+        }
 
         if (run.batchId === null) {
-          historyDetailCache.set(run.taskId, Promise.resolve(detail as HistoryDetail));
+          historyDetailCache.set(taskData.history_id, Promise.resolve(detail as HistoryDetail));
         } else {
-          historyDetailCache.delete(run.taskId);
+          historyDetailCache.delete(taskData.history_id);
         }
+        transientFailures = 0;
+        run.error = "";
         if (detail.status === "completed") {
           run.images = run.batchId === null
             ? latestBatchImages(detail as HistoryDetail)
             : generationBatchImages(detail as GenerationBatchDetail);
           if (run.batchId === null) preloadHistoryImages(detail as HistoryDetail);
-          appendConversationImages(run.taskId, run.images);
-          if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
+          appendConversationImages(taskData.history_id, run.images);
+          if (currentConversationId.value === taskData.history_id && activeHistoryId.value === null) {
             error.value = "";
           }
-        } else {
-          run.error = detail.error_message || "生成失败";
-          if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
-            error.value = run.error;
+          const completedBatch = "history_id" in detail
+            ? detail
+            : detail.batches?.find((batch) => batch.id === run.batchId) ?? detail.batches?.at(-1);
+          run.deletedPositions = new Set(completedBatch?.deleted_positions ?? []);
+          run.cancelledPositions = new Set(completedBatch?.cancelled_positions ?? []);
+          const hasMissingImages = retainMissingGenerationSlots(
+            runId,
+            completedBatch?.generated_count ?? run.images.length,
+            completedBatch?.image_count ?? detail.image_count ?? run.imageCount,
+            taskData.history_id,
+          );
+          if (!hasMissingImages) {
+            stopGenerationRun(runId);
+            if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
           }
+        } else {
+          failGenerationRun(runId, detail.error_message || "生成失败", taskData.history_id);
         }
-        stopGenerationRun(runId);
-        if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
         await refreshConversationLists();
         return;
       } catch (exception) {
         if (exception instanceof DOMException && exception.name === "AbortError") return;
         transientFailures++;
-        if (transientFailures <= 5) {
-          await pollDelay(run.controller.signal, 2500);
-          continue;
-        }
         const message = exception instanceof Error ? exception.message : "无法查询生成任务";
-        run.error = message;
-        if (currentConversationId.value === run.taskId && activeHistoryId.value === null) {
-          error.value = message;
-        }
-        stopGenerationRun(runId);
-        if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
-        return;
+        run.error = transientFailures > 5
+          ? `暂时无法同步生成进度，正在重试：${message}`
+          : message;
+        generationVersion.value++;
+        const retryDelay = transientFailures <= 5
+          ? 2500
+          : Math.min(15000, 2500 * 2 ** Math.min(transientFailures - 5, 3));
+        await pollDelay(run.controller.signal, retryDelay);
+        continue;
       }
     }
   } finally {
@@ -2161,13 +3078,123 @@ function pendingElapsedMs(createdAt: string) {
   return Number.isFinite(createdAtMs) ? Math.max(0, Date.now() - createdAtMs) : 0;
 }
 
-function restorePendingGenerationTasks() {
+async function restorePendingGenerationTasks(activateFirst = true) {
+  let activeTasks: GenerationTaskDetail[] | null = null;
+  try {
+    const response = await apiFetch(`${API_BASE}/api/generation-tasks`);
+    if (response.ok) {
+      const data = await parseJsonResponse(response);
+      activeTasks = Array.isArray(data) ? data as GenerationTaskDetail[] : [];
+    }
+  } catch {
+    // Older servers do not expose the task list; fall back to pending history records below.
+  }
+  if (activeTasks !== null) {
+    const historyById = new Map<number, HistorySummary>();
+    for (const project of projects.value) {
+      for (const item of project.history) historyById.set(item.id, item);
+    }
+    let activatedTask = false;
+    for (const task of activeTasks) {
+      const item = historyById.get(task.history_id);
+      if (!item || [...generationRuns.values()].some((run) => run.taskId === task.id && run.state === "running")) continue;
+      const project = projects.value.find((candidate) => candidate.id === task.project_id)
+        ?? projects.value.find((candidate) => candidate.history.some((historyItem) => historyItem.id === task.history_id));
+      const taskProvider = task.provider ?? item.provider;
+      const taskModel = task.model ?? item.model;
+      const providerType = historyProviderType({ provider: taskProvider, model: taskModel });
+      const matchingConfig = apiKeyConfigs.value.find(
+        (config) => config.id === task.api_key_config_id,
+      ) ?? apiKeyConfigs.value.find(
+        (config) => config.provider_type === providerType && config.model === taskModel,
+      );
+      const activateTask = activateFirst && !activatedTask;
+      startGenerationRun(
+        task.id,
+        new AbortController(),
+        {
+          taskId: task.id,
+          batchId: task.batch_id ?? null,
+          conversationId: task.history_id,
+          polling: false,
+          taskApi: true,
+          projectId: project?.id ?? null,
+          provider: taskProvider,
+          model: taskModel,
+          apiKeyConfigId: matchingConfig?.id ?? null,
+          prompt: task.prompt ?? item.prompt,
+          batchPrompts: "",
+          views: task.views ?? [],
+          imageCount: task.image_count ?? item.image_count,
+          quality: task.detail ?? item.detail,
+          size: supportedSizeFor(providerType, taskModel, task.size ?? item.size),
+          resolution: supportedResolutionFor(providerType, taskModel, task.resolution ?? item.resolution),
+          referenceFiles: [],
+        },
+        pendingElapsedMs(task.created_at ?? item.created_at),
+        activateTask,
+      );
+      const restoredRun = generationRuns.get(task.id);
+      if (restoredRun) {
+        restoredRun.deletedPositions = new Set(task.deleted_positions ?? []);
+        restoredRun.cancelledPositions = new Set(task.cancelled_positions ?? []);
+      }
+      if (activateTask) {
+        activatedTask = true;
+        if (project) {
+          selectedProjectId.value = project.id;
+          history.value = project.history;
+        }
+        const run = generationRuns.get(task.id);
+        if (run) {
+          try {
+            const detail = await fetchHistoryDetail(task.history_id);
+            run.images = historyImages(detail);
+            generated.value = [...run.images];
+            restoreHistoryFailureGroups(detail);
+            referencePreviews.value = detail.images
+              .filter((image) => image.role === "reference")
+              .sort((left, right) => left.position - right.position)
+              .map((image) => ({
+                key: `restored-${image.id}`,
+                category: image.reference_category ?? "person",
+                name: image.filename ?? `历史参考图 ${image.position + 1}`,
+                url: resourceUrl(image.url),
+                file: null,
+              }));
+            preloadHistoryImages(detail);
+          } catch {
+            generated.value = [];
+          }
+          provider.value = run.provider;
+          model.value = run.model;
+          activeApiKeyConfigId.value = run.apiKeyConfigId;
+          prompt.value = run.prompt;
+          restoreMultiViewState(run.views);
+          if (!run.views.length) {
+            imageCount.value = run.imageCount;
+            regularImageCount.value = imageCount.value;
+          }
+          rememberGenerationBatchViews(run.batchId, run.views);
+          quality.value = run.quality;
+          size.value = run.size;
+          resolution.value = run.resolution;
+        }
+        currentConversationId.value = task.history_id;
+        activeHistoryId.value = null;
+        persistWorkspaceSelection();
+        generationVersion.value++;
+      }
+      void pollGenerationTask(task.id);
+    }
+    return;
+  }
   for (const project of projects.value) {
     for (const item of project.history) {
       if (
         item.kind !== "generate"
         || item.status !== "pending"
-        || [...generationRuns.values()].some((run) => run.taskId === item.id)
+        || [...generationRuns.values()].some((run) => run.taskId === item.id && run.state === "running")
       ) continue;
       const providerType = historyProviderType(item);
       const matchingConfig = apiKeyConfigs.value.find(
@@ -2181,18 +3208,18 @@ function restorePendingGenerationTasks() {
           batchId: null,
           conversationId: item.id,
           polling: false,
+          taskApi: false,
           projectId: project.id,
           provider: item.provider,
           model: item.model,
           apiKeyConfigId: matchingConfig?.id ?? null,
           prompt: item.prompt,
           batchPrompts: "",
+          views: [],
           imageCount: item.image_count,
           quality: item.detail,
           size: supportedSizeFor(providerType, item.model, item.size),
-          resolution: RESOLUTION_OPTIONS.includes(item.resolution as typeof RESOLUTION_OPTIONS[number])
-            ? item.resolution ?? DEFAULT_RESOLUTION
-            : DEFAULT_RESOLUTION,
+          resolution: supportedResolutionFor(providerType, item.model, item.resolution),
           referenceFiles: [],
         },
         pendingElapsedMs(item.created_at),
@@ -2209,17 +3236,54 @@ async function generateImage() {
     error.value = "请先配置 API Key 和模型名称";
     return;
   }
-  const prompts = batchPrompts.value
+  const capability = selectedCapability.value;
+  if (!capability) {
+    error.value = "当前模型未登记，无法生成图片";
+    return;
+  }
+  if (multiViewValidationMessage.value) {
+    error.value = multiViewValidationMessage.value;
+    return;
+  }
+  const prompts = (multiViewEnabled.value ? "" : batchPrompts.value)
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
-  const requestPrompt = prompt.value.trim() || prompts[0] || "请生成一张图片";
+  const requestPrompt = prompt.value.trim()
+    || prompts[0]
+    || (multiViewEnabled.value ? "基于参考图，在同一场景中展示同一主体" : "请生成一张图片");
+  const generationViews = multiViewEnabled.value ? buildGenerationViews(requestPrompt) : [];
+  if (generationViews.some((view) => view.prompt.length > 4000)) {
+    error.value = "加入多视角要求后提示词超过 4000 字，请缩短提示词";
+    return;
+  }
   const generationProvider = provider.value;
   const generationModel = model.value;
   const generationConfigId = activeApiKeyConfigId.value;
   const generationProjectId = selectedProjectId.value;
-  const generationConversationId = currentConversationId.value;
-  const generationImageCount = imageCount.value;
+  const selectedProject = projects.value.find((project) => project.id === generationProjectId);
+  const activeConversationBelongsToProject = currentConversationId.value !== null
+    && [...generationRuns.values()].some(
+      (run) => run.conversationId === currentConversationId.value && run.projectId === generationProjectId,
+    );
+  const generationConversationId = currentConversationId.value !== null
+    && (selectedProject?.history.some((item) => item.id === currentConversationId.value)
+      || activeConversationBelongsToProject)
+    ? currentConversationId.value
+    : null;
+  const generationImageCount = multiViewEnabled.value ? 1 : imageCount.value;
+  const generationExpectedImageCount = generationViews.length
+    || expectedGenerationImageCount(requestPrompt, prompts, generationImageCount);
+  if (generationExpectedImageCount > 40) {
+    error.value = "单次生成任务最多支持 40 张图片";
+    return;
+  }
+  const perPromptImageCount = generationExpectedImageCount
+    / Math.max(1, generationViews.length || prompts.length || 1);
+  if (perPromptImageCount > capability.max_output_count) {
+    error.value = `当前模型每条提示词最多支持 ${capability.max_output_count} 张图片`;
+    return;
+  }
   const generationQuality = quality.value;
   const generationSize = size.value;
   const generationResolution = resolution.value;
@@ -2234,12 +3298,13 @@ async function generateImage() {
     file,
     category: referencePreviews.value[index]?.category ?? "person",
   }));
+  if (multiViewEnabled.value && !generationReferenceSnapshots.some(
+    (reference) => reference.category === multiViewTarget.value,
+  )) {
+    error.value = multiViewTarget.value === "person" ? "请先添加人物参考图" : "请先添加物品参考图";
+    return;
+  }
   const generationProviderType = selectedProviderType.value;
-  const generationSupportsGeminiResolution = generationProviderType === "gemini"
-    && generationModel.toLowerCase().includes("gemini-3")
-    && !generationModel.toLowerCase().includes("lite-image");
-  const generationSupportsGrokQuality = generationProviderType === "grok"
-    && generationModel.toLowerCase() === "grok-imagine-image-2.0";
   if (generationReferenceFiles.length > maxReferenceImages.value) {
     error.value = `当前模型最多支持 ${maxReferenceImages.value} 张参考图`;
     return;
@@ -2252,13 +3317,15 @@ async function generateImage() {
     batchId: null,
     conversationId: generationConversationId,
     polling: false,
+    taskApi: false,
     projectId: generationProjectId,
     provider: generationProvider,
     model: generationModel,
     apiKeyConfigId: generationConfigId,
     prompt: requestPrompt,
     batchPrompts: batchPrompts.value,
-    imageCount: generationImageCount,
+    views: generationViews,
+    imageCount: generationExpectedImageCount,
     quality: generationQuality,
     size: generationSize,
     resolution: generationResolution,
@@ -2281,17 +3348,18 @@ async function generateImage() {
       form.append("model", generationModel);
       form.append("prompt", requestPrompt);
       form.append("count", String(generationImageCount));
-      if (generationProviderType === "gemini") {
+      if (capability.sizes.length) {
         form.append("size", generationSize);
+      } else if (capability.aspect_ratios.length) {
         form.append("aspect_ratio", generationSize);
-        if (generationSupportsGeminiResolution) form.append("resolution", generationResolution);
-      } else if (generationProviderType === "grok") {
-        form.append("aspect_ratio", generationSize);
+      }
+      if (capability.resolutions.length) {
         form.append("resolution", generationResolution);
-        if (generationSupportsGrokQuality) form.append("detail", generationQuality);
-      } else if (generationProviderType === "gpt") {
-        form.append("size", generationSize);
+      }
+      if (capability.qualities.length) {
         form.append("detail", generationQuality);
+      }
+      if (generationProviderType === "gpt") {
         form.append("output_format", "png");
         form.append("background", "auto");
         form.append("moderation", "auto");
@@ -2299,7 +3367,8 @@ async function generateImage() {
       if (generationConfigId !== null) form.append("api_key_config_id", String(generationConfigId));
       if (generationProjectId !== null) form.append("project_id", String(generationProjectId));
       if (generationConversationId !== null) form.append("conversation_id", String(generationConversationId));
-      for (const batchPrompt of prompts) form.append("prompts", batchPrompt);
+      if (generationViews.length) form.append("views", JSON.stringify(generationViews));
+      else for (const batchPrompt of prompts) form.append("prompts", batchPrompt);
       for (const reference of generationReferenceSnapshots) {
         form.append("images", reference.file);
         form.append("image_categories", reference.category);
@@ -2315,50 +3384,56 @@ async function generateImage() {
           model: generationModel,
           ...(generationConfigId !== null ? { api_key_config_id: generationConfigId } : {}),
           prompt: requestPrompt,
-          prompts: prompts.length ? prompts : null,
+          ...(generationViews.length ? { views: generationViews } : { prompts: prompts.length ? prompts : null }),
           count: generationImageCount,
-          ...(generationProviderType === "gpt" ? {
-            detail: generationQuality,
+          ...(capability.sizes.length ? {
             size: generationSize,
+          } : {}),
+          ...(capability.aspect_ratios.length ? {
+            aspect_ratio: generationSize,
+          } : {}),
+          ...(capability.resolutions.length ? {
+            resolution: generationResolution,
+          } : {}),
+          ...(capability.qualities.length ? {
+            detail: generationQuality,
+          } : {}),
+          ...(generationProviderType === "gpt" ? {
             output_format: "png",
             background: "auto",
             moderation: "auto",
-          } : {}),
-          ...(generationProviderType === "gemini" ? {
-            size: generationSize,
-            aspect_ratio: generationSize,
-            ...(generationSupportsGeminiResolution ? { resolution: generationResolution } : {}),
-          } : {}),
-          ...(generationProviderType === "grok" ? {
-            aspect_ratio: generationSize,
-            resolution: generationResolution,
-            ...(generationSupportsGrokQuality ? { detail: generationQuality } : {}),
           } : {}),
           project_id: generationProjectId,
           ...(generationConversationId !== null ? { conversation_id: generationConversationId } : {}),
         }),
       };
     }
-    const response = await fetch(endpoint, requestInit);
+    const response = await apiFetch(endpoint, requestInit);
     const data = await parseJsonResponse(response);
     if (!response.ok) {
       throw new Error(readableError(data, `生成失败（HTTP ${response.status}）`));
     }
     if (!data) throw new Error("服务返回了无效响应");
     const taskId = Number(data.task_id);
+    const historyId = Number(data.history_id ?? taskId);
     if (Number.isInteger(taskId) && taskId > 0) {
       const rawBatchId = Number(data.batch_id);
       const batchId = Number.isInteger(rawBatchId) && rawBatchId > 0 ? rawBatchId : null;
-      if (!attachGenerationTask(runId, taskId, batchId)) return;
-      currentConversationId.value = taskId;
-      generationSubmitting.value = false;
+      const taskApi = typeof data.status_url === "string"
+        && data.status_url.startsWith("/api/generation-tasks/");
+      if (!attachGenerationTask(runId, taskId, batchId, historyId, taskApi)) return;
+      currentConversationId.value = historyId;
+      persistWorkspaceSelection();
       await refreshConversationLists();
+      generationSubmitting.value = false;
       void pollGenerationTask(runId);
       return;
     }
     const run = generationRuns.get(runId);
     if (run) {
-      run.images = data.images ?? [];
+      const returnedImages = Array.isArray(data.images) ? data.images as ImageResult[] : [];
+      run.images = returnedImages;
+      retainMissingGenerationSlots(runId, returnedImages.length, run.imageCount, run.conversationId ?? undefined);
       generationVersion.value++;
     }
     if (activeGenerationRunId.value === runId) generated.value = data.images ?? [];
@@ -2366,48 +3441,17 @@ async function generateImage() {
   } catch (exception) {
     if (!(exception instanceof DOMException && exception.name === "AbortError")) {
       const message = exception instanceof Error ? exception.message : "生成失败";
-      const run = generationRuns.get(runId);
-      if (run) {
-        run.error = message;
-        generationVersion.value++;
-      }
-      if (activeGenerationRunId.value === runId) {
-        error.value = message;
-      }
+      failGenerationRun(runId, message);
       await refreshConversationLists();
     }
   } finally {
     generationSubmitting.value = false;
     const run = generationRuns.get(runId);
-    if (run?.taskId === null) {
+    if (run?.taskId === null && run.state === "running") {
       stopGenerationRun(runId);
       if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
     }
   }
-}
-
-async function cancelGenerationRun(runId: number) {
-  const run = generationRuns.get(runId);
-  if (!run) return;
-  run.controller.abort();
-  if (run.taskId !== null) {
-    try {
-      const response = await fetch(`${API_BASE}/api/generate/${run.taskId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!response.ok && response.status !== 409) {
-        const data = await parseJsonResponse(response);
-        throw new Error(readableError(data, "取消生成失败"));
-      }
-      historyDetailCache.delete(run.taskId);
-    } catch (exception) {
-      error.value = exception instanceof Error ? exception.message : "取消生成失败";
-    }
-  }
-  stopGenerationRun(runId);
-  if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
-  await refreshConversationLists();
 }
 
 function handleGenerateClick() {
@@ -2439,7 +3483,7 @@ async function analyzeImage() {
   if (selectedProjectId.value !== null) form.append("project_id", String(selectedProjectId.value));
   for (const referenceFile of referenceFiles) form.append("images", referenceFile);
   try {
-    const response = await fetch(`${API_BASE}/api/analyze`, {
+    const response = await apiFetch(`${API_BASE}/api/analyze`, {
       method: "POST",
       body: form,
     });
@@ -2449,7 +3493,7 @@ async function analyzeImage() {
     await loadProjects();
   } catch (exception) {
     error.value = exception instanceof Error ? exception.message : "分析失败";
-    await loadProjects();
+    await loadProjects(true);
   } finally {
     busy.value = "";
   }
@@ -2475,19 +3519,10 @@ function closeLightbox() {
   lightboxUrl.value = "";
 }
 
-function toggleProjectDrawer() {
-  projectDrawerOpen.value = !projectDrawerOpen.value;
-}
-
-function closeProjectDrawer() {
-  projectDrawerOpen.value = false;
-}
-
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   if (openParameterMenu.value) closeParameterMenu();
   else if (lightboxUrl.value) closeLightbox();
-  else if (projectDrawerOpen.value) closeProjectDrawer();
 }
 
 function handleDocumentPointerDown(event: PointerEvent) {
@@ -2501,12 +3536,14 @@ onMounted(async () => {
   window.addEventListener("keydown", handleGlobalKeydown);
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
-    const response = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
+    const response = await apiFetch(`${API_BASE}/api/auth/me`);
     if (!response.ok) { authView.value = "login"; return; }
     applyCurrentUser(await response.json());
     if (currentView.value === "admin" && !currentIsAdmin.value) navigateToWorkspace();
     authView.value = "workspace";
-    await Promise.all([loadRuntimeSettings(), loadProviders(), loadProjects()]);
+    await loadProviders();
+    await loadRuntimeSettings();
+    await loadProjects(true);
     if (currentView.value === "admin") await loadAdminUsers();
   } catch {
     error.value = "无法加载服务商，请先启动后端";
@@ -2519,9 +3556,8 @@ function handlePopState() {
     return;
   }
   if (currentView.value === "admin") void loadAdminUsers();
-  projectDrawerOpen.value = false;
   if (currentView.value === "workspace" && activeGenerationRunId.value !== null) {
-    restoreGenerationRun(activeGenerationRunId.value);
+    void restoreGenerationRun(activeGenerationRunId.value);
   }
 }
 window.addEventListener("popstate", handlePopState);
@@ -2590,16 +3626,6 @@ onUnmounted(() => {
     <template v-else>
     <header class="topbar">
       <div class="topbar-leading">
-        <button
-          v-if="currentView === 'workspace'"
-          type="button"
-          class="icon-action project-drawer-trigger mobile-sidebar-trigger"
-          aria-controls="project-sidebar"
-          :aria-expanded="projectDrawerOpen"
-          :aria-label="projectDrawerOpen ? '收起项目抽屉' : '打开项目抽屉'"
-          :title="projectDrawerOpen ? '收起项目抽屉' : '打开项目抽屉'"
-          @click="toggleProjectDrawer"
-        ><PanelLeftClose v-if="projectDrawerOpen" :size="18" /><PanelLeft v-else :size="18" /></button>
         <div class="brand">
           <span class="brand-mark">G</span>
           <div><strong>GenImage</strong><small>图像工作台</small></div>
@@ -2749,7 +3775,7 @@ onUnmounted(() => {
     <section v-else-if="currentView === 'admin'" class="admin-page">
       <header class="admin-page-heading">
         <div><span>GenImage</span><h1>用户管理</h1></div>
-        <button type="button" class="secondary-action" :disabled="adminLoading" @click="loadAdminUsers"><RefreshCw :class="{ spin: adminLoading }" :size="16" />刷新</button>
+        <button type="button" class="secondary-action" :disabled="adminLoading" @click="loadAdminUsers()"><RefreshCw :class="{ spin: adminLoading }" :size="16" />刷新</button>
       </header>
 
       <div class="admin-metrics" aria-label="用户统计">
@@ -2824,8 +3850,7 @@ onUnmounted(() => {
       </section>
     </section>
     <template v-else>
-    <div class="studio-grid" :class="{ 'sidebar-open': projectDrawerOpen }">
-      <button v-if="projectDrawerOpen" type="button" class="project-sidebar-backdrop" aria-label="关闭项目抽屉" @click="closeProjectDrawer"></button>
+    <div class="studio-grid">
       <ProjectSidebar
         id="project-sidebar"
         :projects="projects"
@@ -2842,87 +3867,91 @@ onUnmounted(() => {
         @open-history="openHistory"
         @open-generation="restoreGenerationRun"
         @prefetch-history="prefetchHistory"
-        @close="closeProjectDrawer"
       />
       <section
         ref="workspacePanel"
         class="workspace-panel"
-        :class="{ 'is-resizing': workspaceResizing }"
+        :class="{
+          'is-resizing': workspaceResizing,
+          'is-composer-collapsed': workspaceComposerCollapsed,
+        }"
         :style="{ '--workspace-result-ratio': `${workspaceResultRatio}%` }"
       >
-        <div class="result-panel">
+        <div class="result-panel" :class="{ 'has-error': Boolean(error) }">
           <div class="result-heading">
             <div><span class="result-kicker"><Sparkles :size="13" />作品画布</span><h2>{{ activeHistoryId ? "历史结果" : "生成结果" }}</h2></div>
             <span v-if="busy === 'analyze'" class="working">处理中</span>
           </div>
 
-          <div v-if="generated.length || visibleGenerationRuns.length" class="image-grid">
-            <article v-for="(item, index) in generated" :key="item.history_image_id ?? imageSource(item) ?? index" class="image-card">
-              <div class="image-frame">
-                <button v-if="imageSource(item)" type="button" class="image-preview-trigger" :aria-label="`全屏查看生成图片 ${index + 1}`" @click="openLightbox(item)">
-                  <img :src="imageSource(item)" :alt="`生成图片 ${index + 1}`" />
-                </button>
-                <div v-else class="missing-image">图片数据不可用</div>
-              </div>
-              <div class="image-meta">
-                <span>图片 {{ index + 1 }}</span>
-                <div class="image-meta-actions">
-                  <strong>{{ formatDuration(item.generation_time_ms) }}</strong>
-                  <button
-                    v-if="item.history_id != null && item.history_image_id != null"
-                    type="button"
-                    class="image-card-action edit-image-action"
-                    :disabled="modifyingImageIds.includes(item.history_image_id)"
-                    aria-label="修改图片"
-                    title="修改图片"
-                    @click="modifyGeneratedImage(item)"
-                  >
-                    <LoaderCircle v-if="modifyingImageIds.includes(item.history_image_id)" class="spin" :size="15" />
-                    <Pencil v-else :size="15" />
+          <p v-if="error" class="error-message generation-error result-error" role="alert">{{ error }}</p>
+
+          <div v-if="visibleGenerationCards.length" class="image-grid">
+            <article
+              v-for="(card, index) in visibleGenerationCards"
+              :key="card.key"
+              class="image-card"
+              :class="{
+                'generation-progress-card': card.kind === 'run' && card.run.state === 'running',
+                'generation-failure-card': card.kind === 'history-failure' || (card.kind === 'run' && card.run.state !== 'running'),
+              }"
+            >
+              <template v-if="card.kind === 'image'">
+                <div class="image-frame">
+                  <button v-if="imageSource(card.image)" type="button" class="image-preview-trigger" :aria-label="`全屏查看${cardViewLabel(card) || `生成图片 ${index + 1}`}`" @click="openLightbox(card.image)">
+                    <img :src="imageSource(card.image)" :alt="cardViewLabel(card) || `生成图片 ${index + 1}`" />
                   </button>
-                  <button
-                    v-if="item.history_id != null && item.history_image_id != null"
-                    type="button"
-                    class="image-card-action delete-image-action danger-action"
-                    :disabled="deletingImageIds.includes(item.history_image_id)"
-                    aria-label="删除图片"
-                    title="删除图片"
-                    @click="deleteGeneratedImage(item)"
-                  >
-                    <LoaderCircle v-if="deletingImageIds.includes(item.history_image_id)" class="spin" :size="15" />
-                    <Trash2 v-else :size="15" />
-                  </button>
-                  <a v-if="imageSource(item)" class="download" :href="imageSource(item)" download="genimage-result.png" aria-label="下载图片" title="下载图片"><Download :size="16" /></a>
+                  <div v-else class="missing-image">图片数据不可用</div>
                 </div>
-              </div>
-            </article>
-            <template v-for="{ id: runId, run } in visibleGenerationRuns" :key="`generation-run-${runId}`">
-              <article
-                v-for="slot in run.imageCount"
-                :key="`generation-progress-${runId}-${slot}`"
-                class="image-card generation-progress-card"
-                :aria-label="`正在生成第 ${slot} 张，共 ${run.imageCount} 张`"
-                :aria-live="slot === 1 ? 'polite' : 'off'"
-              >
-                <div class="generation-progress-frame">
-                  <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent(run.elapsedMs)}%` }">
-                    <Sparkles class="empty-shape-icon" :size="24" />
-                    <span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span>
+                <div class="image-meta">
+                  <span>{{ cardViewLabel(card) || `图片 ${index + 1}` }}</span>
+                  <div class="image-meta-actions">
+                    <strong v-if="card.image.generation_time_ms != null">{{ formatDuration(card.image.generation_time_ms) }}</strong>
+                    <button v-if="card.image.history_id != null && card.image.history_image_id != null" type="button" class="image-card-action edit-image-action" :disabled="modifyingImageIds.includes(card.image.history_image_id)" aria-label="修改图片" title="修改图片" @click="modifyGeneratedImage(card.image)">
+                      <LoaderCircle v-if="modifyingImageIds.includes(card.image.history_image_id)" class="spin" :size="15" />
+                      <Pencil v-else :size="15" />
+                    </button>
+                    <button v-if="card.image.history_id != null && card.image.history_image_id != null" type="button" class="image-card-action delete-image-action danger-action" :disabled="deletingImageIds.includes(card.image.history_image_id)" aria-label="删除图片" title="删除图片" @click="requestGeneratedImageDeletion(card.image, card.slotPosition)">
+                      <LoaderCircle v-if="deletingImageIds.includes(card.image.history_image_id)" class="spin" :size="15" />
+                      <Trash2 v-else :size="15" />
+                    </button>
+                    <a v-if="imageSource(card.image)" class="download" :href="imageSource(card.image)" download="genimage-result.png" aria-label="下载图片" title="下载图片"><Download :size="16" /></a>
                   </div>
                 </div>
-                <div class="image-meta generation-progress-meta">
-                  <span>正在生成</span>
-                  <strong>{{ formatDuration(run.elapsedMs) }}</strong>
+              </template>
+              <template v-else-if="card.kind === 'run'">
+                <div class="generation-progress-frame">
+                  <div v-if="card.run.state === 'running'" class="generation-progress-running">
+                    <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent(card.run.elapsedMs)}%` }"><Sparkles class="empty-shape-icon" :size="24" /><span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span></div>
+                    <p v-if="card.run.error" class="generation-progress-error" role="alert">{{ card.run.error }}</p>
+                  </div>
+                  <div v-else class="generation-failure-state" :class="{ 'is-cancelled': card.run.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.run.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="card.run.error">{{ card.run.error }}</p></div>
                 </div>
-              </article>
-            </template>
+                <div class="image-meta generation-progress-meta">
+                  <span>{{ cardViewLabel(card) ? `${cardViewLabel(card)} · ${card.run.state === "running" ? "正在生成" : card.run.state === "cancelled" ? "已取消" : "生成失败"}` : card.run.state === "running" ? "正在生成" : card.run.state === "cancelled" ? "已取消" : "生成失败" }}</span>
+                  <div class="image-meta-actions">
+                    <strong>{{ formatDuration(card.run.elapsedMs) }}</strong>
+                    <button v-if="card.run.state === 'running' && card.run.conversationId !== null && card.run.batchId !== null" type="button" class="image-card-action cancel-image-action" :disabled="cancellingSlotKeys.includes(`run-${card.runId}-${card.slotPosition}`)" aria-label="取消当前图片" title="取消当前图片" @click="cancelGenerationRunSlot(card.runId, card.slotPosition)"><LoaderCircle v-if="cancellingSlotKeys.includes(`run-${card.runId}-${card.slotPosition}`)" class="spin" :size="15" /><X v-else :size="15" /></button>
+                    <button v-if="card.run.state !== 'running'" type="button" class="image-card-action delete-image-action danger-action" aria-label="删除图片" title="删除图片" @click="deleteGenerationRunSlot(card.runId, card.slotPosition)"><Trash2 :size="15" /></button>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="generation-progress-frame"><div class="generation-failure-state" :class="{ 'is-cancelled': card.group.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.group.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="card.group.message">{{ card.group.message }}</p></div></div>
+                <div class="image-meta generation-progress-meta">
+                  <span>{{ cardViewLabel(card) ? `${cardViewLabel(card)} · ${card.group.state === "cancelled" ? "已取消" : "生成失败"}` : card.group.state === "cancelled" ? "已取消" : "生成失败" }}</span>
+                  <div class="image-meta-actions">
+                    <strong>{{ formatDuration(card.group.elapsedMs) }}</strong>
+                    <button type="button" class="image-card-action delete-image-action danger-action" :disabled="deletingSlotKeys.includes(generationSlotKey(card.group.historyId, card.group.batchId, card.slotPosition))" aria-label="删除图片" title="删除图片" @click="deleteHistoryFailureSlot(card.group, card.slotPosition)"><LoaderCircle v-if="deletingSlotKeys.includes(generationSlotKey(card.group.historyId, card.group.batchId, card.slotPosition))" class="spin" :size="15" /><Trash2 v-else :size="15" /></button>
+                  </div>
+                </div>
+              </template>
+            </article>
           </div>
           <div v-else class="empty-wall">
             <div class="empty-shape">
               <Sparkles class="empty-shape-icon" :size="24" />
             </div>
-            <p v-if="error" class="error-message generation-error">{{ error }}</p>
-            <template v-else>
+            <template v-if="!error">
               <h3>等待生成结果</h3>
               <p>配置参数并在下方输入提示词。</p>
             </template>
@@ -2937,28 +3966,66 @@ onUnmounted(() => {
           aria-valuemin="25"
           aria-valuemax="75"
           :aria-valuenow="Math.round(workspaceResultRatio)"
-          tabindex="0"
-          title="拖动调整上下区域，双击恢复默认比例"
+          :aria-disabled="workspaceComposerCollapsed"
+          :tabindex="workspaceComposerCollapsed ? -1 : 0"
+          :title="workspaceComposerCollapsed ? undefined : '拖动调整上下区域，双击恢复默认比例'"
           @pointerdown="startWorkspaceResize"
           @keydown="handleWorkspaceResizeKeydown"
           @dblclick="resetWorkspaceResultRatio"
-        ><span aria-hidden="true"></span></div>
+        >
+          <span aria-hidden="true"></span>
+          <button
+            type="button"
+            class="composer-collapse-toggle"
+            :aria-label="workspaceComposerCollapsed ? '展开提示词编辑区' : '向下收起提示词编辑区'"
+            :title="workspaceComposerCollapsed ? '展开提示词编辑区' : '收起提示词编辑区'"
+            @pointerdown.stop
+            @dblclick.stop
+            @click.stop="toggleWorkspaceComposer"
+          >
+            <ChevronUp v-if="workspaceComposerCollapsed" :size="17" />
+            <ChevronDown v-else :size="17" />
+          </button>
+        </div>
 
-        <div class="workspace-composer-panel">
+        <div v-show="!workspaceComposerCollapsed" class="workspace-composer-panel">
         <section class="composer-dock">
           <div class="composer-main">
             <div class="parameter-toolbar" aria-label="模型参数">
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="apiKey" :aria-expanded="openParameterMenu === 'apiKey'" @click="toggleParameterMenu('apiKey')">API Key <strong>{{ selectedApiKeyLabel }}</strong></button><div v-if="openParameterMenu === 'apiKey'" class="parameter-menu" data-parameter-menu="apiKey"><button v-for="option in apiKeyConfigs" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === activeApiKeyConfigId }" :data-parameter-option="option.alias" @click="selectApiKeyConfig(option)"><span>{{ option.alias }}</span><Check v-if="option.id === activeApiKeyConfigId" :size="15" /></button></div></div>
                 <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="model" :aria-expanded="openParameterMenu === 'model'" @click="toggleParameterMenu('model')">模型名称 <strong>{{ selectedModelLabel }}</strong></button><div v-if="openParameterMenu === 'model'" class="parameter-menu" data-parameter-menu="model"><button v-for="option in modelOptions" :key="option.id" type="button" class="parameter-option" :class="{ 'is-selected': option.id === model }" :data-parameter-option="option.id" @click="selectModel(option.id)"><span>{{ option.id }}</span><Check v-if="option.id === model" :size="15" /></button><span v-if="loadingConfigModels" class="parameter-option-description">获取模型列表中...</span></div></div>
-                <div v-if="selectedProviderType === 'gpt'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ selectedGptSizeLabel }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in gptSizeOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong><small>{{ option.value }}</small></span><Check v-if="option.value === size" :size="15" /></button></div></div>
-                <div v-if="selectedProviderType === 'gemini' || selectedProviderType === 'grok'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片比例 <strong>{{ size }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in nativeAspectRatioOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === size }" :data-parameter-option="option" @click="selectSize(option)"><span><strong>{{ option }}</strong></span><Check v-if="option === size" :size="15" /></button></div></div>
-                <div v-if="supportsGeminiResolution || selectedProviderType === 'grok'" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="resolution" :aria-expanded="openParameterMenu === 'resolution'" @click="toggleParameterMenu('resolution')">分辨率 <strong>{{ resolution }}</strong></button><div v-if="openParameterMenu === 'resolution'" class="parameter-menu" data-parameter-menu="resolution"><button v-for="option in resolutionOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === resolution }" :data-parameter-option="option" @click="selectResolution(option)"><span>{{ option }}</span><Check v-if="option === resolution" :size="15" /></button></div></div>
-                <div v-if="selectedProviderType === 'gpt' || supportsGrokQuality" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="quality" :aria-expanded="openParameterMenu === 'quality'" @click="toggleParameterMenu('quality')">生成质量 <strong>{{ qualityOptions.find((option) => option.value === quality)?.label }}</strong></button><div v-if="openParameterMenu === 'quality'" class="parameter-menu" data-parameter-menu="quality"><button v-for="option in qualityOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === quality }" :data-parameter-option="option.value" @click="selectQuality(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === quality" :size="15" /></button></div></div>
-                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">生成数量 <strong>{{ imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in imageCountOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
+                <div v-if="selectedCapability?.sizes.length" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片尺寸 <strong>{{ selectedGptSizeLabel }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in gptSizeOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === size }" :data-parameter-option="option.value" @click="selectSize(option.value)"><span><strong>{{ option.label }}</strong><small>{{ option.value }}</small></span><Check v-if="option.value === size" :size="15" /></button></div></div>
+                <div v-if="selectedCapability?.aspect_ratios.length" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="size" :aria-expanded="openParameterMenu === 'size'" @click="toggleParameterMenu('size')">图片比例 <strong>{{ size }}</strong></button><div v-if="openParameterMenu === 'size'" class="parameter-menu" data-parameter-menu="size"><button v-for="option in nativeAspectRatioOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === size }" :data-parameter-option="option" @click="selectSize(option)"><span><strong>{{ option }}</strong></span><Check v-if="option === size" :size="15" /></button></div></div>
+                <div v-if="selectedCapability?.resolutions.length" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="resolution" :aria-expanded="openParameterMenu === 'resolution'" @click="toggleParameterMenu('resolution')">分辨率 <strong>{{ resolution }}</strong></button><div v-if="openParameterMenu === 'resolution'" class="parameter-menu" data-parameter-menu="resolution"><button v-for="option in resolutionOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === resolution }" :data-parameter-option="option" @click="selectResolution(option)"><span>{{ option }}</span><Check v-if="option === resolution" :size="15" /></button></div></div>
+                <div v-if="selectedCapability?.qualities.length" class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="quality" :aria-expanded="openParameterMenu === 'quality'" @click="toggleParameterMenu('quality')">生成质量 <strong>{{ qualityOptions.find((option) => option.value === quality)?.label }}</strong></button><div v-if="openParameterMenu === 'quality'" class="parameter-menu" data-parameter-menu="quality"><button v-for="option in qualityOptions" :key="option.value" type="button" class="parameter-option" :class="{ 'is-selected': option.value === quality }" :data-parameter-option="option.value" @click="selectQuality(option.value)"><span>{{ option.label }}</span><Check v-if="option.value === quality" :size="15" /></button></div></div>
+                <div class="parameter-control"><button type="button" class="parameter-trigger" data-parameter-trigger="count" :disabled="multiViewEnabled" :aria-expanded="openParameterMenu === 'count'" @click="toggleParameterMenu('count')">{{ multiViewEnabled ? "输出数量" : "生成数量" }} <strong>{{ multiViewEnabled ? selectedMultiViewOptions.length : imageCount }} 张</strong></button><div v-if="openParameterMenu === 'count'" class="parameter-menu" data-parameter-menu="count"><button v-for="option in imageCountOptions" :key="option" type="button" class="parameter-option" :class="{ 'is-selected': option === imageCount }" :data-parameter-option="option" @click="selectImageCount(option)"><span>{{ option }} 张</span><Check v-if="option === imageCount" :size="15" /></button></div></div>
+                <div class="multi-view-control" :class="{ 'is-enabled': multiViewEnabled }">
+                  <button type="button" class="multi-view-toggle" role="switch" :aria-checked="multiViewEnabled" @click="toggleMultiView">
+                    <span><Grid3X3 :size="15" />多视角</span>
+                    <span class="switch-track" aria-hidden="true"><span></span></span>
+                  </button>
+                  <div v-if="multiViewEnabled" class="multi-view-panel">
+                    <div v-if="hasPersonReferences && hasObjectReferences" class="multi-view-target" aria-label="多视角主体">
+                      <button type="button" :class="{ active: multiViewTarget === 'person' }" :aria-pressed="multiViewTarget === 'person'" @click="multiViewTarget = 'person'">人物</button>
+                      <button type="button" :class="{ active: multiViewTarget === 'object' }" :aria-pressed="multiViewTarget === 'object'" @click="multiViewTarget = 'object'">物品</button>
+                    </div>
+                    <div class="multi-view-presets" aria-label="选择视角">
+                      <button v-for="view in MULTI_VIEW_PRESETS" :key="view.key" type="button" :class="{ active: selectedMultiViewKeys.includes(view.key) }" :aria-pressed="selectedMultiViewKeys.includes(view.key)" @click="toggleMultiViewPreset(view.key)">{{ view.label }}</button>
+                    </div>
+                    <div v-if="customMultiViews.length" class="custom-view-list" aria-label="自定义视角">
+                      <span v-for="view in customMultiViews" :key="view.key">{{ view.label }}<button type="button" :aria-label="`移除自定义视角 ${view.label}`" :title="`移除 ${view.label}`" @click="removeCustomMultiView(view.key)"><X :size="12" /></button></span>
+                    </div>
+                    <div class="custom-view-input">
+                      <input v-model="customMultiViewInput" type="text" maxlength="40" placeholder="自定义视角" aria-label="自定义视角" @keydown.enter.prevent="addCustomMultiView" />
+                      <button type="button" aria-label="添加自定义视角" title="添加自定义视角" @click="addCustomMultiView"><Plus :size="15" /></button>
+                    </div>
+                    <p v-if="multiViewInputError || multiViewValidationMessage" class="multi-view-error" role="status">{{ multiViewInputError || multiViewValidationMessage }}</p>
+                  </div>
+                </div>
             </div>
             <div class="prompt-column">
               <div class="prompt-row"><label>提示词<textarea v-model="prompt" placeholder="描述主体、环境、构图、镜头、光线、材质与风格..."></textarea></label></div>
-              <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :disabled="busy === 'analyze' || generationSubmitting" @click="handleGenerateClick"><LoaderCircle v-if="generationSubmitting" class="spin" :size="17" /><Sparkles v-else :size="17" />生成图片</button></div>
+              <div class="composer-actions"><button type="button" class="secondary-action analyze-action" :disabled="!canAnalyze" @click="analyzeImage"><LoaderCircle v-if="busy === 'analyze'" class="spin" :size="17" /><ImagePlus v-else :size="17" />分析图片</button><button type="button" class="primary-action" :disabled="busy === 'analyze' || !canGenerate" @click="handleGenerateClick"><LoaderCircle v-if="generationSubmitting" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ multiViewEnabled ? `生成 ${selectedMultiViewOptions.length} 个视角` : "生成图片" }}</button></div>
             </div>
             <div class="reference-row" :class="{ 'has-references': referencePreviews.length }" aria-label="参考图片分类">
               <section v-for="category in REFERENCE_CATEGORIES" :key="category.id" class="reference-module">
@@ -3025,8 +4092,8 @@ onUnmounted(() => {
     />
     <ConfirmDialog
       :open="confirmAction !== null"
-      :title="confirmAction === 'project' ? '删除项目' : confirmAction === 'history' ? '删除历史记录' : '删除 API Key 配置'"
-      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
+      :title="confirmAction === 'project' ? '删除项目' : confirmAction === 'history' ? '删除历史记录' : confirmAction === 'image' ? '删除图片' : '删除 API Key 配置'"
+      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : confirmAction === 'image' ? '确认删除这张图片吗？删除后无法恢复。' : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
       :busy="actionBusy"
       @confirm="confirmDeletion"
       @cancel="cancelConfirm"

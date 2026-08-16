@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.repositories.api_key_config_repository import ApiKeyConfigNotFoundError
+from app.schemas.common import ImageResult
 from app.schemas.generate import GenerateRequest, GenerateResponse
 from app.services.image_service import ImageService
 
@@ -11,13 +12,22 @@ from app.services.image_service import ImageService
 @pytest.mark.asyncio
 async def test_image_service_routes_generation_by_owned_api_key_config():
     calls = []
+    factory_calls = []
+    close_calls = []
 
     class Provider:
         provider_id = "gemini"
 
         async def generate_image(self, request):
             calls.append(request)
-            return GenerateResponse(provider="gemini", model=request.model, images=[])
+            return GenerateResponse(
+                provider="gemini",
+                model=request.model,
+                images=[ImageResult(url="https://example.com/image.png")],
+            )
+
+        async def aclose(self):
+            close_calls.append(True)
 
     class ConfigRepository:
         async def get_owned(self, user_id, config_id):
@@ -38,20 +48,27 @@ async def test_image_service_routes_generation_by_owned_api_key_config():
         def resolve(self, provider):
             raise AssertionError("legacy registry must not be used for configured generation")
 
+    def provider_factory(config):
+        factory_calls.append(config)
+        return Provider()
+
     service = ImageService(
-        Registry(), ConfigRepository(), user_id=7, provider_factory=lambda config: Provider()
+        Registry(), ConfigRepository(), user_id=7, provider_factory=provider_factory
     )
-    response = await service.generate(
-        GenerateRequest(
+    request = GenerateRequest(
             provider="gemini",
-            model="gemini-image",
+            model="gemini-3.1-flash-image",
             api_key_config_id=12,
             prompt="draw",
-        ),
-    )
+        )
+    normalized = await service.normalize_request(request)
+    response = await service.generate(normalized)
+    await service.aclose()
 
     assert response.provider == "gemini"
     assert len(calls) == 1
+    assert len(factory_calls) == 1
+    assert close_calls == [True]
 
 
 @pytest.mark.asyncio
@@ -66,7 +83,7 @@ async def test_image_service_rejects_config_owned_by_another_user():
         await service.generate(
             GenerateRequest(
                 provider="gemini",
-                model="gemini-image",
+                model="gemini-3.1-flash-image",
                 api_key_config_id=12,
                 prompt="draw",
             )

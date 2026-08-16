@@ -91,6 +91,8 @@ docker run --rm \
 - `backend`：在 Compose 内部端口 `8002` 运行 FastAPI，不直接映射到宿主机。
 - `genimage_data`：挂载到 `/app/backend/data`，用于持久化 SQLite 数据。
 
+后端生成任务使用 SQLite 租约防止多个 worker 重复落图，但任务执行仍由进程内协程负责。当前部署必须保持单个 backend 实例、单个 Uvicorn worker；服务异常退出时，未完成任务会在租约过期后标记为失败，不会自动重放。
+
 健康检查地址为 `http://SERVER_IP:8083/health`。
 
 ## 邮箱注册与管理员

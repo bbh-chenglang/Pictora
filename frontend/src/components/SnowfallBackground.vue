@@ -25,7 +25,7 @@ let pixelRatio = 1;
 let previousTime = 0;
 
 function createFlakes() {
-  const count = width <= 520 ? 44 : Math.min(112, Math.round((width * height) / 13000));
+  const count = Math.min(112, Math.round((width * height) / 13000));
   flakes = Array.from({ length: count }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,

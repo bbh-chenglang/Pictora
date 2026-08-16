@@ -25,6 +25,7 @@ from app.services.email_sender import EmailSender
 from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
 from app.services.generation_task_manager import GenerationTaskManager
+from app.services.auth_rate_limiter import AuthRateLimiter
 
 
 @lru_cache
@@ -65,6 +66,18 @@ def get_admin_repository() -> AdminRepository:
 @lru_cache
 def get_email_sender() -> EmailSender:
     return EmailSender(Settings())
+
+
+@lru_cache
+def get_auth_rate_limiter() -> AuthRateLimiter:
+    settings = Settings()
+    return AuthRateLimiter(
+        login_max_failures=settings.auth_login_max_failures,
+        login_window_seconds=settings.auth_login_window_seconds,
+        verification_max_requests_per_ip=settings.auth_verification_max_requests_per_ip,
+        verification_global_max_requests=settings.auth_verification_global_max_requests,
+        verification_window_seconds=settings.auth_verification_window_seconds,
+    )
 
 
 async def get_current_user(
@@ -140,7 +153,12 @@ def get_history_service(
 
 @lru_cache
 def get_generation_task_manager() -> GenerationTaskManager:
-    return GenerationTaskManager()
+    settings = Settings()
+    return GenerationTaskManager(
+        max_concurrency=settings.generation_max_concurrency,
+        max_active_tasks=settings.generation_max_active_tasks,
+        max_tasks_per_user=settings.generation_max_tasks_per_user,
+    )
 
 
 def clear_dependency_caches() -> None:
@@ -153,3 +171,4 @@ def clear_dependency_caches() -> None:
     get_verification_code_repository.cache_clear()
     get_admin_repository.cache_clear()
     get_email_sender.cache_clear()
+    get_auth_rate_limiter.cache_clear()

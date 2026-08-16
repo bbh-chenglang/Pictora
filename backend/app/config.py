@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     admin_emails: str = ""
     verification_code_ttl_seconds: int = 10 * 60
     verification_code_cooldown_seconds: int = 60
+    auth_login_max_failures: int = 5
+    auth_login_window_seconds: int = 15 * 60
+    auth_verification_max_requests_per_ip: int = 10
+    auth_verification_global_max_requests: int = 100
+    auth_verification_window_seconds: int = 10 * 60
+    generation_max_concurrency: int = 4
+    generation_max_active_tasks: int = 32
+    generation_max_tasks_per_user: int = 4
 
     @property
     def admin_email_set(self) -> set[str]:

@@ -5,8 +5,10 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from app.providers.compatible_provider import COMPATIBLE_USER_AGENT
+from app.providers.base import ProviderRequestError
 from app.providers.gemini_provider import GeminiProvider
 from app.schemas.generate import GenerateRequest, ReferenceImage
+from app.model_capabilities import normalize_generation_request
 
 
 def test_gemini_model_capabilities_normalize_native_image_parameters():
@@ -33,22 +35,24 @@ def test_gemini_model_capabilities_normalize_native_image_parameters():
 
     assert modern.aspect_ratio == "1:8"
     assert modern.resolution == "4K"
-    assert legacy.resolution is None
-    assert lite.resolution is None
-    with pytest.raises(ValidationError):
-        GenerateRequest(
+    with pytest.raises(ValueError):
+        normalize_generation_request(legacy)
+    with pytest.raises(ValueError):
+        normalize_generation_request(lite)
+    with pytest.raises(ValueError):
+        normalize_generation_request(GenerateRequest(
             provider="gemini",
             model="gemini-3-pro-image-preview",
             prompt="unsupported extreme ratio",
             aspect_ratio="8:1",
-        )
-    with pytest.raises(ValidationError):
-        GenerateRequest(
+        ))
+    with pytest.raises(ValueError):
+        normalize_generation_request(GenerateRequest(
             provider="gemini",
             model="gemini-3.1-flash-image",
             prompt="Grok-only ratio",
             aspect_ratio="20:9",
-        )
+        ))
 
 
 def test_gpt_native_format_and_background_constraints():
@@ -69,15 +73,15 @@ def test_gpt_native_format_and_background_constraints():
     )
 
     assert request.output_compression == 77
-    assert png.output_compression is None
-    with pytest.raises(ValidationError):
-        GenerateRequest(
+    assert normalize_generation_request(png).output_compression is None
+    with pytest.raises(ValueError):
+        normalize_generation_request(GenerateRequest(
             provider="openai",
             model="gpt-image-2",
             prompt="unsupported transparent background",
             output_format="png",
             background="transparent",
-        )
+        ))
 
 
 def test_gemini_provider_uses_native_gateway_headers(monkeypatch):
@@ -160,7 +164,7 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
             {"role": "user", "parts": [{"text": "生成两只小猫"}]}
         ],
         "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
+            "responseModalities": ["IMAGE"],
             "imageConfig": {"aspectRatio": "16:9", "imageSize": "4K"},
         },
     }
@@ -273,3 +277,32 @@ async def test_gemini_provider_analyzes_images_through_native_endpoint():
         {"text": "描述图片"},
         {"inlineData": {"mimeType": "image/png", "data": "YWJj"}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_preserves_retry_after_from_rate_limit():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"error": {"message": "rate limited"}},
+            headers={"Retry-After": "45"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = GeminiProvider(
+            api_key="secret",
+            base_url="https://sub.beibeihai.xyz/v1beta",
+            model="gemini-3.1-flash-image",
+            client=client,
+        )
+        with pytest.raises(ProviderRequestError) as raised:
+            await provider.generate_image(
+                GenerateRequest(
+                    provider="gemini",
+                    model="gemini-3.1-flash-image",
+                    prompt="draw",
+                )
+            )
+
+    assert raised.value.status_code == 429
+    assert raised.value.retry_after_seconds == 45

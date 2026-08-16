@@ -14,6 +14,7 @@ from app.providers.base import (
     ImageProvider,
     ProviderRequestError,
     ProviderTimeoutError,
+    parse_retry_after,
 )
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
@@ -116,6 +117,9 @@ class GeminiProvider(ImageProvider):
                 status_code=exc.response.status_code,
                 response_content=exc.response.content,
                 content_type=exc.response.headers.get("content-type"),
+                retry_after_seconds=parse_retry_after(
+                    exc.response.headers.get("retry-after")
+                ),
             ) from None
         except httpx.TimeoutException:
             raise ProviderTimeoutError() from None
@@ -134,7 +138,7 @@ class GeminiProvider(ImageProvider):
         if request.resolution:
             image_config["imageSize"] = request.resolution
         generation_config: dict[str, Any] = {
-            "responseModalities": ["TEXT", "IMAGE"],
+            "responseModalities": ["IMAGE"],
         }
         if image_config:
             generation_config["imageConfig"] = image_config

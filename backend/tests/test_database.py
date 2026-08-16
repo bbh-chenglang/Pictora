@@ -45,7 +45,7 @@ async def test_database_removes_legacy_global_data_once(tmp_path: Path) -> None:
     assert {"users", "user_sessions", "history", "history_images"}.issubset(tables)
     assert "settings" not in tables
     assert history_count == 0
-    assert version == 11
+    assert version == 16
     assert "api_key_configs" in tables
     assert "generation_batches" in tables
     assert "email_verification_codes" in tables
@@ -86,7 +86,7 @@ async def test_database_adds_resolution_to_version_four_history(tmp_path: Path) 
         }
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
     assert "resolution" in columns
-    assert version == 11
+    assert version == 16
 
 
 @pytest.mark.asyncio
@@ -143,7 +143,7 @@ async def test_database_removes_only_empty_generated_default_configs(tmp_path: P
         (preserved, "默认配置", "real-key", "gpt"),
     ]
     assert active_id == replacement
-    assert version == 11
+    assert version == 16
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,7 @@ async def test_database_migrates_version_six_history_images_into_batches(tmp_pat
         )).fetchall()
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
-    assert version == 11
+    assert version == 16
     assert batch == ("旧提示词", "gemini", "gemini-image", "high", 2, "16:9", "2K")
     assert images[0][0:2] == ("reference", "person.jpg")
     assert images[0][2] is not None
@@ -312,7 +312,7 @@ async def test_database_adds_grok_without_losing_existing_config_links(tmp_path:
     assert config == (config_id, "gpt", "gpt-image-2")
     assert linked_config_id == config_id
     assert active_config_id == config_id
-    assert version == 11
+    assert version == 16
 
 
 @pytest.mark.asyncio
@@ -368,8 +368,137 @@ async def test_database_adds_native_image_parameters_to_version_nine_batches(tmp
         }
         version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
 
-    assert {
-        "output_format", "background", "output_compression", "moderation",
-        "status", "elapsed_ms", "error_code", "error_message", "completed_at",
-    }.issubset(columns)
-    assert version == 11
+        assert {
+            "output_format", "background", "output_compression", "moderation",
+            "status", "elapsed_ms", "error_code", "error_message", "completed_at",
+            "views_json",
+        }.issubset(columns)
+    assert version == 16
+
+
+@pytest.mark.asyncio
+async def test_database_migrates_version_twelve_generation_task_leases(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-twelve.db"
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.execute("ALTER TABLE generation_tasks DROP COLUMN worker_id")
+        await connection.execute("ALTER TABLE generation_tasks DROP COLUMN heartbeat_at")
+        await connection.execute("PRAGMA user_version = 12")
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in await (await connection.execute(
+                "PRAGMA table_info(generation_tasks)"
+            )).fetchall()
+        }
+        version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
+
+    assert {"worker_id", "heartbeat_at"}.issubset(columns)
+    assert version == 16
+
+
+@pytest.mark.asyncio
+async def test_database_migrates_generation_slot_deletions_from_version_thirteen(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "version-thirteen.db"
+    await initialize_database(database_path)
+    async with aiosqlite.connect(database_path) as connection:
+        await connection.execute("DROP TABLE generation_batch_deleted_slots")
+        await connection.execute("DROP TABLE generation_batch_cancelled_slots")
+        await connection.execute("ALTER TABLE history_images DROP COLUMN batch_position")
+        await connection.execute("PRAGMA user_version = 13")
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        image_columns = {
+            row[1]
+            for row in await (await connection.execute(
+                "PRAGMA table_info(history_images)"
+            )).fetchall()
+        }
+        slot_table = await (await connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'generation_batch_deleted_slots'"
+        )).fetchone()
+        cancelled_slot_table = await (await connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'generation_batch_cancelled_slots'"
+        )).fetchone()
+        version = (await (await connection.execute("PRAGMA user_version")).fetchone())[0]
+
+    assert "batch_position" in image_columns
+    assert slot_table is not None
+    assert cancelled_slot_table is not None
+    assert version == 16
+
+
+@pytest.mark.asyncio
+async def test_database_backfills_completed_partial_generation_statuses(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "partial-generation.db"
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        user_cursor = await connection.execute(
+            "INSERT INTO users (username, password_hash) VALUES ('partial-user', 'hash')"
+        )
+        user_id = int(user_cursor.lastrowid)
+        project_id = int((await (await connection.execute(
+            "SELECT id FROM projects WHERE user_id = ?", (user_id,)
+        )).fetchone())[0])
+        history_cursor = await connection.execute(
+            """
+            INSERT INTO history (
+                user_id, project_id, kind, status, prompt, provider, model,
+                detail, image_count, error_code, error_message
+            ) VALUES (?, ?, 'generate', 'completed', 'prompt', 'openai', 'model',
+                      'auto', 3, NULL, NULL)
+            """,
+            (user_id, project_id),
+        )
+        history_id = int(history_cursor.lastrowid)
+        task_cursor = await connection.execute(
+            """
+            INSERT INTO generation_tasks (user_id, history_id, status)
+            VALUES (?, ?, 'completed')
+            """,
+            (user_id, history_id),
+        )
+        task_id = int(task_cursor.lastrowid)
+        await connection.execute(
+            """
+            INSERT INTO generation_batches (
+                history_id, task_id, prompt, provider, model, detail,
+                image_count, generated_count, status
+            ) VALUES (?, ?, 'prompt', 'openai', 'model', 'auto', 3, 2, 'completed')
+            """,
+            (history_id, task_id),
+        )
+        await connection.commit()
+
+    await initialize_database(database_path)
+
+    async with aiosqlite.connect(database_path) as connection:
+        batch = await (await connection.execute(
+            "SELECT status, error_code FROM generation_batches WHERE task_id = ?",
+            (task_id,),
+        )).fetchone()
+        task = await (await connection.execute(
+            "SELECT status, error_code FROM generation_tasks WHERE id = ?", (task_id,)
+        )).fetchone()
+        history = await (await connection.execute(
+            "SELECT status, error_code FROM history WHERE id = ?", (history_id,)
+        )).fetchone()
+
+    assert batch == ("failed", "partial_generation")
+    assert task == ("failed", "partial_generation")
+    assert history == ("failed", "partial_generation")

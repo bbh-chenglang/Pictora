@@ -38,15 +38,14 @@ from app.schemas.api_key_config import (
     DiscoveredModel,
 )
 from app.schemas.auth import StoredSessionUser
+from app.model_capabilities import (
+    DEFAULT_MODEL_BY_PROVIDER,
+    UnsupportedModelError,
+    filter_supported_model_ids,
+    get_model_capabilities,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-MODEL_BY_PROVIDER = {
-    "gpt": "gpt-image-2",
-    "gemini": "gemini-3.1-flash-image",
-    "grok": "grok-imagine-image",
-}
-
 
 async def _list_openai_models(
     api_key: str, provider_type: str = "gpt"
@@ -63,10 +62,7 @@ async def _list_openai_models(
             for model in (getattr(response, "data", []) or [])
             if (model_id := getattr(model, "id", None))
         ]
-        if provider_type == "grok":
-            model_ids = [model_id for model_id in model_ids if "grok" in model_id.casefold()]
-        else:
-            model_ids = [model_id for model_id in model_ids if "grok" not in model_id.casefold()]
+        model_ids = filter_supported_model_ids(provider_type, model_ids)
         return [DiscoveredModel(id=model_id, provider_type=provider_type) for model_id in model_ids]
     finally:
         await client.close()
@@ -84,12 +80,14 @@ async def _list_gemini_models(api_key: str) -> list[DiscoveredModel]:
         response.raise_for_status()
         payload = response.json()
     models = payload.get("models", []) if isinstance(payload, dict) else []
+    discovered_ids = [
+        item.get("name", "").removeprefix("models/")
+        for item in models
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
     return [
         DiscoveredModel(id=model_id, provider_type="gemini")
-        for item in models
-        if isinstance(item, dict)
-        and isinstance((model_id := item.get("name")), str)
-        and model_id
+        for model_id in filter_supported_model_ids("gemini", discovered_ids)
     ]
 
 
@@ -124,7 +122,7 @@ async def _settings_response(repository: ApiKeyConfigRepository, user_id: int):
         "base_url": GEMINI_BASE_URL if active_is_gemini else OPENAI_BASE_URL,
         "provider_id": "gemini" if active_is_gemini else active_provider_type if active_provider_type == "grok" else "compatible",
         "active_config_id": active_id,
-        "model": active.model if active else MODEL_BY_PROVIDER["gpt"],
+        "model": active.model if active else DEFAULT_MODEL_BY_PROVIDER["gpt"],
         "api_key_configured": bool(active and active.api_key.strip()),
         "configs": [_summary(config).model_dump() for config in configs],
     }
@@ -154,6 +152,13 @@ async def update_settings(
     user: StoredSessionUser = Depends(get_current_user),
     repository: SettingsRepository = Depends(get_settings_repository),
 ) -> dict[str, object]:
+    try:
+        get_model_capabilities("gpt", request.model.strip())
+    except UnsupportedModelError as exc:
+        raise HTTPException(
+            422,
+            {"error": {"code": "unsupported_model", "message": str(exc)}},
+        ) from None
     settings = await repository.update(user.id, request.model.strip(), request.api_key)
     clear_dependency_caches()
     return _response(settings)
@@ -167,7 +172,8 @@ async def create_api_key_config(
 ):
     try:
         config = await repository.create(
-            user.id, request.alias, request.api_key, request.provider_type, MODEL_BY_PROVIDER[request.provider_type]
+            user.id, request.alias, request.api_key, request.provider_type,
+            DEFAULT_MODEL_BY_PROVIDER[request.provider_type]
         )
     except ApiKeyConfigAliasTakenError:
         raise HTTPException(409, {"error": {"code": "api_key_alias_taken", "message": "别名已存在"}}) from None
@@ -175,7 +181,10 @@ async def create_api_key_config(
 
 
 @router.post("/api-keys/models", response_model=ApiKeyDiscoveryResponse)
-async def discover_api_key_models(request: ApiKeyDiscoveryRequest) -> ApiKeyDiscoveryResponse:
+async def discover_api_key_models(
+    request: ApiKeyDiscoveryRequest,
+    _user: StoredSessionUser = Depends(get_current_user),
+) -> ApiKeyDiscoveryResponse:
     try:
         return ApiKeyDiscoveryResponse(
             models=await _list_remote_models(request.api_key.strip(), request.provider_type)
@@ -237,7 +246,8 @@ async def update_api_key_config(
         changes = request.model_dump(exclude_unset=True)
         provider_type = changes.get("provider_type", current.provider_type)
         if provider_type != current.provider_type and "model" not in changes:
-            changes["model"] = MODEL_BY_PROVIDER[provider_type]
+            changes["model"] = DEFAULT_MODEL_BY_PROVIDER[provider_type]
+        get_model_capabilities(provider_type, changes.get("model", current.model))
         config = await repository.update(
             user.id,
             config_id,
@@ -247,6 +257,11 @@ async def update_api_key_config(
         raise HTTPException(404, {"error": {"code": "api_key_config_not_found", "message": "配置不存在"}}) from None
     except ApiKeyConfigAliasTakenError:
         raise HTTPException(409, {"error": {"code": "api_key_alias_taken", "message": "别名已存在"}}) from None
+    except UnsupportedModelError as exc:
+        raise HTTPException(
+            422,
+            {"error": {"code": "unsupported_model", "message": str(exc)}},
+        ) from None
     return _summary(config)
 
 

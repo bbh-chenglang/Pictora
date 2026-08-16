@@ -8,6 +8,7 @@ from pydantic import SecretStr, ValidationError
 from app.providers.base import ProviderRequestError
 from app.providers.grok_provider import GrokProvider
 from app.schemas.generate import GenerateRequest, ReferenceImage
+from app.model_capabilities import normalize_generation_request
 
 
 class FakeGrokImages:
@@ -166,17 +167,18 @@ def test_grok_keeps_native_dimensions_and_limits_quality_by_model() -> None:
         provider="grok",
         model="grok-imagine-image",
         prompt="保持上游原图",
-        count=10,
-        detail="high",
+        count=4,
+        detail="auto",
         size="16:9",
         aspect_ratio="16:9",
         resolution="2K",
     )
 
-    assert request.detail == "auto"
-    assert request.size is None
-    assert request.aspect_ratio == "16:9"
-    assert request.resolution == "2K"
+    normalized = normalize_generation_request(request)
+    assert normalized.detail == "auto"
+    assert normalized.size is None
+    assert normalized.aspect_ratio == "16:9"
+    assert normalized.resolution == "2K"
     quality_request = GenerateRequest(
         provider="grok",
         model="grok-imagine-image-2.0",
@@ -185,7 +187,7 @@ def test_grok_keeps_native_dimensions_and_limits_quality_by_model() -> None:
         aspect_ratio="9:20",
         resolution="1K",
     )
-    assert quality_request.detail == "low"
+    assert normalize_generation_request(quality_request).detail == "low"
     gpt_request = GenerateRequest(
         provider="openai",
         model="gpt-image-2",
@@ -206,6 +208,7 @@ async def test_grok_imagine_2_forwards_quality_and_defaults_to_medium() -> None:
         resolution="2K",
     )
 
+    request = normalize_generation_request(request)
     await grok_provider(client).generate_image(request)
 
     assert request.detail == "medium"

@@ -17,6 +17,7 @@ from app.repositories.api_key_config_repository import ApiKeyConfigRepository
 from app.repositories.settings_repository import SettingsRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.verification_code_repository import VerificationCodeRepository
+from app.schemas.api_key_config import DiscoveredModel
 
 
 class FakeEmailSender:
@@ -72,6 +73,48 @@ def test_new_user_settings_have_no_default_api_config(client: TestClient) -> Non
     assert payload["configs"] == []
     assert payload["active_config_id"] is None
     assert payload["api_key_configured"] is False
+
+
+def test_model_discovery_requires_login(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unexpected_discovery(*args, **kwargs):
+        pytest.fail("model discovery must not call the provider before authentication")
+
+    monkeypatch.setattr(
+        "app.api.settings._list_remote_models", unexpected_discovery
+    )
+
+    response = client.post(
+        "/api/settings/api-keys/models",
+        json={"api_key": "secret", "provider_type": "gpt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+
+
+def test_model_discovery_allows_logged_in_user(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register(client)
+
+    async def discover(api_key: str, provider_type: str):
+        assert api_key == "secret"
+        assert provider_type == "gpt"
+        return [DiscoveredModel(id="gpt-image-2", provider_type="gpt")]
+
+    monkeypatch.setattr("app.api.settings._list_remote_models", discover)
+
+    response = client.post(
+        "/api/settings/api-keys/models",
+        json={"api_key": "secret", "provider_type": "gpt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": [{"id": "gpt-image-2", "provider_type": "gpt"}]
+    }
 
 
 def test_can_create_activate_update_and_delete_config(client: TestClient) -> None:
@@ -208,8 +251,7 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
     assert discovered.status_code == 200
     assert discovered.json() == {
         "models": [
-            {"id": "models/gemini-3.1-flash-image", "provider_type": "gemini"},
-            {"id": "models/gemini-3.1-flash", "provider_type": "gemini"},
+            {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
         ]
     }
 
@@ -222,19 +264,17 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
     assert configured_models.status_code == 200
     assert configured_models.json() == {
         "models": [
-            {"id": "models/gemini-3.1-flash-image", "provider_type": "gemini"},
-            {"id": "models/gemini-3.1-flash", "provider_type": "gemini"},
+                {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
         ]
     }
     tested = client.post(f"/api/settings/api-keys/{created.json()['id']}/test")
     assert tested.status_code == 200
     assert tested.json() == {
         "available": True,
-        "message": "API Key 可用",
-        "models": [
-            {"id": "models/gemini-3.1-flash-image", "provider_type": "gemini"},
-            {"id": "models/gemini-3.1-flash", "provider_type": "gemini"},
-        ],
+            "message": "API Key 可用",
+            "models": [
+                {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
+            ],
     }
 
 
@@ -251,13 +291,13 @@ def test_saves_a_model_only_to_the_selected_config(client: TestClient) -> None:
 
     updated = client.patch(
         f"/api/settings/api-keys/{gemini['id']}",
-        json={"model": "gemini-custom-image"},
+        json={"model": "gemini-3.1-flash-image"},
     )
 
     assert updated.status_code == 200
     configs = client.get("/api/settings").json()["configs"]
     assert next(item for item in configs if item["id"] == openai["id"])["model"] == "gpt-image-2"
-    assert next(item for item in configs if item["id"] == gemini["id"])["model"] == "gemini-custom-image"
+    assert next(item for item in configs if item["id"] == gemini["id"])["model"] == "gemini-3.1-flash-image"
 
 
 def test_openai_model_discovery_stays_on_the_openai_endpoint(
@@ -298,7 +338,6 @@ def test_openai_model_discovery_stays_on_the_openai_endpoint(
     assert discovered.json() == {
         "models": [
             {"id": "gpt-image-2", "provider_type": "gpt"},
-            {"id": "gpt-5", "provider_type": "gpt"},
         ]
     }
     assert str(client_arguments["base_url"]) == "https://sub.beibeihai.xyz/v1"
@@ -343,7 +382,6 @@ def test_grok_uses_the_shared_endpoint_and_only_returns_grok_models(
     assert discovered.json() == {
         "models": [
             {"id": "grok-imagine-image", "provider_type": "grok"},
-            {"id": "grok-4", "provider_type": "grok"},
         ]
     }
     assert str(client_arguments["base_url"]) == "https://sub.beibeihai.xyz/v1"

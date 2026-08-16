@@ -39,9 +39,7 @@ function warpedPoint(x: number, y: number, time: number) {
   const distanceX = x - pointer.x;
   const distanceY = y - pointer.y;
   const distance = Math.hypot(distanceX, distanceY);
-  const radius = width <= 520
-    ? 170
-    : Math.min(320, Math.max(260, Math.min(width, height) * 0.34));
+  const radius = Math.min(320, Math.max(260, Math.min(width, height) * 0.34));
 
   if (pointer.strength > 0.002 && distance < radius) {
     const edgeDistance = 1 - distance / radius;
@@ -87,7 +85,7 @@ function draw(time: number) {
   pointer.y += (pointer.targetY - pointer.y) * 0.13;
   pointer.strength += (pointer.targetStrength - pointer.strength) * 0.085;
   const flowTime = motionQuery?.matches ? 0 : time;
-  const spacing = width <= 520 ? 58 : 72;
+  const spacing = 72;
   const totalDriftX = flowTime * 0.0007;
   const totalDriftY = flowTime * 0.0005;
   const driftX = totalDriftX % spacing;
@@ -109,7 +107,7 @@ function draw(time: number) {
 }
 
 function animate(time: number) {
-  const frameInterval = window.innerWidth <= 520 ? 50 : 32;
+  const frameInterval = 32;
   if (time - lastDrawAt >= frameInterval) {
     draw(time);
     lastDrawAt = time;
@@ -133,7 +131,6 @@ function startAnimation() {
 }
 
 function handlePointerMove(event: PointerEvent) {
-  if (event.pointerType === "touch") return;
   updatePointerPosition(event.clientX, event.clientY);
 }
 

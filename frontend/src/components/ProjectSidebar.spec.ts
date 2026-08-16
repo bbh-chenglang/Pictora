@@ -9,7 +9,8 @@ const history = (count: number) => Array.from({ length: count }, (_, index) => (
   prompt: `提示词 ${index + 1}`,
   provider: "compatible",
   model: "gpt-image-1.5",
-  status: "completed",
+  status: "completed" as const,
+  detail: "auto",
   image_count: 2,
   size: "16:9",
   resolution: "4K",
@@ -72,7 +73,7 @@ describe("ProjectSidebar", () => {
     expect(wrapper.findAll(".project-menu button")).toHaveLength(3);
     expect(wrapper.find(".project-menu").element.parentElement?.classList.contains("project-group")).toBe(true);
     expect(wrapper.find(".project-menu").classes()).toContain("project-menu-overlay");
-    expect(wrapper.get('[data-project-action="rename"] svg').exists()).toBe(true);
+    expect(wrapper.find('[data-project-action="rename"] svg').exists()).toBe(true);
 
     await wrapper.find(".project-menu button").trigger("click");
     expect(wrapper.emitted("new-conversation")?.[0]).toEqual([1]);
@@ -106,7 +107,6 @@ describe("ProjectSidebar", () => {
     await buttons[1].trigger("click");
 
     expect(wrapper.emitted("new-conversation")?.[0]).toEqual([2]);
-    expect(wrapper.emitted("close")).toHaveLength(1);
   });
 
   it("expands and collapses each project independently", async () => {
@@ -128,7 +128,7 @@ describe("ProjectSidebar", () => {
     expect(wrapper.find('[data-project-id="2"] .project-history').exists()).toBe(true);
   });
 
-  it("keeps the sidebar open when selecting projects and conversations", async () => {
+  it("selects projects, history, and running generations", async () => {
     const wrapper = mount(ProjectSidebar, {
       props: {
         projects: [{ id: 1, name: "项目一", history: history(1), history_count: 1 }],
@@ -139,15 +139,10 @@ describe("ProjectSidebar", () => {
 
     await wrapper.get(".project-select").trigger("click");
     expect(wrapper.emitted("select-project")?.[0]).toEqual([1]);
-    expect(wrapper.emitted("close")).toBeUndefined();
 
     await wrapper.get(".history-select").trigger("click");
     await wrapper.get(".running-generation").trigger("click");
     expect(wrapper.emitted("open-history")?.[0]).toEqual([1]);
     expect(wrapper.emitted("open-generation")?.[0]).toEqual([9]);
-    expect(wrapper.emitted("close")).toBeUndefined();
-
-    await wrapper.get(".mobile-sidebar-close").trigger("click");
-    expect(wrapper.emitted("close")).toHaveLength(1);
   });
 });

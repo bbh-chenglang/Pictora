@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 16
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS history (
 );
 CREATE TABLE IF NOT EXISTS generation_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER REFERENCES generation_tasks(id) ON DELETE SET NULL,
     history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
     api_key_config_id INTEGER REFERENCES api_key_configs(id) ON DELETE SET NULL,
     prompt TEXT NOT NULL,
@@ -92,17 +93,33 @@ CREATE TABLE IF NOT EXISTS generation_batches (
     model TEXT NOT NULL,
     detail TEXT NOT NULL,
     image_count INTEGER NOT NULL,
+    generated_count INTEGER,
     size TEXT,
     resolution TEXT,
     output_format TEXT,
     background TEXT,
     output_compression INTEGER,
     moderation TEXT,
+    views_json TEXT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
     elapsed_ms INTEGER,
     error_code TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS generation_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    worker_id TEXT,
+    heartbeat_at TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
     completed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS history_images (
@@ -114,13 +131,30 @@ CREATE TABLE IF NOT EXISTS history_images (
     mime_type TEXT NOT NULL,
     filename TEXT,
     position INTEGER NOT NULL DEFAULT 0,
+    batch_position INTEGER,
     data BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS generation_batch_deleted_slots (
+    batch_id INTEGER NOT NULL REFERENCES generation_batches(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (batch_id, position)
+);
+CREATE TABLE IF NOT EXISTS generation_batch_cancelled_slots (
+    batch_id INTEGER NOT NULL REFERENCES generation_batches(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (batch_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_history_user_created_at ON history(user_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_project_created_at ON history(project_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_images_history_id ON history_images(history_id, position);
 CREATE INDEX IF NOT EXISTS idx_history_images_batch_role_position ON history_images(batch_id, role, position);
+CREATE INDEX IF NOT EXISTS idx_generation_tasks_user_created ON generation_tasks(user_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_generation_tasks_history ON generation_tasks(history_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_deleted_slots_batch ON generation_batch_deleted_slots(batch_id, position);
+CREATE INDEX IF NOT EXISTS idx_cancelled_slots_batch ON generation_batch_cancelled_slots(batch_id, position);
 CREATE TRIGGER IF NOT EXISTS trg_users_default_project
 AFTER INSERT ON users
 BEGIN
@@ -188,6 +222,7 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
             model TEXT NOT NULL,
             detail TEXT NOT NULL,
             image_count INTEGER NOT NULL,
+            generated_count INTEGER,
             size TEXT,
             resolution TEXT,
             output_format TEXT,
@@ -203,6 +238,62 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
         )
         """
     )
+
+
+async def _migrate_generation_tasks(connection: aiosqlite.Connection) -> None:
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            worker_id TEXT,
+            heartbeat_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            completed_at TEXT
+        )
+        """
+    )
+    tables = {
+        row[0]
+        for row in await (await connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )).fetchall()
+    }
+    if "generation_batches" not in tables:
+        return
+    columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(generation_batches)" )).fetchall()
+    }
+    task_columns = {
+        row[1]
+        for row in await (await connection.execute("PRAGMA table_info(generation_tasks)" )).fetchall()
+    }
+    for name, declaration in {
+        "worker_id": "TEXT",
+        "heartbeat_at": "TEXT",
+    }.items():
+        if name not in task_columns:
+            await connection.execute(
+                f"ALTER TABLE generation_tasks ADD COLUMN {name} {declaration}"
+            )
+    if "task_id" not in columns:
+        await connection.execute(
+            "ALTER TABLE generation_batches ADD COLUMN task_id INTEGER REFERENCES generation_tasks(id) ON DELETE SET NULL"
+        )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_tasks_user_created ON generation_tasks(user_id, created_at DESC, id DESC)"
+    )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_tasks_history ON generation_tasks(history_id, id DESC)"
+    )
     batch_columns = {
         row[1]
         for row in await (await connection.execute("PRAGMA table_info(generation_batches)")).fetchall()
@@ -217,27 +308,76 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
         "error_code": "TEXT",
         "error_message": "TEXT",
         "completed_at": "TEXT",
+        "generated_count": "INTEGER",
+        "views_json": "TEXT",
     }.items():
         if name not in batch_columns:
             await connection.execute(
                 f"ALTER TABLE generation_batches ADD COLUMN {name} {declaration}"
             )
-    image_columns = {
-        row[1]
-        for row in await (await connection.execute("PRAGMA table_info(history_images)")).fetchall()
-    }
-    if "batch_id" not in image_columns:
-        await connection.execute(
-            "ALTER TABLE history_images ADD COLUMN batch_id INTEGER REFERENCES generation_batches(id) ON DELETE CASCADE"
+    if "history_images" in tables:
+        image_columns = {
+            row[1]
+            for row in await (await connection.execute("PRAGMA table_info(history_images)")).fetchall()
+        }
+        if "batch_id" not in image_columns:
+            await connection.execute(
+                "ALTER TABLE history_images ADD COLUMN batch_id INTEGER REFERENCES generation_batches(id) ON DELETE CASCADE"
+            )
+        if "reference_category" not in image_columns:
+            await connection.execute(
+                """
+                ALTER TABLE history_images
+                ADD COLUMN reference_category TEXT
+                CHECK (reference_category IN ('person', 'environment', 'object'))
+                """
+            )
+        if "batch_position" not in image_columns:
+            await connection.execute(
+                "ALTER TABLE history_images ADD COLUMN batch_position INTEGER"
+            )
+            await connection.execute(
+                """
+                UPDATE history_images AS image
+                SET batch_position = (
+                    SELECT COUNT(*)
+                    FROM history_images AS earlier
+                    WHERE earlier.batch_id = image.batch_id
+                      AND earlier.role = 'generated'
+                      AND (
+                          earlier.position < image.position
+                          OR (earlier.position = image.position AND earlier.id < image.id)
+                      )
+                )
+                WHERE image.role = 'generated' AND image.batch_id IS NOT NULL
+                """
+            )
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_batch_deleted_slots (
+            batch_id INTEGER NOT NULL REFERENCES generation_batches(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (batch_id, position)
         )
-    if "reference_category" not in image_columns:
-        await connection.execute(
-            """
-            ALTER TABLE history_images
-            ADD COLUMN reference_category TEXT
-            CHECK (reference_category IN ('person', 'environment', 'object'))
-            """
+        """
+    )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_deleted_slots_batch ON generation_batch_deleted_slots(batch_id, position)"
+    )
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_batch_cancelled_slots (
+            batch_id INTEGER NOT NULL REFERENCES generation_batches(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (batch_id, position)
         )
+        """
+    )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cancelled_slots_batch ON generation_batch_cancelled_slots(batch_id, position)"
+    )
     history_columns = {
         row[1]
         for row in await (await connection.execute("PRAGMA table_info(history)")).fetchall()
@@ -259,7 +399,8 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
             )
             """
         )
-        await connection.execute(
+        if "history_images" in tables:
+            await connection.execute(
             """
             UPDATE history_images
             SET batch_id = (
@@ -306,6 +447,77 @@ async def _migrate_generation_batches(connection: aiosqlite.Connection) -> None:
             await connection.execute(
                 "UPDATE generation_batches SET status = 'completed' WHERE status = 'pending'"
             )
+    await connection.execute(
+        """
+        UPDATE generation_batches
+        SET generated_count = (
+            SELECT COUNT(*)
+            FROM history_images AS image
+            WHERE image.batch_id = generation_batches.id AND image.role = 'generated'
+        )
+        WHERE generated_count IS NULL AND status IN ('completed', 'failed')
+        """
+    )
+    await connection.execute(
+        """
+        UPDATE generation_batches
+        SET status = 'failed',
+            error_code = 'partial_generation',
+            error_message = printf(
+                '本次请求 %d 张，服务商只返回 %d 张，其余 %d 张生成失败',
+                image_count, generated_count, image_count - generated_count
+            )
+        WHERE status = 'completed'
+          AND generated_count IS NOT NULL
+          AND generated_count < image_count
+        """
+    )
+    await connection.execute(
+        """
+        UPDATE generation_tasks
+        SET status = 'failed',
+            error_code = 'partial_generation',
+            error_message = (
+                SELECT batch.error_message
+                FROM generation_batches AS batch
+                WHERE batch.task_id = generation_tasks.id
+                  AND batch.error_code = 'partial_generation'
+                ORDER BY batch.id DESC
+                LIMIT 1
+            )
+        WHERE status = 'completed'
+          AND EXISTS (
+              SELECT 1
+              FROM generation_batches AS batch
+              WHERE batch.task_id = generation_tasks.id
+                AND batch.error_code = 'partial_generation'
+          )
+        """
+    )
+    if {"kind", "status", "error_code", "error_message"}.issubset(history_columns):
+        await connection.execute(
+            """
+            UPDATE history
+            SET status = 'failed',
+                error_code = 'partial_generation',
+                error_message = (
+                    SELECT latest.error_message
+                    FROM generation_batches AS latest
+                    WHERE latest.history_id = history.id
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                )
+            WHERE kind = 'generate'
+              AND status = 'completed'
+              AND (
+                  SELECT latest.error_code
+                  FROM generation_batches AS latest
+                  WHERE latest.history_id = history.id
+                  ORDER BY latest.id DESC
+                  LIMIT 1
+              ) = 'partial_generation'
+            """
+        )
     await connection.execute(
         """
         UPDATE history_images
@@ -546,6 +758,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 """
             )
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -607,6 +820,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 )
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -622,6 +836,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
                 await connection.execute("ALTER TABLE history ADD COLUMN resolution TEXT")
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -631,6 +846,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await connection.execute("BEGIN")
             await _remove_empty_default_api_key_configs(connection)
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -639,6 +855,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
         elif version < 7:
             await connection.execute("BEGIN")
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -647,6 +864,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
         elif version < 8:
             await connection.execute("BEGIN")
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -654,18 +872,21 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             return
         elif version < 9:
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_grok_provider(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         elif version < 10:
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             await connection.commit()
             return
         else:
             await connection.executescript(SCHEMA)
             await _migrate_generation_batches(connection)
+            await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

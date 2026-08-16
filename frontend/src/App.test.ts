@@ -3,13 +3,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
 
-const jsonResponse = (body: unknown) =>
-  Promise.resolve(
+const TEST_CAPABILITIES = [
+  { provider_type: "gpt", model: "gpt-image-2", label: "GPT Image 2", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }, { value: "2048x2048", label: "2K 正方形" }, { value: "2048x1152", label: "2K 横向" }, { value: "1152x2048", label: "2K 纵向" }, { value: "3840x2160", label: "4K 横向" }, { value: "2160x3840", label: "4K 纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
+  { provider_type: "gpt", model: "gpt-image-1.5", label: "GPT Image 1.5", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
+  { provider_type: "gpt", model: "gpt-image-1", label: "GPT Image 1", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
+  { provider_type: "gemini", model: "gemini-3.1-flash-image", label: "Gemini", max_output_count: 4, max_reference_images: 14, sizes: [], aspect_ratios: ["1:1", "2:3", "3:2", "16:9", "9:16"], resolutions: ["1K", "2K", "4K"], qualities: [], output_formats: [], backgrounds: [], supports_output_compression: false, moderation_levels: [], default_aspect_ratio: "1:1", default_resolution: "1K", default_quality: "auto" },
+  { provider_type: "grok", model: "grok-imagine-image", label: "Grok", max_output_count: 10, max_reference_images: 3, sizes: [], aspect_ratios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"], resolutions: ["1K", "2K"], qualities: [], output_formats: [], backgrounds: [], supports_output_compression: false, moderation_levels: [], default_aspect_ratio: "auto", default_resolution: "1K", default_quality: "auto" },
+  { provider_type: "grok", model: "grok-imagine-image-2.0", label: "Grok 2.0", max_output_count: 10, max_reference_images: 3, sizes: [], aspect_ratios: ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"], resolutions: ["1K", "2K"], qualities: [{ value: "low", label: "低" }, { value: "medium", label: "中" }], output_formats: [], backgrounds: [], supports_output_compression: false, moderation_levels: [], default_aspect_ratio: "auto", default_resolution: "1K", default_quality: "medium" },
+].map((capability) => ({
+  ...capability,
+  max_output_count: capability.provider_type === "gpt" || capability.provider_type === "grok"
+    ? 4
+    : capability.max_output_count,
+}));
+
+const jsonResponse = (body: unknown) => {
+  if (body && typeof body === "object" && "providers" in body && !("capabilities" in body)) {
+    body = { ...(body as Record<string, unknown>), capabilities: TEST_CAPABILITIES };
+  }
+  return Promise.resolve(
     new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }),
   );
+};
 
 describe("GenImage workspace", () => {
   beforeEach(() => {
@@ -49,6 +67,53 @@ describe("GenImage workspace", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     window.history.replaceState({}, "", "/");
+  });
+
+  it("includes session credentials on every API request", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const apiRequests = fetchMock.mock.calls.filter(([input]) => String(input).includes("/api/"));
+    expect(apiRequests.length).toBeGreaterThan(0);
+    expect(apiRequests.every(([, init]) => init?.credentials === "include")).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("loads runtime settings before restoring projects and generation tasks", async () => {
+    let resolveSettings: ((response: Response) => void) | undefined;
+    const settingsResponse = new Promise<Response>((resolve) => {
+      resolveSettings = resolve;
+    });
+    const requestedPaths: string[] = [];
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      requestedPaths.push(url);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return settingsResponse;
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(requestedPaths.some((url) => url.endsWith("/api/projects"))).toBe(false);
+
+    resolveSettings?.(new Response(JSON.stringify({
+      model: "gpt-image-1.5",
+      api_key_configured: true,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    const settingsIndex = requestedPaths.findIndex((url) => url.endsWith("/api/settings"));
+    const projectsIndex = requestedPaths.findIndex((url) => url.endsWith("/api/projects"));
+    expect(settingsIndex).toBeGreaterThanOrEqual(0);
+    expect(projectsIndex).toBeGreaterThan(settingsIndex);
+    wrapper.unmount();
   });
 
   it("allows an unbound legacy account to submit its username", async () => {
@@ -403,6 +468,18 @@ describe("GenImage workspace", () => {
     expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
     expect(wrapper.find(".composer-dock .reference-row").exists()).toBe(true);
     expect(wrapper.find(".composer-dock .prompt-row textarea").exists()).toBe(true);
+
+    const collapseToggle = wrapper.get(".composer-collapse-toggle");
+    expect(collapseToggle.attributes("aria-label")).toBe("向下收起提示词编辑区");
+    await collapseToggle.trigger("click");
+    expect(wrapper.get(".workspace-panel").classes()).toContain("is-composer-collapsed");
+    expect(wrapper.get<HTMLElement>(".workspace-composer-panel").element.style.display).toBe("none");
+    expect(collapseToggle.attributes("aria-label")).toBe("展开提示词编辑区");
+    expect(window.localStorage.getItem("genimage-workspace-composer-collapsed")).toBe("true");
+
+    await collapseToggle.trigger("click");
+    expect(wrapper.get(".workspace-panel").classes()).not.toContain("is-composer-collapsed");
+    expect(wrapper.get<HTMLElement>(".workspace-composer-panel").element.style.display).not.toBe("none");
   });
 
   it("labels a configured API key explicitly", async () => {
@@ -469,7 +546,7 @@ describe("GenImage workspace", () => {
     expect(menu.text()).toContain("1536x1024");
     expect(menu.text()).toContain("1024x1536");
     expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
-    expect(menu.get(".parameter-option.is-selected svg").exists()).toBe(true);
+    expect(menu.find(".parameter-option.is-selected svg").exists()).toBe(true);
 
     expect(wrapper.find("[data-parameter-trigger='resolution']").exists()).toBe(false);
   });
@@ -727,6 +804,100 @@ describe("GenImage workspace", () => {
     expect(form.getAll("image_categories")).toEqual(["person", "person"]);
   });
 
+  it("configures multi-view presets and validates custom views", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const toggle = wrapper.get(".multi-view-toggle");
+    expect(toggle.attributes("aria-checked")).toBe("false");
+    await toggle.trigger("click");
+
+    expect(toggle.attributes("aria-checked")).toBe("true");
+    expect(wrapper.findAll(".multi-view-presets button.active").map((item) => item.text())).toEqual([
+      "正面", "左前 45°", "右前 45°", "背面",
+    ]);
+    expect(wrapper.get(".multi-view-error").text()).toContain("请先添加人物或物品参考图");
+    expect(wrapper.get<HTMLButtonElement>(".primary-action").element.disabled).toBe(true);
+    expect(wrapper.get("[data-parameter-trigger='count']").attributes("disabled")).toBeDefined();
+
+    const personInput = wrapper.get<HTMLInputElement>("#image-input");
+    const objectInput = wrapper.get<HTMLInputElement>("#image-input-object");
+    Object.defineProperty(personInput.element, "files", { value: [new File(["person"], "person.png", { type: "image/png" })], configurable: true });
+    Object.defineProperty(objectInput.element, "files", { value: [new File(["object"], "object.png", { type: "image/png" })], configurable: true });
+    await personInput.trigger("change");
+    await objectInput.trigger("change");
+    expect(wrapper.findAll(".multi-view-target button").map((item) => item.text())).toEqual(["人物", "物品"]);
+    await wrapper.findAll(".multi-view-target button")[1].trigger("click");
+    expect(wrapper.findAll(".multi-view-target button")[1].attributes("aria-pressed")).toBe("true");
+    expect(wrapper.get<HTMLButtonElement>(".primary-action").element.disabled).toBe(false);
+
+    await wrapper.get(".custom-view-input input").setValue("后上方 30°");
+    await wrapper.get(".custom-view-input button").trigger("click");
+    expect(wrapper.get(".custom-view-list").text()).toContain("后上方 30°");
+    await wrapper.get(".custom-view-input input").setValue("正面");
+    await wrapper.get(".custom-view-input button").trigger("click");
+    expect(wrapper.get(".multi-view-error").text()).toContain("已经存在");
+
+    for (const label of ["左侧面", "右侧面", "俯视", "仰视"]) {
+      await wrapper.findAll(".multi-view-presets button").find((item) => item.text() === label)?.trigger("click");
+    }
+    expect(wrapper.findAll(".multi-view-presets button.active")).toHaveLength(7);
+    expect(wrapper.get(".multi-view-error").text()).toContain("最多选择 8 个视角");
+  });
+
+  it("submits one structured generation view per selected angle", async () => {
+    const fetchMock = vi.mocked(fetch);
+    let referenceRequest: RequestInit | undefined;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({
+        active_config_id: 4,
+        model: "gemini-3.1-flash-image",
+        api_key_configured: true,
+        configs: [{ id: 4, alias: "Gemini", provider_type: "gemini", model: "gemini-3.1-flash-image", api_key_configured: true }],
+      });
+      if (url.endsWith("/api/settings/api-keys/4/models")) return jsonResponse({
+        models: [{ id: "gemini-3.1-flash-image", provider_type: "gemini" }],
+      });
+      if (url.endsWith("/api/generate/reference")) {
+        referenceRequest = init;
+        return jsonResponse({ provider: "gemini", model: "gemini-3.1-flash-image", images: [] });
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    const person = new File(["person"], "person.png", { type: "image/png" });
+    const input = wrapper.get<HTMLInputElement>("#image-input");
+    Object.defineProperty(input.element, "files", { value: [person], configurable: true });
+    await input.trigger("change");
+    await wrapper.get(".multi-view-toggle").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("蓝色服装，室内自然光");
+
+    expect(wrapper.get(".primary-action").text()).toContain("生成 4 个视角");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    const form = referenceRequest?.body as FormData;
+    const views = JSON.parse(String(form.get("views")));
+    expect(form.get("count")).toBe("1");
+    expect(form.getAll("prompts")).toEqual([]);
+    expect(views.map((view: { key: string; label: string }) => [view.key, view.label])).toEqual([
+      ["person_front", "正面"],
+      ["person_left_three_quarter", "左前 45°"],
+      ["person_right_three_quarter", "右前 45°"],
+      ["person_back", "背面"],
+    ]);
+    expect(views[0].prompt).toContain("蓝色服装，室内自然光");
+    expect(views[0].prompt).toContain("不要拼图");
+    expect(form.getAll("image_categories")).toEqual(["person"]);
+  });
+
   it("accepts dragged reference images and removes them individually", async () => {
     const wrapper = mount(App);
     await flushPromises();
@@ -846,7 +1017,8 @@ describe("GenImage workspace", () => {
     await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
 
-    expect(wrapper.get(".error-message").text()).toBe("生成失败（HTTP 504）");
+    expect(wrapper.get(".generation-failure-card").text()).toContain("生成失败（HTTP 504）");
+    expect(wrapper.find(".result-panel > .generation-error").exists()).toBe(false);
   });
 
   it("shows API key aliases and sends only the selected config id", async () => {
@@ -889,6 +1061,106 @@ describe("GenImage workspace", () => {
     expect(JSON.parse(String(generation?.[1]?.body))).not.toHaveProperty("api_key");
   });
 
+  it("serializes rapid API key changes and ignores stale model responses", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const activationBodies: number[] = [];
+    let resolveFirstActivation: ((response: Response) => void) | undefined;
+    const firstActivation = new Promise<Response>((resolve) => {
+      resolveFirstActivation = resolve;
+    });
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 1,
+        model: "gpt-image-2",
+        api_key_configured: true,
+        configs: [
+          { id: 1, alias: "OpenAI", provider_type: "gpt", model: "gpt-image-2", api_key_configured: true },
+          { id: 2, alias: "Gemini", provider_type: "gemini", model: "gemini-image", api_key_configured: true },
+        ],
+      });
+      if (url.endsWith("/api/settings/api-keys/1/models")) return jsonResponse({
+        models: [{ id: "gpt-image-2", provider_type: "gpt" }],
+      });
+      if (url.endsWith("/api/settings/api-keys/2/models")) return jsonResponse({
+        models: [{ id: "gemini-image", provider_type: "gemini" }],
+      });
+      if (url.endsWith("/api/settings/active") && init?.method === "PUT") {
+        const configId = Number(JSON.parse(String(init.body)).config_id);
+        activationBodies.push(configId);
+        return configId === 2
+          ? firstActivation
+          : jsonResponse({ active_config_id: configId });
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-parameter-trigger='apiKey']").trigger("click");
+    await wrapper.get("[data-parameter-option='Gemini']").trigger("click");
+    await wrapper.get("[data-parameter-option='OpenAI']").trigger("click");
+    expect(activationBodies).toEqual([2]);
+
+    resolveFirstActivation?.(new Response(JSON.stringify({ active_config_id: 2 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(activationBodies).toEqual([2, 1]);
+    expect(wrapper.get("[data-parameter-trigger='apiKey']").text()).toContain("OpenAI");
+    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gpt-image-2");
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    expect(wrapper.get("[data-parameter-menu='count']").findAll(".parameter-option")).toHaveLength(4);
+    wrapper.unmount();
+  });
+
+  it("restores the active API key when activation fails", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
+        active_config_id: 1,
+        model: "gpt-image-2",
+        api_key_configured: true,
+        configs: [
+          { id: 1, alias: "OpenAI", provider_type: "gpt", model: "gpt-image-2", api_key_configured: true },
+          { id: 2, alias: "Gemini", provider_type: "gemini", model: "gemini-image", api_key_configured: true },
+        ],
+      });
+      if (url.endsWith("/api/settings/api-keys/1/models")) return jsonResponse({
+        models: [{ id: "gpt-image-2", provider_type: "gpt" }],
+      });
+      if (url.endsWith("/api/settings/active") && init?.method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify({
+          error: { code: "activation_failed", message: "激活失败" },
+        }), { status: 500, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.endsWith("/api/projects")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-parameter-trigger='apiKey']").trigger("click");
+    await wrapper.get("[data-parameter-option='Gemini']").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.get("[data-parameter-trigger='apiKey']").text()).toContain("OpenAI");
+    expect(wrapper.get("[data-parameter-trigger='model']").text()).toContain("gpt-image-2");
+    wrapper.unmount();
+  });
+
   it("shows provider-specific parameters and keeps model changes on the selected config", async () => {
     const fetchMock = vi.mocked(fetch);
     const generationBodies: Record<string, unknown>[] = [];
@@ -898,11 +1170,11 @@ describe("GenImage workspace", () => {
       if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
       if (url.endsWith("/api/settings") && !init?.method) return jsonResponse({
         active_config_id: 2,
-        model: "gemini-image",
+        model: "gemini-3.1-flash-image",
         api_key_configured: true,
         configs: [
           { id: 1, alias: "OpenAI 主账号", provider_type: "gpt", model: "gpt-image-2", api_key_configured: true },
-          { id: 2, alias: "Gemini 绘图", provider_type: "gemini", model: "gemini-image", api_key_configured: true },
+          { id: 2, alias: "Gemini 绘图", provider_type: "gemini", model: "gemini-3.1-flash-image", api_key_configured: true },
         ],
       });
       if (url.endsWith("/api/settings/active")) return jsonResponse({ active_config_id: JSON.parse(String(init?.body)).config_id });
@@ -930,7 +1202,7 @@ describe("GenImage workspace", () => {
 
     expect(wrapper.get("[data-parameter-trigger='size']").text()).toContain("图片比例");
     expect(wrapper.find("[data-parameter-trigger='quality']").exists()).toBe(false);
-    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(4);
+    expect(wrapper.findAll("[data-parameter-trigger]")).toHaveLength(5);
 
     await wrapper.get(".prompt-row textarea").setValue("Gemini 原生图片");
     await wrapper.get(".composer-actions .primary-action").trigger("click");
@@ -941,7 +1213,7 @@ describe("GenImage workspace", () => {
       aspect_ratio: "1:1",
     });
     expect(generationBodies[0]).not.toHaveProperty("detail");
-    expect(generationBodies[0]).not.toHaveProperty("resolution");
+    expect(generationBodies[0]).toHaveProperty("resolution", "1K");
 
     await wrapper.get("[data-parameter-trigger='apiKey']").trigger("click");
     await wrapper.get("[data-parameter-option='OpenAI 主账号']").trigger("click");
@@ -1008,16 +1280,16 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-parameter-trigger='model']").trigger("click");
     expect(wrapper.get("[data-parameter-menu='model']").text()).toContain("grok-imagine-image-2.0");
     await wrapper.get("[data-parameter-trigger='count']").trigger("click");
-    expect(wrapper.get("[data-parameter-menu='count']").findAll(".parameter-option")).toHaveLength(10);
-    await wrapper.get("[data-parameter-option='10']").trigger("click");
-    await wrapper.get(".prompt-row textarea").setValue("生成十张原图");
+    expect(wrapper.get("[data-parameter-menu='count']").findAll(".parameter-option")).toHaveLength(4);
+    await wrapper.get("[data-parameter-option='4']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("生成四张原图");
     await wrapper.get(".composer-actions .primary-action").trigger("click");
     await flushPromises();
 
     expect(generationBody).toMatchObject({
       provider: "grok",
       model: "grok-imagine-image",
-      count: 10,
+      count: 4,
     });
     expect(generationBody).not.toHaveProperty("size");
     expect(generationBody?.aspect_ratio).toBe("20:9");
@@ -1106,8 +1378,69 @@ describe("GenImage workspace", () => {
     await wrapper.get("[data-parameter-trigger='model']").trigger("click");
 
     const options = wrapper.get("[data-parameter-menu='model']").findAll(".parameter-option");
-    expect(options.map((item) => item.text())).toEqual(["gpt-image-2", "gpt-5"]);
+    expect(options.map((item) => item.text())).toEqual(["gpt-image-2"]);
     expect(wrapper.text()).not.toContain("stale-local-model");
+  });
+
+  it("restores multi-view labels and edits only the selected view", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({
+        active_config_id: 4,
+        model: "gemini-3.1-flash-image",
+        api_key_configured: true,
+        configs: [{ id: 4, alias: "Gemini", provider_type: "gemini", model: "gemini-3.1-flash-image", api_key_configured: true }],
+      });
+      if (url.endsWith("/api/settings/api-keys/4/models")) return jsonResponse({ models: [{ id: "gemini-3.1-flash-image", provider_type: "gemini" }] });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "多视角项目",
+        history: [{ id: 7, kind: "generate", status: "completed", prompt: "基础提示词", provider: "gemini", model: "gemini-3.1-flash-image", detail: "auto", image_count: 1, created_at: "2026-08-10T10:00:00" }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/history/7/images/21/edit")) return jsonResponse({
+        history_id: 7,
+        image_id: 21,
+        api_key_config_id: 4,
+        prompt: "基础提示词\n\n正面实际提示词",
+        provider: "gemini",
+        model: "gemini-3.1-flash-image",
+        detail: "auto",
+        image_count: 1,
+        view_label: "正面",
+        references: [],
+      });
+      if (url.endsWith("/api/history/7")) return jsonResponse({
+        id: 7,
+        kind: "generate",
+        status: "completed",
+        prompt: "基础提示词",
+        provider: "gemini",
+        model: "gemini-3.1-flash-image",
+        detail: "auto",
+        image_count: 1,
+        created_at: "2026-08-10T10:00:00",
+        images: [{ id: 21, batch_id: 12, role: "generated", mime_type: "image/png", position: 0, batch_position: 0, url: "/api/history/7/images/21" }],
+        batches: [{ id: 12, status: "completed", image_count: 1, generated_count: 1, views: [{ key: "person_front", label: "正面", prompt: "基础提示词\n\n正面实际提示词" }] }],
+      });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".multi-view-toggle").attributes("aria-checked")).toBe("true");
+    expect(wrapper.get(".image-meta > span").text()).toBe("正面");
+    await wrapper.get(".edit-image-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".multi-view-toggle").attributes("aria-checked")).toBe("false");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("基础提示词\n\n正面实际提示词");
+    expect(wrapper.get(".primary-action").text()).toContain("生成图片");
   });
 
   it("switches the API config together with the model when opening project history", async () => {
@@ -1452,7 +1785,7 @@ describe("GenImage workspace", () => {
           { id: 1, alias: "主 Key", provider_type: "gpt", model: "gpt-image-1.5", api_key_configured: true },
         ],
       });
-      if (url.endsWith("/api/settings/api-keys/1") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/api/settings/api-keys/1") && init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
       if (url.endsWith("/api/projects")) return jsonResponse([]);
       if (url.endsWith("/api/history")) return jsonResponse([]);
       throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
@@ -1474,7 +1807,7 @@ describe("GenImage workspace", () => {
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/api/settings/api-keys/1") && init?.method === "DELETE")).toBe(true);
   });
 
-  it("shows only the provider timeout in the empty canvas", async () => {
+  it("shows the provider timeout in the failed image slot", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
@@ -1497,12 +1830,11 @@ describe("GenImage workspace", () => {
     await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
 
-    const error = wrapper.get(".empty-wall .generation-error");
-    expect(error.text()).toBe("服务商请求超时，请稍后重试");
-    expect(error.classes()).toContain("error-message");
-    expect(wrapper.find(".empty-wall h3").exists()).toBe(false);
-    expect(wrapper.find(".empty-wall > p:not(.generation-error)").exists()).toBe(false);
-    expect(wrapper.find(".composer-dock > .error-message").exists()).toBe(false);
+    const failure = wrapper.get(".generation-failure-card");
+    expect(failure.text()).toContain("生成失败");
+    expect(failure.text()).toContain("服务商请求超时，请稍后重试");
+    expect(wrapper.find(".result-panel > .generation-error").exists()).toBe(false);
+    expect(wrapper.find(".empty-wall").exists()).toBe(false);
   });
 
   it("renders projects instead of the removed history trigger", async () => {
@@ -1521,51 +1853,64 @@ describe("GenImage workspace", () => {
     expect(wrapper.find(".history-trigger").exists()).toBe(false);
   });
 
-  it("toggles the project drawer and closes it from the backdrop or Escape", async () => {
-    const wrapper = mount(App, { attachTo: document.body });
-    await flushPromises();
-
-    const trigger = wrapper.get(".mobile-sidebar-trigger");
-    expect(trigger.attributes("aria-expanded")).toBe("false");
-
-    await trigger.trigger("click");
-    expect(wrapper.get(".studio-grid").classes()).toContain("sidebar-open");
-    expect(wrapper.get(".project-sidebar-backdrop").exists()).toBe(true);
-    expect(trigger.attributes("aria-expanded")).toBe("true");
-
-    await trigger.trigger("click");
-    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
-    expect(trigger.attributes("aria-expanded")).toBe("false");
-
-    await trigger.trigger("click");
-    await wrapper.get(".project-sidebar-backdrop").trigger("click");
-    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
-    expect(wrapper.get(".studio-grid").classes()).not.toContain("sidebar-open");
-
-    await trigger.trigger("click");
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find(".project-sidebar-backdrop").exists()).toBe(false);
-    expect(trigger.attributes("aria-expanded")).toBe("false");
-    wrapper.unmount();
-  });
-
-  it.skip("opens and closes history in a right-side drawer", async () => {
+  it("expands and collapses history in the project sidebar", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "历史项目",
+        history: [{
+          id: 7,
+          kind: "generate",
+          status: "completed",
+          prompt: "蓝色海面",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          created_at: "2026-07-26T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
     const wrapper = mount(App);
     await flushPromises();
 
-    expect(wrapper.find(".history-drawer").exists()).toBe(false);
-    await wrapper.get(".history-trigger").trigger("click");
-    expect(wrapper.get(".history-drawer").attributes("role")).toBe("dialog");
-    await wrapper.get(".history-drawer-close").trigger("click");
-    expect(wrapper.find(".history-drawer").exists()).toBe(false);
+    expect(wrapper.get(".history-select").text()).toContain("蓝色海面");
+    await wrapper.get(".project-toggle").trigger("click");
+    expect(wrapper.find(".history-select").exists()).toBe(false);
+    await wrapper.get(".project-toggle").trigger("click");
+    expect(wrapper.get(".history-select").text()).toContain("蓝色海面");
   });
 
-  it.skip("restores a selected history record into the result canvas", async () => {
+  it("restores a selected history record into the result canvas", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
       if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "历史项目",
+        history: [{
+          id: 7,
+          kind: "generate",
+          status: "completed",
+          prompt: "蓝色海面",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "high",
+          image_count: 1,
+          created_at: "2026-07-26T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
       if (url.endsWith("/api/history/7")) {
         return jsonResponse({
           id: 7,
@@ -1633,11 +1978,10 @@ describe("GenImage workspace", () => {
 
     const wrapper = mount(App);
     await flushPromises();
-    await wrapper.get(".history-trigger").trigger("click");
-    await wrapper.get("[data-history-id='7']").trigger("click");
+    await wrapper.get(".history-select").trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".history-drawer").exists()).toBe(false);
+    expect(wrapper.get(".result-heading h2").text()).toBe("历史结果");
     const prompt = wrapper.get<HTMLTextAreaElement>(".prompt-row textarea");
     expect(prompt.element.value).toBe("蓝色海面");
     expect(wrapper.get(".image-grid img").attributes("src")).toBe(
@@ -1985,7 +2329,7 @@ describe("GenImage workspace", () => {
     wrapper.unmount();
   });
 
-  it("keeps a background generation available while navigating elsewhere", async () => {
+  it("keeps a background generation in the sidebar while switching project context", async () => {
     let finishGeneration: ((response: Response) => void) | undefined;
     const pendingGeneration = new Promise<Response>((resolve) => {
       finishGeneration = resolve;
@@ -2054,8 +2398,12 @@ describe("GenImage workspace", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.get("[data-project-id='2']").classes()).toContain("active");
-    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("保持当前生成页面");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("");
     expect(wrapper.get(".primary-action").text()).toContain("生成图片");
+    expect(JSON.parse(window.localStorage.getItem("genimage-workspace-selection:alice") ?? "{}")).toEqual({
+      projectId: 2,
+      conversationId: null,
+    });
     await wrapper.get("[data-project-id='1'] .project-toggle").trigger("click");
     expect(wrapper.get(".running-generation").text()).toMatch(/正在生成 · \d+\.\d{2} 秒/);
 
@@ -2101,7 +2449,7 @@ describe("GenImage workspace", () => {
     wrapper.unmount();
   });
 
-  it("submits another batch in the same conversation before the first result finishes", async () => {
+  it("keeps enqueue order when the newer batch finishes first", async () => {
     const generationBodies: Array<Record<string, unknown>> = [];
     let batchSequence = 0;
     let finishFirstBatch: ((response: Response) => void) | undefined;
@@ -2157,11 +2505,589 @@ describe("GenImage workspace", () => {
     expect(wrapper.findAll(".running-generation")).toHaveLength(1);
     expect(wrapper.findAll(".generation-progress-card")).toHaveLength(2);
 
+    finishSecondBatch?.(new Response(JSON.stringify({
+      id: 102,
+      history_id: 44,
+      status: "completed",
+      elapsed_ms: 800,
+      images: [{
+        id: 502,
+        batch_id: 102,
+        role: "generated",
+        mime_type: "image/png",
+        position: 0,
+        batch_position: 0,
+        url: "/api/history/44/images/502",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/502");
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(1);
+
     finishFirstBatch?.(new Response(JSON.stringify({
       id: 101,
       history_id: 44,
       status: "completed",
-      elapsed_ms: 1200,
+      elapsed_ms: 2400,
+      images: [{
+        id: 501,
+        batch_id: 101,
+        role: "generated",
+        mime_type: "image/png",
+        position: 0,
+        batch_position: 0,
+        url: "/api/history/44/images/501",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
+      "/api/history/44/images/502",
+      "/api/history/44/images/501",
+    ]);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("shows cancellation instead of deletion while slots are generating", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const pendingStatus = new Promise<Response>(() => undefined);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{ id: 1, name: "项目", history: [], history_count: 0 }]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({
+        task_id: 91,
+        history_id: 44,
+        batch_id: 101,
+        status: "queued",
+        status_url: "/api/generation-tasks/91",
+      }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      if (url.endsWith("/api/generation-tasks/91")) return pendingStatus;
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    await wrapper.get("[data-parameter-option='4']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("四张图");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(4);
+    expect(wrapper.findAll("[aria-label='取消当前图片']")).toHaveLength(4);
+    expect(wrapper.findAll("[aria-label='删除图片']")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("cancels one pending slot while sibling images keep generating", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const pendingStatus = new Promise<Response>(() => undefined);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{ id: 1, name: "项目", history: [], history_count: 0 }]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({
+        task_id: 91,
+        history_id: 44,
+        batch_id: 101,
+        status: "queued",
+        status_url: "/api/generation-tasks/91",
+      }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      if (url.endsWith("/api/generation-tasks/91")) return pendingStatus;
+      if (url.endsWith("/api/history/44/batches/101/slots/1/cancel") && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    await wrapper.get("[data-parameter-option='4']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("四张图");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll("[aria-label='取消当前图片']")).toHaveLength(4);
+    await wrapper.findAll("[aria-label='取消当前图片']")[1].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-card")).toHaveLength(3);
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(3);
+    expect(wrapper.findAll("[aria-label='取消当前图片']")).toHaveLength(3);
+    expect(wrapper.findAll("[aria-label='删除图片']")).toHaveLength(0);
+    expect(wrapper.text()).not.toContain("该图片生成已取消");
+    expect(fetchMock.mock.calls.some(([input, request]) => (
+      String(input).endsWith("/api/history/44/batches/101/slots/1/cancel") && request?.method === "POST"
+    ))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input, request]) => (
+      String(input).endsWith("/api/generate/91") && request?.method === "DELETE"
+    ))).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows completed slots while the generation task is still running", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{ id: 1, name: "项目", history: [], history_count: 0 }]);
+      if (url.endsWith("/api/generation-tasks") && !url.endsWith("/api/generation-tasks/91")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") return jsonResponse({
+        task_id: 91,
+        history_id: 44,
+        batch_id: 101,
+        status: "queued",
+        status_url: "/api/generation-tasks/91",
+      });
+      if (url.endsWith("/api/generation-tasks/91")) return jsonResponse({
+        id: 91,
+        history_id: 44,
+        batch_id: 101,
+        status: "running",
+        image_count: 2,
+        generated_count: 1,
+        images: [{
+          id: 501,
+          batch_id: 101,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          batch_position: 0,
+          url: "/api/history/44/images/501",
+        }],
+      });
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    await wrapper.get("[data-parameter-option='2']").trigger("click");
+    await wrapper.get(".prompt-row textarea").setValue("逐张展示");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/501");
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(1);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/generation-tasks/91"))).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("restores the current conversation after refresh when no task is active", async () => {
+    window.localStorage.setItem("genimage-workspace-selection:alice", JSON.stringify({
+      projectId: 3,
+      conversationId: 44,
+    }));
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 3,
+        name: "当前项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: "completed",
+          prompt: "刷新前的对话",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          created_at: "2026-08-13T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "completed",
+        prompt: "刷新前的对话",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 1,
+        elapsed_ms: 800,
+        created_at: "2026-08-13T10:00:00",
+        images: [{
+          id: 501,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          url: "/api/history/44/images/501",
+        }],
+      });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get("[data-project-id='3']").classes()).toContain("active");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("刷新前的对话");
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/501");
+    expect(wrapper.find(".generation-progress-card").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("restores existing conversation images while resuming a task after refresh", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 3,
+        name: "刷新恢复项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: "pending",
+          prompt: "继续完善旧对话",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          created_at: "2026-08-13T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([{
+        id: 91,
+        history_id: 44,
+        project_id: 3,
+        batch_id: 102,
+        status: "running",
+        attempts: 1,
+        prompt: "当前批次的三张快照",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "high",
+        image_count: 3,
+        size: "1536x1024",
+        created_at: "2026-08-13T10:00:00",
+      }]);
+      if (url.endsWith("/api/generation-tasks/91")) return jsonResponse({
+        id: 91,
+        history_id: 44,
+        project_id: 3,
+        batch_id: 102,
+        status: "running",
+        attempts: 1,
+        prompt: "当前批次的三张快照",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "high",
+        image_count: 3,
+        size: "1536x1024",
+        created_at: "2026-08-13T10:00:00",
+      });
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "pending",
+        prompt: "继续完善旧对话",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 1,
+        created_at: "2026-08-13T10:00:00",
+        images: [{
+          id: 501,
+          batch_id: 101,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          url: "/api/history/44/images/501",
+        }],
+      });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get("[data-project-id='3']").classes()).toContain("active");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("当前批次的三张快照");
+    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/501");
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(3);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/generation-tasks/91"))).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps generation slots and polling when cancellation fails", async () => {
+    let submitted = false;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 3,
+        name: "取消测试",
+        history: submitted ? [{
+          id: 44,
+          kind: "generate",
+          status: "pending",
+          prompt: "保持生成卡片",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 2,
+          created_at: "2026-08-15T10:00:00",
+        }] : [],
+        history_count: submitted ? 1 : 0,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        submitted = true;
+        return jsonResponse({ task_id: 91, history_id: 44, batch_id: 102, status_url: "/api/generation-tasks/91" });
+      }
+      if (url.endsWith("/api/generation-tasks/91")) return jsonResponse({
+        id: 91,
+        history_id: 44,
+        project_id: 3,
+        batch_id: 102,
+        status: "running",
+        prompt: "保持生成卡片",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 2,
+      });
+      if (url.endsWith("/api/history/44/batches/102/slots/0/cancel") && init?.method === "POST") {
+        return Promise.resolve(new Response(
+          JSON.stringify({ error: { code: "cancel_unavailable", message: "取消服务暂时不可用" } }),
+          { status: 503, headers: { "Content-Type": "application/json" } },
+        ));
+      }
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("保持生成卡片");
+    await wrapper.get("[data-parameter-trigger='count']").trigger("click");
+    await wrapper.get("[data-parameter-option='2']").trigger("click");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(2);
+    await wrapper.findAll("[aria-label='取消当前图片']")[0].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(2);
+    expect(wrapper.findAll("[aria-label='取消当前图片']")).toHaveLength(2);
+    expect(wrapper.get(".result-error").text()).toContain("取消服务暂时不可用");
+    expect(wrapper.find(".generation-failure-card").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the saved project and clears a stale conversation from another project", async () => {
+    window.localStorage.setItem("genimage-workspace-selection:alice", JSON.stringify({
+      projectId: 4,
+      conversationId: 44,
+    }));
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([
+        {
+          id: 4,
+          name: "其他项目",
+          history: [{
+            id: 55,
+            kind: "generate",
+            status: "pending",
+            prompt: "其他运行中的对话",
+            provider: "compatible",
+            model: "gpt-image-1.5",
+            detail: "auto",
+            image_count: 1,
+            created_at: "2026-08-14T10:01:00",
+          }],
+          history_count: 1,
+        },
+        {
+          id: 3,
+          name: "当前项目",
+          history: [{
+            id: 44,
+            kind: "generate",
+            status: "pending",
+            prompt: "刷新前的当前对话",
+            provider: "compatible",
+            model: "gpt-image-1.5",
+            detail: "auto",
+            image_count: 2,
+            created_at: "2026-08-14T10:00:00",
+          }],
+          history_count: 1,
+        },
+      ]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([
+        { id: 99, history_id: 55, batch_id: 202, status: "running", created_at: "2026-08-14T10:01:00" },
+        { id: 91, history_id: 44, batch_id: 102, status: "running", created_at: "2026-08-14T10:00:00" },
+      ]);
+      if (url.endsWith("/api/generation-tasks/99")) {
+        return jsonResponse({ id: 99, history_id: 55, batch_id: 202, status: "running" });
+      }
+      if (url.endsWith("/api/generation-tasks/91")) {
+        return jsonResponse({ id: 91, history_id: 44, batch_id: 102, status: "running" });
+      }
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "pending",
+        prompt: "刷新前的当前对话",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 2,
+        created_at: "2026-08-14T10:00:00",
+        images: [
+          { id: 501, batch_id: 100, role: "generated", mime_type: "image/png", position: 0, url: "/api/history/44/images/501" },
+          { id: 502, batch_id: 100, role: "generated", mime_type: "image/png", position: 1, url: "/api/history/44/images/502" },
+        ],
+      });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get("[data-project-id='4']").classes()).toContain("active");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("");
+    expect(wrapper.find(".image-grid img").exists()).toBe(false);
+    expect(wrapper.find(".generation-progress-card").exists()).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/history/55"))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/history/44"))).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem("genimage-workspace-selection:alice") ?? "{}")).toEqual({
+      projectId: 4,
+      conversationId: null,
+    });
+    wrapper.unmount();
+  });
+
+  it("merges restored history with images completed during refresh", async () => {
+    window.localStorage.setItem("genimage-workspace-selection:alice", JSON.stringify({
+      projectId: 3,
+      conversationId: 44,
+    }));
+    let finishHistoryDetail: ((response: Response) => void) | undefined;
+    let finishTaskStatus: ((response: Response) => void) | undefined;
+    let taskCompleted = false;
+    const historyDetail = new Promise<Response>((resolve) => { finishHistoryDetail = resolve; });
+    const taskStatus = new Promise<Response>((resolve) => { finishTaskStatus = resolve; });
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 3,
+        name: "当前项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: taskCompleted ? "completed" : "pending",
+          prompt: "刷新时完成的对话",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 1,
+          created_at: "2026-08-14T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) {
+        return jsonResponse(taskCompleted ? [] : [{
+          id: 91,
+          history_id: 44,
+          batch_id: 102,
+          status: "running",
+          created_at: "2026-08-14T10:00:00",
+        }]);
+      }
+      if (url.endsWith("/api/generation-tasks/91")) return taskStatus;
+      if (url.endsWith("/api/history/44/batches/102")) return jsonResponse({
+        id: 102,
+        history_id: 44,
+        status: "completed",
+        images: [{
+          id: 502,
+          batch_id: 102,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          url: "/api/history/44/images/502",
+        }],
+      });
+      if (url.endsWith("/api/history/44")) return historyDetail;
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    taskCompleted = true;
+    finishTaskStatus?.(new Response(JSON.stringify({
+      id: 91,
+      history_id: 44,
+      batch_id: 102,
+      status: "completed",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushPromises();
+
+    finishHistoryDetail?.(new Response(JSON.stringify({
+      id: 44,
+      kind: "generate",
+      status: "pending",
+      prompt: "刷新时完成的对话",
+      provider: "compatible",
+      model: "gpt-image-1.5",
+      detail: "auto",
+      image_count: 1,
+      created_at: "2026-08-14T10:00:00",
       images: [{
         id: 501,
         batch_id: 101,
@@ -2173,32 +3099,290 @@ describe("GenImage workspace", () => {
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await flushPromises();
 
-    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
-    expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/501");
-    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(1);
+    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
+      "/api/history/44/images/502",
+      "/api/history/44/images/501",
+    ]);
+    wrapper.unmount();
+  });
 
-    finishSecondBatch?.(new Response(JSON.stringify({
-      id: 102,
-      history_id: 44,
-      status: "completed",
-      elapsed_ms: 2400,
-      images: [{
-        id: 502,
+  it("keeps existing images and stops polling when another batch fails", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: "completed",
+          prompt: "已有两张图片",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 2,
+          created_at: "2026-08-13T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "completed",
+        prompt: "已有两张图片",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 2,
+        created_at: "2026-08-13T10:00:00",
+        images: [
+          { id: 501, role: "generated", mime_type: "image/png", position: 0, url: "/api/history/44/images/501" },
+          { id: 502, role: "generated", mime_type: "image/png", position: 1, url: "/api/history/44/images/502" },
+        ],
+      });
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({
+          task_id: 91,
+          history_id: 44,
+          batch_id: 102,
+          status: "queued",
+          status_url: "/api/generation-tasks/91",
+        }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.endsWith("/api/generation-tasks/91")) return jsonResponse({
+        id: 91,
+        history_id: 44,
         batch_id: 102,
-        role: "generated",
-        mime_type: "image/png",
-        position: 0,
-        url: "/api/history/44/images/502",
-      }],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        status: "failed",
+        error_code: "provider_request",
+        error_message: "上游限流，请稍后重试",
+      });
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("继续生成");
+    await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
 
     expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
-    expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
-      "/api/history/44/images/501",
-      "/api/history/44/images/502",
-    ]);
-    expect(wrapper.findAll(".generation-progress-card")).toHaveLength(0);
+    expect(wrapper.find(".generation-progress-card").exists()).toBe(false);
+    expect(wrapper.findAll(".generation-failure-card")).toHaveLength(2);
+    expect(wrapper.findAll(".generation-failure-card").every((card) => card.text().includes("上游限流，请稍后重试"))).toBe(true);
+    expect(wrapper.find(".result-panel > .generation-error").exists()).toBe(false);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/api/generation-tasks/91"))).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushPromises();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/api/generation-tasks/91"))).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("keeps successful images and a failed slot when a batch returns fewer images", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: "completed",
+          prompt: "已有两张图片",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 2,
+          created_at: "2026-08-13T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "completed",
+        prompt: "已有两张图片",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 2,
+        created_at: "2026-08-13T10:00:00",
+        batches: [{ id: 101, status: "completed", image_count: 2, generated_count: 2 }],
+        images: [
+          { id: 501, batch_id: 101, role: "generated", mime_type: "image/png", position: 0, url: "/api/history/44/images/501" },
+          { id: 502, batch_id: 101, role: "generated", mime_type: "image/png", position: 1, url: "/api/history/44/images/502" },
+        ],
+      });
+      if (url.endsWith("/api/generate") && init?.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({
+          task_id: 91,
+          history_id: 44,
+          batch_id: 102,
+          status: "queued",
+          status_url: "/api/generation-tasks/91",
+        }), { status: 202, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.endsWith("/api/generation-tasks/91")) return jsonResponse({
+        id: 91,
+        history_id: 44,
+        batch_id: 102,
+        status: "failed",
+        error_code: "partial_generation",
+        error_message: "本次请求 2 张，服务商只返回 1 张，其余 1 张生成失败",
+        image_count: 2,
+      });
+      if (url.endsWith("/api/history/44/batches/102")) return jsonResponse({
+        id: 102,
+        history_id: 44,
+        status: "failed",
+        image_count: 2,
+        generated_count: 1,
+        error_code: "partial_generation",
+        error_message: "本次请求 2 张，服务商只返回 1 张，其余 1 张生成失败",
+        elapsed_ms: 1800,
+        images: [{
+          id: 503,
+          batch_id: 102,
+          role: "generated",
+          mime_type: "image/png",
+          position: 2,
+          url: "/api/history/44/images/503",
+        }],
+      });
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".history-select").trigger("click");
+    await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("继续生成两张");
+    await wrapper.get(".primary-action").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(3);
+    expect(wrapper.findAll(".generation-failure-card")).toHaveLength(1);
+    expect(wrapper.get(".generation-failure-card").text()).toContain("只返回 1 张");
+    expect(wrapper.find(".generation-progress-card").exists()).toBe(false);
+    expect(wrapper.find(".result-panel > .generation-error").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("restores every failed or missing generation slot after a refresh", async () => {
+    window.localStorage.setItem("genimage-workspace-selection:alice", JSON.stringify({
+      projectId: 1,
+      conversationId: 44,
+    }));
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: true });
+      if (url.endsWith("/api/providers")) {
+        return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
+      }
+      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+      if (url.endsWith("/api/projects")) return jsonResponse([{
+        id: 1,
+        name: "项目",
+        history: [{
+          id: 44,
+          kind: "generate",
+          status: "failed",
+          prompt: "部分成功",
+          provider: "compatible",
+          model: "gpt-image-1.5",
+          detail: "auto",
+          image_count: 2,
+          created_at: "2026-08-14T10:00:00",
+        }],
+        history_count: 1,
+      }]);
+      if (url.endsWith("/api/generation-tasks")) return jsonResponse([]);
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      if (url.endsWith("/api/history/44")) return jsonResponse({
+        id: 44,
+        kind: "generate",
+        status: "failed",
+        prompt: "部分成功",
+        provider: "compatible",
+        model: "gpt-image-1.5",
+        detail: "auto",
+        image_count: 2,
+        created_at: "2026-08-14T10:00:00",
+        batches: [
+          {
+            id: 101,
+            status: "failed",
+            image_count: 2,
+            generated_count: 0,
+            error_code: "provider_request",
+            error_message: "第一批生成失败",
+          },
+          {
+            id: 102,
+            status: "failed",
+            image_count: 2,
+            generated_count: 1,
+            elapsed_ms: 1800,
+            error_code: "partial_generation",
+            error_message: "本次请求 2 张，服务商只返回 1 张，其余 1 张生成失败",
+          },
+          {
+            id: 103,
+            status: "failed",
+            image_count: 2,
+            generated_count: 0,
+            error_code: "provider_request",
+            error_message: "第三批生成失败",
+          },
+        ],
+        images: [{
+          id: 503,
+          batch_id: 102,
+          role: "generated",
+          mime_type: "image/png",
+          position: 0,
+          url: "/api/history/44/images/503",
+        }],
+      });
+      if (url.endsWith("/api/history/44/batches/103/slots/0") && init?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(1);
+    expect(wrapper.findAll(".generation-failure-card")).toHaveLength(5);
+    expect(wrapper.findAll(".generation-failure-card").map((card) => card.text()).join(" ")).toContain("只返回 1 张");
+    expect(wrapper.findAll(".image-card")).toHaveLength(6);
+
+    await wrapper.findAll(".generation-failure-card [aria-label='删除图片']")[0].trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".generation-failure-card")).toHaveLength(4);
+    expect(fetchMock.mock.calls.some(([input, request]) => (
+      String(input).endsWith("/api/history/44/batches/103/slots/0") && request?.method === "DELETE"
+    ))).toBe(true);
     wrapper.unmount();
   });
 
@@ -2257,6 +3441,7 @@ describe("GenImage workspace", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/history/44"))).toBe(true);
     expect(wrapper.get(".image-grid img").attributes("src")).toBe("/api/history/44/images/9");
     expect(wrapper.get(".image-meta strong").text()).toBe("2.30 秒");
+    expect(JSON.parse(window.localStorage.getItem("genimage-workspace-selection:alice") ?? "{}").conversationId).toBe(44);
     wrapper.unmount();
   });
 
@@ -2346,8 +3531,8 @@ describe("GenImage workspace", () => {
     expect(generationBodies[1]).toMatchObject({ conversation_id: 44, prompt: "继续调整" });
     expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
     expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
-      "/api/history/44/images/440",
       "/api/history/44/images/441",
+      "/api/history/44/images/440",
     ]);
     expect(wrapper.findAll(".history-select")).toHaveLength(1);
 
@@ -2359,9 +3544,9 @@ describe("GenImage workspace", () => {
     expect(generationBodies[2]).toMatchObject({ conversation_id: 44, prompt: "第三轮调整" });
     expect(wrapper.findAll(".image-grid img")).toHaveLength(3);
     expect(wrapper.findAll(".image-grid img").map((image) => image.attributes("src"))).toEqual([
-      "/api/history/44/images/440",
-      "/api/history/44/images/441",
       "/api/history/44/images/442",
+      "/api/history/44/images/441",
+      "/api/history/44/images/440",
     ]);
 
     await wrapper.get(".project-new-conversation").trigger("click");
@@ -2489,6 +3674,20 @@ describe("GenImage workspace", () => {
     expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
 
     await wrapper.findAll("[aria-label='删除图片']")[0].trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".confirm-dialog").text()).toContain("确认删除这张图片吗？删除后无法恢复。");
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+    expect(fetchMock.mock.calls.some(([input, init]) => (
+      String(input).endsWith("/api/history/7/images/9") && init?.method === "DELETE"
+    ))).toBe(false);
+
+    await wrapper.get(".confirm-dialog .secondary-action").trigger("click");
+    expect(wrapper.find(".confirm-dialog").exists()).toBe(false);
+    expect(wrapper.findAll(".image-grid img")).toHaveLength(2);
+
+    await wrapper.findAll("[aria-label='删除图片']")[0].trigger("click");
+    await wrapper.get(".confirm-dialog .danger-action").trigger("click");
     await flushPromises();
 
     expect(wrapper.findAll(".image-grid img")).toHaveLength(1);

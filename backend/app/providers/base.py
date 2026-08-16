@@ -2,6 +2,8 @@ import base64
 import json
 import re
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 from app.schemas.analyze import AnalyzeResponse
@@ -62,6 +64,7 @@ class ProviderRequestError(ProviderError):
         status_code: int | None = None,
         response_content: bytes | None = None,
         content_type: str | None = None,
+        retry_after_seconds: float | None = None,
     ) -> None:
         message = "Provider request failed"
         if status_code is not None:
@@ -73,6 +76,23 @@ class ProviderRequestError(ProviderError):
         self.status_code = status_code
         self.response_content = response_content
         self.content_type = content_type
+        self.retry_after_seconds = retry_after_seconds
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value.strip()))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024

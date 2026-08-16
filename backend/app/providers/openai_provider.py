@@ -21,6 +21,7 @@ from app.providers.base import (
     image_data_url,
     normalize_image_results,
     normalize_text,
+    parse_retry_after,
 )
 from app.schemas.generate import (
     GenerateRequest,
@@ -116,6 +117,9 @@ class OpenAIProvider(ImageProvider):
                 status_code=exc.status_code,
                 response_content=exc.response.content,
                 content_type=exc.response.headers.get("content-type"),
+                retry_after_seconds=parse_retry_after(
+                    exc.response.headers.get("retry-after")
+                ),
             ) from None
         except APITimeoutError:
             self._log_generation_failure(request, started_at, "timeout")
@@ -203,6 +207,9 @@ class OpenAIProvider(ImageProvider):
                 status_code=exc.status_code,
                 response_content=exc.response.content,
                 content_type=exc.response.headers.get("content-type"),
+                retry_after_seconds=parse_retry_after(
+                    exc.response.headers.get("retry-after")
+                ),
             ) from None
         except APITimeoutError:
             raise ProviderTimeoutError() from None

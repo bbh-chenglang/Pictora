@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.database import initialize_database
 from app.dependencies import (
+    get_auth_rate_limiter,
     get_email_sender,
     get_user_repository,
     get_verification_code_repository,
@@ -14,6 +15,7 @@ from app.main import app
 from app.repositories.user_repository import UserRepository
 from app.auth import hash_password
 from app.repositories.verification_code_repository import VerificationCodeRepository
+from app.services.auth_rate_limiter import AuthRateLimiter
 
 
 class FakeEmailSender:
@@ -31,9 +33,17 @@ def client(tmp_path: Path):
     repository = UserRepository(database_path)
     code_repository = VerificationCodeRepository(database_path)
     sender = FakeEmailSender()
+    rate_limiter = AuthRateLimiter(
+        login_max_failures=5,
+        login_window_seconds=900,
+        verification_max_requests_per_ip=10,
+        verification_global_max_requests=100,
+        verification_window_seconds=600,
+    )
     app.dependency_overrides[get_user_repository] = lambda: repository
     app.dependency_overrides[get_verification_code_repository] = lambda: code_repository
     app.dependency_overrides[get_email_sender] = lambda: sender
+    app.dependency_overrides[get_auth_rate_limiter] = lambda: rate_limiter
     try:
         with TestClient(app) as test_client:
             test_client.verification_codes = sender.codes
@@ -277,3 +287,53 @@ def test_verification_code_requests_are_rate_limited(client: TestClient) -> None
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "verification_code_cooldown"
+
+
+def test_login_failures_are_rate_limited_by_identifier_and_client(client: TestClient) -> None:
+    limiter = AuthRateLimiter(
+        login_max_failures=2,
+        login_window_seconds=900,
+        verification_max_requests_per_ip=10,
+        verification_global_max_requests=100,
+        verification_window_seconds=600,
+    )
+    app.dependency_overrides[get_auth_rate_limiter] = lambda: limiter
+
+    for _ in range(2):
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "missing@example.com", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "missing@example.com", "password": "wrong-password"},
+    )
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "auth_rate_limited"
+    assert int(response.headers["Retry-After"]) > 0
+
+
+def test_verification_requests_are_rate_limited_across_emails(client: TestClient) -> None:
+    limiter = AuthRateLimiter(
+        login_max_failures=5,
+        login_window_seconds=900,
+        verification_max_requests_per_ip=2,
+        verification_global_max_requests=100,
+        verification_window_seconds=600,
+    )
+    app.dependency_overrides[get_auth_rate_limiter] = lambda: limiter
+
+    assert client.post(
+        "/api/auth/verification-code", json={"email": "first@example.com"}
+    ).status_code == 200
+    assert client.post(
+        "/api/auth/verification-code", json={"email": "second@example.com"}
+    ).status_code == 200
+    response = client.post(
+        "/api/auth/verification-code", json={"email": "third@example.com"}
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "auth_rate_limited"

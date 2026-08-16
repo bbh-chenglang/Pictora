@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
-import { ChevronDown, ChevronRight, FileImage, Folder, LoaderCircle, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-vue-next";
+import { ChevronDown, ChevronRight, FileImage, Folder, LoaderCircle, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-vue-next";
 
 export type HistorySummary = {
   id: number;
-  kind?: "generate" | "analyze";
+  kind: "generate" | "analyze";
   prompt: string;
-  provider?: string;
+  provider: string;
   model: string;
-  status: string;
-  image_count?: number;
+  status: "pending" | "completed" | "failed";
+  detail: string;
+  image_count: number;
   size?: string | null;
   resolution?: string | null;
   created_at: string;
@@ -38,7 +39,6 @@ const emit = defineEmits<{
   "delete-history": [project: ProjectSummary, ids: number[]]; "open-history": [id: number];
   "open-generation": [id: number];
   "prefetch-history": [id: number];
-  close: [];
 }>();
 const expanded = ref<Record<number, boolean>>({});
 const projectExpanded = ref<Record<number, boolean>>({});
@@ -114,11 +114,9 @@ function openGeneration(id: number) {
 }
 function createProject() {
   emit("create-project");
-  emit("close");
 }
 function startConversation(project: ProjectSummary) {
   emit("new-conversation", project.id);
-  emit("close");
 }
 watch(() => props.projects, (projects) => {
   const currentHistoryIds = new Map(projects.map((project) => [project.id, new Set(project.history.map((item) => item.id))]));
@@ -142,7 +140,7 @@ onUnmounted(() => document.removeEventListener("click", closeMenuOnOutsideClick)
 
 <template>
   <aside class="project-sidebar" aria-label="项目列表">
-    <div class="sidebar-heading"><div><span>工作区</span><h2>项目</h2></div><div class="sidebar-heading-actions"><button type="button" class="icon-action" title="新建项目" aria-label="新建项目" @click="createProject"><Plus :size="17" /></button><button type="button" class="icon-action mobile-sidebar-close" title="关闭项目列表" aria-label="关闭项目列表" @click="emit('close')"><X :size="17" /></button></div></div>
+    <div class="sidebar-heading"><div><span>工作区</span><h2>项目</h2></div><div class="sidebar-heading-actions"><button type="button" class="icon-action" title="新建项目" aria-label="新建项目" @click="createProject"><Plus :size="17" /></button></div></div>
     <p v-if="loading" class="sidebar-muted">正在加载项目...</p>
     <div v-else class="project-list">
       <section v-for="project in projects" :key="project.id" :data-project-id="project.id" class="project-group" :class="{ active: project.id === selectedProjectId }">

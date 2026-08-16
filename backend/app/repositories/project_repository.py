@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import aiosqlite
 
@@ -119,11 +120,15 @@ class ProjectRepository:
             await connection.commit()
         return cursor.rowcount > 0
 
-    async def delete(self, project_id: int, user_id: int) -> ProjectDeleteResult:
+    async def delete_with_generation_tasks(
+        self,
+        project_id: int,
+        user_id: int,
+    ) -> tuple[ProjectDeleteResult, list[int]]:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             await connection.execute("PRAGMA foreign_keys = ON")
-            await connection.execute("BEGIN")
+            await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
                 "SELECT id, name FROM projects WHERE id = ? AND user_id = ?",
                 (project_id, user_id),
@@ -141,41 +146,90 @@ class ProjectRepository:
                 (project_id, user_id),
             )
             deleted_count = (await history_cursor.fetchone())[0]
+            task_rows = await (await connection.execute(
+                """
+                SELECT task.id
+                FROM generation_tasks AS task
+                JOIN history ON history.id = task.history_id
+                WHERE task.user_id = ? AND history.project_id = ?
+                  AND task.status IN ('queued', 'running')
+                ORDER BY task.id
+                """,
+                (user_id, project_id),
+            )).fetchall()
+            task_ids = [int(row[0]) for row in task_rows]
             if project_count == 1:
+                temporary_name = f"第一个项目（临时-{uuid4().hex}）"
                 await connection.execute(
-                    "INSERT INTO projects (user_id, name) VALUES (?, '第一个项目（临时）')",
-                    (user_id,),
+                    "INSERT INTO projects (user_id, name) VALUES (?, ?)",
+                    (user_id, temporary_name),
                 )
             await connection.execute(
                 "DELETE FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id)
             )
             if project_count == 1:
                 await connection.execute(
-                    "UPDATE projects SET name = '第一个项目', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = '第一个项目（临时）'",
-                    (user_id,),
+                    "UPDATE projects SET name = '第一个项目', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
+                    (user_id, temporary_name),
                 )
             await connection.commit()
         summaries = await self.list_with_history(user_id)
-        return ProjectDeleteResult(
-            deleted_history_count=deleted_count,
-            selected_project_id=summaries[0].id,
-            projects=summaries,
+        return (
+            ProjectDeleteResult(
+                deleted_history_count=deleted_count,
+                selected_project_id=summaries[0].id,
+                projects=summaries,
+            ),
+            task_ids,
         )
 
-    async def delete_history(self, project_id: int, user_id: int, history_ids: list[int]) -> int:
+    async def delete(self, project_id: int, user_id: int) -> ProjectDeleteResult:
+        result, _ = await self.delete_with_generation_tasks(project_id, user_id)
+        return result
+
+    async def delete_history_with_generation_tasks(
+        self,
+        project_id: int,
+        user_id: int,
+        history_ids: list[int],
+    ) -> tuple[int, list[int]]:
         ids = sorted(set(history_ids))
+        if not ids:
+            return 0, []
         placeholders = ",".join("?" for _ in ids)
         async with aiosqlite.connect(self.database_path) as connection:
-            await connection.execute("BEGIN")
+            await connection.execute("PRAGMA foreign_keys = ON")
+            await connection.execute("BEGIN IMMEDIATE")
             project_cursor = await connection.execute(
                 "SELECT 1 FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id)
             )
             if await project_cursor.fetchone() is None:
                 await connection.rollback()
                 raise ProjectNotFoundError(project_id)
+            task_rows = await (await connection.execute(
+                f"""
+                SELECT task.id
+                FROM generation_tasks AS task
+                JOIN history ON history.id = task.history_id
+                WHERE task.user_id = ? AND history.project_id = ?
+                  AND history.id IN ({placeholders})
+                  AND task.status IN ('queued', 'running')
+                ORDER BY task.id
+                """,
+                (user_id, project_id, *ids),
+            )).fetchall()
+            task_ids = [int(row[0]) for row in task_rows]
             cursor = await connection.execute(
                 f"DELETE FROM history WHERE user_id = ? AND project_id = ? AND id IN ({placeholders})",
                 (user_id, project_id, *ids),
             )
             await connection.commit()
-        return cursor.rowcount
+        return cursor.rowcount, task_ids
+
+    async def delete_history(self, project_id: int, user_id: int, history_ids: list[int]) -> int:
+        deleted_count, _ = await self.delete_history_with_generation_tasks(
+            project_id,
+            user_id,
+            history_ids,
+        )
+        return deleted_count

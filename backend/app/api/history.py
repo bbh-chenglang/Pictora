@@ -73,7 +73,7 @@ async def read_history_image(
     return Response(
         content=image.data,
         media_type=image.mime_type,
-        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        headers={"Cache-Control": "private, no-store"},
     )
 
 
@@ -116,6 +116,60 @@ async def delete_history_image(
                 "error": {
                     "code": "history_image_not_found",
                     "message": "历史图片不存在",
+                }
+            },
+        )
+    return Response(status_code=204)
+
+
+@router.delete("/{history_id}/batches/{batch_id}/slots/{position}", status_code=204)
+async def delete_history_generation_slot(
+    history_id: int,
+    batch_id: int,
+    position: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> Response:
+    deleted = await repository.delete_generation_slot(
+        user.id,
+        history_id,
+        batch_id,
+        position,
+    )
+    if not deleted:
+        raise HTTPException(
+            404,
+            {
+                "error": {
+                    "code": "generation_slot_not_found",
+                    "message": "生成卡片不存在",
+                }
+            },
+        )
+    return Response(status_code=204)
+
+
+@router.post("/{history_id}/batches/{batch_id}/slots/{position}/cancel", status_code=204)
+async def cancel_history_generation_slot(
+    history_id: int,
+    batch_id: int,
+    position: int,
+    user: StoredSessionUser = Depends(get_current_user),
+    repository: HistoryRepository = Depends(get_history_repository),
+) -> Response:
+    cancelled = await repository.cancel_generation_slot(
+        user.id,
+        history_id,
+        batch_id,
+        position,
+    )
+    if not cancelled:
+        raise HTTPException(
+            409,
+            {
+                "error": {
+                    "code": "generation_slot_not_cancellable",
+                    "message": "该图片已经结束或不存在",
                 }
             },
         )

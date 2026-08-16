@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from app.auth import (
     SESSION_COOKIE,
@@ -12,6 +12,7 @@ from app.auth import (
 from app.config import Settings
 from app.dependencies import (
     get_current_user,
+    get_auth_rate_limiter,
     get_email_sender,
     get_user_repository,
     get_verification_code_repository,
@@ -40,6 +41,7 @@ from app.services.email_sender import (
     EmailSender,
     EmailSenderNotConfiguredError,
 )
+from app.services.auth_rate_limiter import AuthRateLimiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -75,14 +77,40 @@ def configured_admin_emails() -> set[str]:
     return Settings().admin_email_set
 
 
+def request_client_key(request: Request) -> str:
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client is not None else "unknown"
+
+
+def raise_auth_rate_limited(retry_after: int) -> None:
+    raise HTTPException(
+        429,
+        {
+            "error": {
+                "code": "auth_rate_limited",
+                "message": f"请求过于频繁，请在 {retry_after} 秒后重试",
+                "retry_after_seconds": retry_after,
+            }
+        },
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 @router.post("/verification-code", response_model=VerificationCodeResponse)
 async def send_verification_code(
-    request: VerificationCodeRequest,
+    payload: VerificationCodeRequest,
+    request: Request,
     repository: UserRepository = Depends(get_user_repository),
     code_repository: VerificationCodeRepository = Depends(get_verification_code_repository),
     sender: EmailSender = Depends(get_email_sender),
+    rate_limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
 ) -> VerificationCodeResponse:
-    if await repository.get_by_email(request.email) is not None:
+    retry_after = rate_limiter.consume_verification_request(request_client_key(request))
+    if retry_after:
+        raise_auth_rate_limited(retry_after)
+    if await repository.get_by_email(payload.email) is not None:
         raise HTTPException(
             409,
             {"error": {"code": "email_registered", "message": "该邮箱已注册"}},
@@ -91,7 +119,7 @@ async def send_verification_code(
     code = new_verification_code()
     try:
         await code_repository.store(
-            request.email,
+            payload.email,
             hash_password(code),
             ttl_seconds=settings.verification_code_ttl_seconds,
             cooldown_seconds=settings.verification_code_cooldown_seconds,
@@ -108,15 +136,15 @@ async def send_verification_code(
             },
         ) from None
     try:
-        await sender.send_verification_code(request.email, code)
+        await sender.send_verification_code(payload.email, code)
     except EmailSenderNotConfiguredError:
-        await code_repository.delete(request.email)
+        await code_repository.delete(payload.email)
         raise HTTPException(
             503,
             {"error": {"code": "smtp_not_configured", "message": "邮件服务尚未配置"}},
         ) from None
     except EmailDeliveryError:
-        await code_repository.delete(request.email)
+        await code_repository.delete(payload.email)
         raise HTTPException(
             502,
             {"error": {"code": "email_delivery_failed", "message": "验证码邮件发送失败"}},
@@ -189,16 +217,23 @@ async def register(
 
 @router.post("/login", response_model=CurrentUserResponse)
 async def login(
-    request: LoginRequest,
+    payload: LoginRequest,
+    request: Request,
     response: Response,
     repository: UserRepository = Depends(get_user_repository),
+    rate_limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
 ) -> CurrentUserResponse:
-    user = await repository.get_by_email(request.email)
+    client_key = request_client_key(request)
+    retry_after = rate_limiter.login_retry_after(payload.email, client_key)
+    if retry_after:
+        raise_auth_rate_limited(retry_after)
+    user = await repository.get_by_email(payload.email)
     if user is None:
-        legacy_user = await repository.get_by_username(request.email)
+        legacy_user = await repository.get_by_username(payload.email)
         if legacy_user is not None and legacy_user.email is None:
             user = legacy_user
-    if user is None or not verify_password(request.password, user.password_hash):
+    if user is None or not verify_password(payload.password, user.password_hash):
+        rate_limiter.record_login_failure(payload.email, client_key)
         raise HTTPException(
             401,
             {
@@ -208,6 +243,7 @@ async def login(
                 }
             },
         )
+    rate_limiter.clear_login_identifier(payload.email)
     should_be_admin = bool(user.email and user.email in configured_admin_emails())
     if user.is_admin != should_be_admin:
         await repository.set_admin(user.id, should_be_admin)
