@@ -103,15 +103,21 @@ def wait_for_generation(service: FakeImageService) -> None:
     assert service.generate_calls
 
 
-def test_version_is_public_and_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APP_VERSION", "release-2026.08.12")
+@pytest.mark.parametrize("configured_version", ["V1", "V2", None])
+def test_version_is_public_and_not_cached(
+    monkeypatch: pytest.MonkeyPatch, configured_version: str | None
+) -> None:
+    if configured_version is None:
+        monkeypatch.delenv("APP_VERSION", raising=False)
+    else:
+        monkeypatch.setenv("APP_VERSION", configured_version)
     app.dependency_overrides.pop(get_current_user, None)
 
     with TestClient(app) as client:
         response = client.get("/api/version")
 
     assert response.status_code == 200
-    assert response.json() == {"version": "release-2026.08.12"}
+    assert response.json() == {"version": configured_version or "dev"}
     assert response.headers["cache-control"] == "no-store"
 
 

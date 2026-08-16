@@ -389,7 +389,7 @@ describe("Pictora workspace", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input) => {
       const url = String(input);
-      if (url.includes("/api/version?")) return jsonResponse({ version: "release-next" });
+      if (url.includes("/api/version?")) return jsonResponse({ version: "V2" });
       if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
       if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
       if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
@@ -404,9 +404,9 @@ describe("Pictora workspace", () => {
     await flushPromises();
 
     expect(wrapper.get("[data-action='version-update']").text()).toContain("立即更新");
-    expect(wrapper.get(".version-meta").text()).toContain("release-next");
+    expect(wrapper.get(".version-meta").text()).toContain("V2");
     await wrapper.get("[data-action='version-update']").trigger("click");
-    expect(window.location.search).toBe("?_app_version=release-next");
+    expect(window.location.search).toBe("?_app_version=V2");
   });
 
   it("shows a retry action when checking the version fails", async () => {

@@ -1,6 +1,6 @@
-# GenImage
+# Pictora
 
-## v1 Docker Deployment (Port 9001)
+## Legacy v1 Docker Deployment (Port 9001)
 
 The v1 deployment is isolated from the default deployment. It uses `compose.v1.yaml`, host port `9001`, containers `genimage-v1-web` and `genimage-v1-backend`, and the `genimage_v1_data` volume.
 
@@ -25,15 +25,15 @@ docker compose -p genimage-v1 -f compose.v1.yaml down
 
 Do not use `docker compose down -v` unless the isolated v1 database and generated images can be deleted.
 
-GenImage 是一个基于 Vue、FastAPI 和 SQLite 的图片生成工作台。生产环境使用 Docker Compose 运行，统一通过服务器的 `8083` 端口访问。
+Pictora（画境）是一个基于 Vue、FastAPI 和 SQLite 的图片生成工作台。生产环境使用 Docker Compose 运行，统一通过服务器的 `8083` 端口访问。
 
 ## Linux 部署
 
 服务器需要安装 Git、Docker Engine 和 Docker Compose v2，并允许防火墙访问 TCP `8083` 端口。
 
 ```bash
-git clone -b master git@github.com:zhangjietest666/GenImage.git
-cd GenImage
+git clone -b V1 https://github.com/bbh-chenglang/Pictora.git
+cd Pictora
 chmod +x deploy.sh
 ./deploy.sh
 ```
@@ -46,7 +46,21 @@ http://SERVER_IP:8083/
 
 首次部署会创建空的 SQLite 数据库。进入页面后展开接口配置并填写 API Key；本地开发环境中的 API Key、历史记录和图片不会迁移到服务器。
 
-## 更新与管理
+## 版本发布、更新与管理
+
+正式版本使用大写 Git 标签递增命名：当前版本为 `V1`，后续使用 `V2`、`V3`。从对应标签部署，版本更新页面会显示标签名称，不会显示提交哈希：
+
+```bash
+git fetch --tags origin
+git checkout V2
+./deploy.sh
+```
+
+也可以显式指定版本：
+
+```bash
+APP_VERSION=V2 ./deploy.sh
+```
 
 拉取最新代码并重新构建：
 

@@ -12,11 +12,33 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
-APP_VERSION="${APP_VERSION:-$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')}"
+resolve_app_version() {
+    if [[ -n "${APP_VERSION:-}" ]]; then
+        printf '%s' "$APP_VERSION"
+        return
+    fi
+
+    local version branch
+    version="$(git describe --tags --exact-match 2>/dev/null || true)"
+    if [[ "$version" =~ ^V[0-9]+$ ]]; then
+        printf '%s' "$version"
+        return
+    fi
+
+    branch="$(git branch --show-current 2>/dev/null || true)"
+    if [[ "$branch" =~ ^V[0-9]+$ ]]; then
+        printf '%s' "$branch"
+        return
+    fi
+
+    printf 'dev'
+}
+
+APP_VERSION="$(resolve_app_version)"
 export APP_VERSION
 
 docker compose config --quiet
 docker compose up -d --build --wait --wait-timeout 180
 docker compose ps
 
-echo "GenImage is available at http://127.0.0.1:8083/"
+echo "Pictora is available at http://127.0.0.1:8083/ (version ${APP_VERSION})"
