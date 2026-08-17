@@ -2853,7 +2853,8 @@ body.workspace-is-resizing {
     "community security";
   align-content: start;
   align-items: start;
-  gap: 16px 24px;
+  row-gap: 8px;
+  column-gap: 24px;
   overflow-y: auto;
 }
 
