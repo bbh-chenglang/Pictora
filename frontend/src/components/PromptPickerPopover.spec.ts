@@ -1,4 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import PromptPickerPopover from "./PromptPickerPopover.vue";
@@ -37,5 +39,13 @@ describe("PromptPickerPopover", () => {
     expect(wrapper.text()).toContain("选择后将替换当前提示词");
     await wrapper.get(".prompt-picker-footer .secondary-action").trigger("click");
     expect(wrapper.emitted("manage")).toHaveLength(1);
+  });
+
+  it("uses snowfall tokens instead of the legacy dark palette", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/PromptPickerPopover.vue"), "utf8");
+    expect(source).toContain("var(--prompt-snow-surface)");
+    expect(source).toContain("var(--prompt-snow-overlay)");
+    expect(source).toContain("var(--prompt-snow-accent)");
+    expect(source).not.toContain("background:#1b1d22");
   });
 });

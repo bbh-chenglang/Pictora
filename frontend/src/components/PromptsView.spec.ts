@@ -1,4 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import PromptsView from "./PromptsView.vue";
@@ -49,5 +51,20 @@ describe("PromptsView", () => {
     await wrapper.get(".prompt-editor-dialog").trigger("submit");
     await flushPromises();
     expect(saved).toEqual({ name: "我的提示词", prompt: "新的提示词内容", category: "" });
+  });
+
+  it("uses snowfall tokens for page, borders, and text", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/PromptsView.vue"), "utf8");
+    expect(source).toContain("var(--prompt-snow-page)");
+    expect(source).toContain("var(--prompt-snow-border)");
+    expect(source).toContain("var(--prompt-snow-text)");
+  });
+
+  it("marks management content as a snowfall surface", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify([entry]), { status: 200 }))));
+    const wrapper = mount(PromptsView);
+    await flushPromises();
+    expect(wrapper.get(".prompts-page").attributes("data-theme")).toBe("snowfall");
+    expect(wrapper.get(".prompt-entry").classes()).toContain("prompt-snow-surface");
   });
 });

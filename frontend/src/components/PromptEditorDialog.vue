@@ -52,11 +52,11 @@ function submit() {
 </template>
 
 <style scoped>
-.prompt-editor-layer { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:22px; background:rgba(5,6,8,.72); }
-.prompt-editor-dialog { width:min(600px,100%); display:grid; gap:16px; padding:28px; background:#1b1d22; border:1px solid rgba(255,255,255,.18); }
-.prompt-editor-heading { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1px solid rgba(255,255,255,.12); padding-bottom:16px; }
-.prompt-editor-heading span { color:#d8a84e; font-size:12px; }.prompt-editor-heading h2 { margin:5px 0 0; }
-.prompt-editor-dialog label { display:grid; gap:7px; color:#d2d4d7; font-size:13px; }
-.prompt-editor-dialog input,.prompt-editor-dialog textarea,.prompt-editor-dialog select { box-sizing:border-box; width:100%; border:1px solid rgba(255,255,255,.17); background:#14161a; color:#f6f4ef; padding:10px; font:inherit; }
-.prompt-editor-dialog textarea { resize:vertical; line-height:1.55; }.prompt-editor-actions { display:flex; justify-content:flex-end; gap:10px; border-top:1px solid rgba(255,255,255,.12); padding-top:16px; }
+.prompt-editor-layer { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:22px; background:var(--prompt-snow-overlay); }
+.prompt-editor-dialog { width:min(600px,100%); display:grid; gap:16px; padding:28px; background:var(--prompt-snow-surface); border:1px solid var(--prompt-snow-border-strong); box-shadow:var(--prompt-snow-shadow); color:var(--prompt-snow-text); }
+.prompt-editor-heading { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1px solid var(--prompt-snow-border); padding-bottom:16px; }
+.prompt-editor-heading span { color:var(--prompt-snow-accent); font-size:12px; }.prompt-editor-heading h2 { margin:5px 0 0; }
+.prompt-editor-dialog label { display:grid; gap:7px; color:var(--prompt-snow-text-muted); font-size:13px; }
+.prompt-editor-dialog input,.prompt-editor-dialog textarea,.prompt-editor-dialog select { box-sizing:border-box; width:100%; border:1px solid var(--prompt-snow-border); background:var(--prompt-snow-surface-muted); color:var(--prompt-snow-text); padding:10px; font:inherit; }
+.prompt-editor-dialog textarea { resize:vertical; line-height:1.55; }.prompt-editor-actions { display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--prompt-snow-border); padding-top:16px; }.prompt-editor-actions .primary-action { background:var(--prompt-snow-accent); border-color:var(--prompt-snow-accent); }
 </style>
