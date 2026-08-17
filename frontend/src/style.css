@@ -1241,7 +1241,7 @@ select option {
   display: grid;
   place-items: center;
   padding: 0;
-  background: rgba(9, 9, 11, .62);
+  background: transparent;
   cursor: row-resize;
 }
 
@@ -1249,7 +1249,7 @@ select option {
   width: 52px;
   height: 3px;
   border-radius: 999px;
-  background: var(--line-strong);
+  background: transparent;
   transition: width 160ms ease, background-color 160ms ease;
 }
 
@@ -1269,7 +1269,8 @@ select option {
   box-shadow: 0 5px 14px rgba(0, 0, 0, .32);
   cursor: pointer;
   transform: translate(-50%, -50%);
-  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+  opacity: 0;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
 .composer-collapse-toggle:hover,
@@ -1298,6 +1299,7 @@ select option {
 
 .panel-resizer:hover,
 .panel-resizer:focus-visible,
+.panel-resizer:focus-within,
 .workspace-panel.is-resizing .panel-resizer {
   border-color: rgba(96, 165, 250, .3);
   background: rgba(30, 64, 175, .12);
@@ -1306,9 +1308,17 @@ select option {
 
 .panel-resizer:hover span,
 .panel-resizer:focus-visible span,
+.panel-resizer:focus-within span,
 .workspace-panel.is-resizing .panel-resizer span {
   width: 72px;
   background: var(--blue-hover);
+}
+
+.panel-resizer:hover .composer-collapse-toggle,
+.panel-resizer:focus-visible .composer-collapse-toggle,
+.panel-resizer:focus-within .composer-collapse-toggle,
+.workspace-panel.is-resizing .composer-collapse-toggle {
+  opacity: 1;
 }
 
 .workspace-panel.is-composer-collapsed .panel-resizer:hover,
