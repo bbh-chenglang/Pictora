@@ -284,6 +284,20 @@ describe("Pictora workspace", () => {
     expect(wrapper.get("canvas.flowing-grid-background").attributes("aria-hidden")).toBe("true");
   });
 
+  it("opens settings without the version update module", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get("[data-action='settings']").trigger("click");
+
+    expect(window.location.pathname).toBe("/settings");
+    expect(wrapper.find(".settings-page").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("版本更新");
+    expect(wrapper.find("[data-action='version-update']").exists()).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/api/version?"))).toBe(false);
+  });
+
   it("shows a read-only email and updates only the username from settings", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input, init) => {
@@ -337,7 +351,6 @@ describe("Pictora workspace", () => {
     expect(community.find(".community-qr").exists()).toBe(false);
     expect(community.find(".community-feedback-panel").exists()).toBe(true);
     expect(wrapper.get(".settings-preferences").findAll("h2").map((heading) => heading.text())).toEqual([
-      "版本更新",
       "界面主题",
     ]);
   });
@@ -359,76 +372,6 @@ describe("Pictora workspace", () => {
     expect(wrapper.find("canvas.flowing-grid-background").exists()).toBe(false);
     expect(window.localStorage.getItem("genimage-background-effect")).toBe("snowfall");
     expect(wrapper.get("[data-background-effect='snowfall']").attributes("aria-pressed")).toBe("true");
-  });
-
-  it("checks the deployed version from settings", async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes("/api/version?")) return jsonResponse({ version: "dev" });
-      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
-      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
-      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
-      if (url.endsWith("/api/history")) return jsonResponse([]);
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    const wrapper = mount(App);
-    await flushPromises();
-
-    await wrapper.get("[data-action='settings']").trigger("click");
-    await wrapper.get("[data-action='version-update']").trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get("[data-action='version-update']").text()).toContain("已是最新版本");
-    expect(wrapper.get(".version-status").text()).toBe("当前版本已是最新版本");
-    const request = fetchMock.mock.calls.find(([input]) => String(input).includes("/api/version?"));
-    expect(request?.[1]?.cache).toBe("no-store");
-  });
-
-  it("offers a cache-busting reload when a new version is available", async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes("/api/version?")) return jsonResponse({ version: "V2" });
-      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
-      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
-      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
-      if (url.endsWith("/api/history")) return jsonResponse([]);
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    const wrapper = mount(App);
-    await flushPromises();
-
-    await wrapper.get("[data-action='settings']").trigger("click");
-    await wrapper.get("[data-action='version-update']").trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get("[data-action='version-update']").text()).toContain("立即更新");
-    expect(wrapper.get(".version-meta").text()).toContain("V2");
-    await wrapper.get("[data-action='version-update']").trigger("click");
-    expect(window.location.search).toBe("?_app_version=V2");
-  });
-
-  it("shows a retry action when checking the version fails", async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes("/api/version?")) return Promise.reject(new Error("offline"));
-      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
-      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [] });
-      if (url.endsWith("/api/settings")) return jsonResponse({ model: "gpt-image-1.5", api_key_configured: false });
-      if (url.endsWith("/api/history")) return jsonResponse([]);
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    const wrapper = mount(App);
-    await flushPromises();
-
-    await wrapper.get("[data-action='settings']").trigger("click");
-    await wrapper.get("[data-action='version-update']").trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get("[data-action='version-update']").text()).toContain("重新检查");
-    expect(wrapper.get(".version-status").classes()).toContain("error");
   });
 
   it("saves an API key from settings when editing finishes and returns to login after changing password", async () => {

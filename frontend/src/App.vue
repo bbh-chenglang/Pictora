@@ -64,7 +64,6 @@ type ModelCapability = {
 };
 type ApiKeyProvider = "gpt" | "gemini" | "grok";
 type BackgroundEffect = "gravity-grid" | "snowfall";
-type UpdateStatus = "idle" | "checking" | "current" | "available" | "error";
 type CurrentView = "workspace" | "settings" | "admin" | "skills" | "prompts";
 type ApiKeyConfig = {
   id: number;
@@ -468,8 +467,6 @@ const promptCategorySuggestions = ref<string[]>([]);
 const promptPickerOpen = ref(false);
 const promptPickerConfirmOpen = ref(false);
 const pendingPromptSelection = ref<PromptPickerEntry | null>(null);
-const updateStatus = ref<UpdateStatus>("idle");
-const serverVersion = ref("");
 const BACKGROUND_EFFECT_KEY = "genimage-background-effect";
 const WORKSPACE_RESULT_RATIO_KEY = "genimage-workspace-result-ratio";
 const WORKSPACE_COMPOSER_COLLAPSED_KEY = "genimage-workspace-composer-collapsed";
@@ -982,24 +979,10 @@ const modelOptions = computed(() => {
   })) ?? [];
 });
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-const CLIENT_VERSION = (import.meta.env.VITE_APP_VERSION ?? "dev").trim() || "dev";
 
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   return window.fetch(input, { credentials: "include", ...init });
 }
-const versionActionLabel = computed(() => {
-  if (updateStatus.value === "checking") return "检查中...";
-  if (updateStatus.value === "current") return "已是最新版本";
-  if (updateStatus.value === "available") return "立即更新";
-  if (updateStatus.value === "error") return "重新检查";
-  return "检查更新";
-});
-const versionStatusMessage = computed(() => {
-  if (updateStatus.value === "current") return "当前版本已是最新版本";
-  if (updateStatus.value === "available") return "发现新版本，可以立即更新";
-  if (updateStatus.value === "error") return "检查更新失败，请确认服务连接后重试";
-  return "";
-});
 
 function readableError(data: any, fallback: string) {
   const messages: Record<string, string> = {
@@ -1040,36 +1023,6 @@ async function parseJsonResponse(response: Response): Promise<any | null> {
 
 function resourceUrl(path: string) {
   return /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`;
-}
-
-async function checkForUpdate() {
-  if (updateStatus.value === "checking") return;
-  updateStatus.value = "checking";
-  serverVersion.value = "";
-  try {
-    const response = await apiFetch(`${API_BASE}/api/version?t=${Date.now()}`, {
-      cache: "no-store",
-    });
-    const data = await parseJsonResponse(response);
-    const deployedVersion = typeof data?.version === "string" ? data.version.trim() : "";
-    if (!response.ok || !deployedVersion) throw new Error("Invalid version response");
-    serverVersion.value = deployedVersion;
-    updateStatus.value = deployedVersion === CLIENT_VERSION ? "current" : "available";
-  } catch {
-    updateStatus.value = "error";
-  }
-}
-
-function applyUpdate() {
-  if (updateStatus.value !== "available" || !serverVersion.value) return;
-  const nextUrl = new URL(window.location.href);
-  nextUrl.searchParams.set("_app_version", serverVersion.value);
-  window.location.search = nextUrl.search;
-}
-
-function handleVersionAction() {
-  if (updateStatus.value === "available") applyUpdate();
-  else void checkForUpdate();
 }
 
 function promptWithAnalysis(currentPrompt: string, analysisText?: string | null) {
@@ -3871,31 +3824,6 @@ onUnmounted(() => {
       </section>
 
       <div class="settings-preferences">
-        <section class="settings-section settings-update" aria-labelledby="version-update-title">
-          <div class="version-update-copy">
-            <div class="version-update-heading"><RefreshCw :size="18" /><h2 id="version-update-title">版本更新</h2></div>
-            <div class="version-meta">
-              <span><small>当前版本</small><strong>{{ CLIENT_VERSION }}</strong></span>
-              <span v-if="serverVersion"><small>服务器版本</small><strong>{{ serverVersion }}</strong></span>
-            </div>
-            <p v-if="versionStatusMessage" class="version-status" :class="updateStatus" role="status">{{ versionStatusMessage }}</p>
-          </div>
-          <button
-            type="button"
-            class="version-update-action"
-            :class="updateStatus === 'available' ? 'primary-action' : 'secondary-action'"
-            data-action="version-update"
-            :disabled="updateStatus === 'checking'"
-            :aria-label="updateStatus === 'current' ? '再次检查版本' : versionActionLabel"
-            @click="handleVersionAction"
-          >
-            <LoaderCircle v-if="updateStatus === 'checking'" class="spin" :size="16" />
-            <Check v-else-if="updateStatus === 'current'" :size="16" />
-            <RefreshCw v-else :size="16" />
-            {{ versionActionLabel }}
-          </button>
-        </section>
-
         <section class="settings-section settings-background" aria-labelledby="background-effect-title">
           <h2 id="background-effect-title">界面主题</h2>
           <div class="background-effect-options" role="group" aria-label="界面主题">

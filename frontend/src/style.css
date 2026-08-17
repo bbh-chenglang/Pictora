@@ -2898,12 +2898,6 @@ body.workspace-is-resizing {
   gap: 16px;
 }
 
-.settings-update {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 20px;
-}
-
 .settings-section {
   min-width: 0;
   border: 1px solid var(--line);
@@ -3009,68 +3003,6 @@ body.workspace-is-resizing {
   border-color: rgba(96, 165, 250, .72);
   background: rgba(59, 130, 246, .15);
   color: var(--blue-hover);
-}
-
-.version-update-copy {
-  min-width: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.version-update-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--blue-hover);
-}
-
-.version-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 28px;
-}
-
-.version-meta span {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.version-meta small {
-  color: var(--muted-dim);
-  font-size: 10px;
-}
-
-.version-meta strong {
-  max-width: 100%;
-  color: var(--text-soft);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.version-status {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.version-status.current {
-  color: var(--green);
-}
-
-.version-status.available {
-  color: var(--blue-hover);
-}
-
-.version-status.error {
-  color: var(--danger);
-}
-
-.version-update-action {
-  min-width: 138px;
-  justify-content: center;
-  white-space: nowrap;
 }
 
 .api-config-list {
