@@ -1,0 +1,14 @@
+:root {
+  --prompt-snow-page: rgba(244, 249, 253, 0.72);
+  --prompt-snow-surface: rgba(255, 255, 255, 0.92);
+  --prompt-snow-surface-muted: rgba(239, 247, 253, 0.9);
+  --prompt-snow-border: rgba(129, 176, 211, 0.45);
+  --prompt-snow-border-strong: rgba(85, 146, 194, 0.66);
+  --prompt-snow-text: #17324d;
+  --prompt-snow-text-muted: #60778d;
+  --prompt-snow-accent: #1b5f9c;
+  --prompt-snow-accent-hover: #164f83;
+  --prompt-snow-overlay: rgba(37, 70, 100, 0.34);
+  --prompt-snow-danger: #b94a4a;
+  --prompt-snow-shadow: 0 18px 46px rgba(38, 82, 120, 0.2);
+}
