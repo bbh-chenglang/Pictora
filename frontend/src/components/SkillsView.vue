@@ -231,6 +231,8 @@ onMounted(loadSkills);
 .skills-search { display:flex; align-items:center; gap:8px; flex:1; max-width:540px; border:1px solid rgba(255,255,255,.18); padding:0 12px; min-height:40px; }
 .skills-search input { flex:1; border:0; outline:0; background:transparent; color:inherit; }
 .skills-toolbar select,.skill-create-dialog select { border:1px solid rgba(255,255,255,.18); background:#191b1f; color:#f6f4ef; padding:10px 12px; min-height:40px; }
+.skills-toolbar select { background:#fff; color:#17191d; border-color:#cfd4dc; }
+.skills-toolbar select option { background:#fff; color:#17191d; }
 .skills-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; }
 .skill-card { background:rgba(22,24,28,.86); border:1px solid rgba(255,255,255,.13); min-width:0; }
 .skill-cover { display:block; width:100%; aspect-ratio:4/3; padding:0; border:0; background:#292b31; cursor:pointer; overflow:hidden; }
