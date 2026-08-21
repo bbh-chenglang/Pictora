@@ -32,6 +32,7 @@ JPEG_BYTES = b"\xff\xd8\xffjpeg-bytes"
 JPEG_BASE64 = base64.b64encode(JPEG_BYTES).decode("ascii")
 WEBP_BYTES = b"RIFF\x04\x00\x00\x00WEBPwebp-bytes"
 WEBP_BASE64 = base64.b64encode(WEBP_BYTES).decode("ascii")
+GIF_BYTES = b"GIF89agif-bytes"
 
 
 @pytest_asyncio.fixture
@@ -887,15 +888,112 @@ async def test_generation_history_rejects_oversized_base64_before_decoding(
 
 
 @pytest.mark.asyncio
-async def test_generation_history_rejects_mismatched_base64_image_type(
+async def test_generation_history_normalizes_mismatched_base64_image_type(
     history_repository: HistoryRepository,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = HistoryService(history_repository, http_client=FakeHttpClient())
 
-    with pytest.raises(ValueError, match="invalid image type"):
-        await service._materialize_image(
-            ImageResult(base64_data=PNG_BASE64, mime_type="image/jpeg")
+    with caplog.at_level("WARNING", logger="app.services.history_service"):
+        materialized = await service._materialize_image(
+            ImageResult(base64_data=f"data:image/jpeg;base64,{PNG_BASE64}")
         )
+
+    assert materialized == ("image/png", PNG_BYTES)
+    assert "step=base64_image_type_normalized" in caplog.text
+    assert "declared_type=image/jpeg" in caplog.text
+    assert "detected_type=image/png" in caplog.text
+    assert f"byte_count={len(PNG_BYTES)}" in caplog.text
+    assert f"signature_hex={PNG_BYTES[:12].hex()}" in caplog.text
+    assert PNG_BASE64 not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generation_history_diagnoses_unknown_base64_image_type(
+    history_repository: HistoryRepository,
+) -> None:
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    unknown_bytes = b"not-an-image-payload"
+    encoded = base64.b64encode(unknown_bytes).decode("ascii")
+
+    with pytest.raises(ValueError) as caught:
+        await service._materialize_image(
+            ImageResult(base64_data=encoded, mime_type="image/png")
+        )
+
+    diagnostic = str(caught.value)
+    assert "declared=image/png" in diagnostic
+    assert "detected=unknown" in diagnostic
+    assert f"bytes={len(unknown_bytes)}" in diagnostic
+    assert f"signature={unknown_bytes[:12].hex()}" in diagnostic
+    assert encoded not in diagnostic
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image_bytes", "mime_type"),
+    [
+        (PNG_BYTES, "image/png"),
+        (JPEG_BYTES, "image/jpeg"),
+        (WEBP_BYTES, "image/webp"),
+        (GIF_BYTES, "image/gif"),
+    ],
+)
+async def test_generation_history_accepts_supported_base64_image_types(
+    history_repository: HistoryRepository,
+    image_bytes: bytes,
+    mime_type: str,
+) -> None:
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+
+    materialized = await service._materialize_image(
+        ImageResult(base64_data=encoded, mime_type=mime_type)
+    )
+
+    assert materialized == (mime_type, image_bytes)
+
+
+@pytest.mark.asyncio
+async def test_generation_history_persists_normalized_base64_image_type(
+    history_repository: HistoryRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    image_service = FakeImageService(
+        GenerateResponse(
+            provider="gemini",
+            model="gemini-image",
+            images=[
+                ImageResult(base64_data=f"data:image/png;base64,{JPEG_BASE64}")
+            ],
+        )
+    )
+    service = HistoryService(history_repository, http_client=FakeHttpClient())
+
+    with caplog.at_level("WARNING", logger="app.services.history_service"):
+        await service.generate(
+            GenerateRequest(
+                provider="gemini",
+                model="gemini-image",
+                prompt="诊断图片格式",
+            ),
+            image_service,
+            1,
+        )
+
+    detail = await history_repository.get(
+        1, (await history_repository.list(user_id=1, limit=1))[0].id
+    )
+    assert detail is not None
+    assert detail.status == "completed"
+    assert detail.error_code is None
+    blob = await history_repository.get_image(1, detail.id, detail.images[0].id)
+    assert blob is not None
+    assert blob.mime_type == "image/jpeg"
+    assert blob.data == JPEG_BYTES
+    assert "declared_type=image/png" in caplog.text
+    assert "detected_type=image/jpeg" in caplog.text
+    assert JPEG_BASE64 not in caplog.text
 
 
 @pytest.mark.asyncio

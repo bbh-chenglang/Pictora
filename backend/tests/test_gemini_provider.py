@@ -164,7 +164,7 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
             {"role": "user", "parts": [{"text": "生成两只小猫"}]}
         ],
         "generationConfig": {
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
             "imageConfig": {"aspectRatio": "16:9", "imageSize": "4K"},
         },
     }

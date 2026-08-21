@@ -56,6 +56,18 @@ def _detected_image_type(data: bytes) -> str | None:
     return None
 
 
+def _image_type_diagnostic(
+    declared_type: str,
+    detected_type: str | None,
+    data: bytes,
+) -> str:
+    return (
+        "Provider base64 image has an invalid image type "
+        f"(declared={declared_type} detected={detected_type or 'unknown'} "
+        f"bytes={len(data)} signature={data[:12].hex()})"
+    )
+
+
 def _duration_ms(started_at: float) -> int:
     return max(1, round((perf_counter() - started_at) * 1000))
 
@@ -413,7 +425,17 @@ class HistoryService:
                 worker_id=worker_id,
             )
             raise
-        except Exception:
+        except Exception as exc:
+            diagnostic = f"任务处理失败（{type(exc).__name__}）"
+            detail = " ".join(str(exc).split())[:240]
+            if detail:
+                diagnostic = f"{diagnostic}: {detail}"
+            logger.exception(
+                "image_generation step=generation_exception history_id=%d exception_type=%s exception=%s",
+                history_id,
+                type(exc).__name__,
+                str(exc),
+            )
             _log_step("generation_failed", started_at, history_id=history_id, error_code="internal_error")
             if batch_id is None:
                 batch_id = await self.repository.latest_generation_batch_id(
@@ -424,7 +446,7 @@ class HistoryService:
                 history_id,
                 batch_id,
                 error_code="internal_error",
-                error_message="任务处理失败",
+                error_message=diagnostic,
                 task_id=task_id,
                 user_id=user_id,
                 worker_id=worker_id,
@@ -595,8 +617,26 @@ class HistoryService:
             if mime_type == "image/jpg":
                 mime_type = "image/jpeg"
             detected_type = _detected_image_type(content)
-            if mime_type not in REMOTE_IMAGE_TYPES or detected_type != mime_type:
-                raise ValueError("Provider base64 image has an invalid image type")
+            if detected_type not in REMOTE_IMAGE_TYPES:
+                diagnostic = _image_type_diagnostic(mime_type, detected_type, content)
+                logger.warning(
+                    "image_generation step=base64_image_type_invalid "
+                    "declared_type=%s detected_type=%s byte_count=%d signature_hex=%s",
+                    mime_type,
+                    detected_type or "unknown",
+                    len(content),
+                    content[:12].hex(),
+                )
+                raise ValueError(diagnostic)
+            if detected_type != mime_type:
+                logger.warning(
+                    "image_generation step=base64_image_type_normalized "
+                    "declared_type=%s detected_type=%s byte_count=%d signature_hex=%s",
+                    mime_type,
+                    detected_type,
+                    len(content),
+                    content[:12].hex(),
+                )
             return detected_type, content
         if not image.url:
             return None

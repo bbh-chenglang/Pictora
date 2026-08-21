@@ -138,7 +138,7 @@ class GeminiProvider(ImageProvider):
         if request.resolution:
             image_config["imageSize"] = request.resolution
         generation_config: dict[str, Any] = {
-            "responseModalities": ["IMAGE"],
+            "responseModalities": ["TEXT", "IMAGE"],
         }
         if image_config:
             generation_config["imageConfig"] = image_config
