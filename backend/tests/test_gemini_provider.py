@@ -140,13 +140,13 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
         provider = GeminiProvider(
             api_key=SecretStr("secret"),
             base_url="https://sub.beibeihai.xyz/v1beta",
-            model="gemini-3.1-flash-image",
+            model="gemini-3-pro-image",
             client=client,
         )
         response = await provider.generate_image(
             GenerateRequest(
                 provider="gemini",
-                model="gemini-3.1-flash-image",
+                model="gemini-3-pro-image",
                 prompt="生成两只小猫",
                 aspect_ratio="16:9",
                 resolution="4K",
@@ -157,7 +157,7 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
     request = captured["request"]
     assert str(request.url) == (
         "https://sub.beibeihai.xyz/v1beta/models/"
-        "gemini-3.1-flash-image:generateContent"
+        "gemini-3-pro-image:generateContent"
     )
     assert json.loads(request.content) == {
         "contents": [

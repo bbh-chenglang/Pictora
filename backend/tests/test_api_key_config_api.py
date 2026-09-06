@@ -236,6 +236,7 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
                 request=httpx.Request("GET", url),
                 json={
                     "models": [
+                        {"name": "models/gemini-3-pro-image"},
                         {"name": "models/gemini-3.1-flash-image"},
                         {"name": "models/gemini-3.1-flash"},
                     ]
@@ -251,6 +252,7 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
     assert discovered.status_code == 200
     assert discovered.json() == {
         "models": [
+            {"id": "gemini-3-pro-image", "provider_type": "gemini"},
             {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
         ]
     }
@@ -264,7 +266,8 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
     assert configured_models.status_code == 200
     assert configured_models.json() == {
         "models": [
-                {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
+            {"id": "gemini-3-pro-image", "provider_type": "gemini"},
+            {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
         ]
     }
     tested = client.post(f"/api/settings/api-keys/{created.json()['id']}/test")
@@ -273,6 +276,7 @@ def test_discovers_models_and_tests_an_existing_key(client: TestClient, monkeypa
         "available": True,
             "message": "API Key 可用",
             "models": [
+                {"id": "gemini-3-pro-image", "provider_type": "gemini"},
                 {"id": "gemini-3.1-flash-image", "provider_type": "gemini"},
             ],
     }

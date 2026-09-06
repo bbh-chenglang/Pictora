@@ -40,6 +40,18 @@ def test_gemini_defaults_and_rejects_unsupported_quality() -> None:
         ))
 
 
+def test_gemini_three_pro_image_uses_native_pro_capabilities() -> None:
+    capability = get_model_capabilities("gemini", "gemini-3-pro-image")
+    request = normalize_generation_request(GenerateRequest(
+        provider="gemini", model="gemini-3-pro-image", prompt="draw",
+    ))
+
+    assert capability.label == "Gemini 3 Pro Image"
+    assert capability.max_reference_images == 14
+    assert request.aspect_ratio == "1:1"
+    assert request.resolution == "1K"
+
+
 def test_output_and_reference_limits_are_declared() -> None:
     assert get_model_capabilities("gpt", "gpt-image-2").max_output_count == 4
     assert get_model_capabilities("grok", "grok-imagine-image").max_output_count == 4

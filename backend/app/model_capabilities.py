@@ -136,6 +136,17 @@ MODEL_CAPABILITIES = (
     ),
     ModelCapabilities(
         provider_type="gemini",
+        model="gemini-3-pro-image",
+        label="Gemini 3 Pro Image",
+        max_output_count=4,
+        max_reference_images=14,
+        aspect_ratios=STANDARD_GEMINI_RATIOS,
+        resolutions=("1K", "2K", "4K"),
+        default_aspect_ratio="1:1",
+        default_resolution="1K",
+    ),
+    ModelCapabilities(
+        provider_type="gemini",
         model="gemini-3-pro-image-preview",
         label="Gemini 3 Pro Image Preview",
         max_output_count=4,
