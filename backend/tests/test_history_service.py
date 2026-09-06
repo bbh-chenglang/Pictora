@@ -881,7 +881,7 @@ async def test_generation_history_rejects_oversized_base64_before_decoding(
     monkeypatch.setattr(history_service_module, "MAX_REMOTE_IMAGE_BYTES", 8)
     service = HistoryService(history_repository, http_client=FakeHttpClient())
 
-    with pytest.raises(ValueError, match="20 MB"):
+    with pytest.raises(ValueError, match="50 MB"):
         await service._materialize_image(
             ImageResult(base64_data="MTIzNDU2Nzg5")
         )
@@ -1291,7 +1291,7 @@ async def test_remote_image_rejects_redirects_oversized_and_fake_images(
 
     cases = [
         (Response(302, {"Location": "https://other.example/image.png"}, b""), "redirects"),
-        (Response(200, {"Content-Type": "image/png", "Content-Length": str(21 * 1024 * 1024)}, b""), "20 MB"),
+        (Response(200, {"Content-Type": "image/png", "Content-Length": str(51 * 1024 * 1024)}, b""), "50 MB"),
         (Response(200, {"Content-Type": "text/html"}, b"<html>not an image</html>"), "invalid image type"),
     ]
     for response, message in cases:

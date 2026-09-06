@@ -30,7 +30,7 @@ from app.services.image_service import ImageService
 
 
 logger = logging.getLogger(__name__)
-MAX_REMOTE_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_REMOTE_IMAGE_BYTES = 50 * 1024 * 1024
 REMOTE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
@@ -610,10 +610,10 @@ class HistoryService:
             padding = len(encoded) - len(encoded.rstrip("="))
             estimated_size = max(0, (len(encoded) * 3) // 4 - padding)
             if estimated_size > MAX_REMOTE_IMAGE_BYTES:
-                raise ValueError("Provider image exceeds the 20 MB limit")
+                raise ValueError("Provider image exceeds the 50 MB limit")
             content = base64.b64decode(encoded, validate=True)
             if len(content) > MAX_REMOTE_IMAGE_BYTES:
-                raise ValueError("Provider image exceeds the 20 MB limit")
+                raise ValueError("Provider image exceeds the 50 MB limit")
             if mime_type == "image/jpg":
                 mime_type = "image/jpeg"
             detected_type = _detected_image_type(content)
@@ -655,7 +655,7 @@ class HistoryService:
             response.raise_for_status()
             declared_length = response.headers.get("Content-Length")
             if declared_length and int(declared_length) > MAX_REMOTE_IMAGE_BYTES:
-                raise ValueError("Provider image exceeds the 20 MB limit")
+                raise ValueError("Provider image exceeds the 50 MB limit")
             content = response.content
         else:
             async with httpx.AsyncClient(
@@ -669,15 +669,15 @@ class HistoryService:
                     response.raise_for_status()
                     declared_length = response.headers.get("Content-Length")
                     if declared_length and int(declared_length) > MAX_REMOTE_IMAGE_BYTES:
-                        raise ValueError("Provider image exceeds the 20 MB limit")
+                        raise ValueError("Provider image exceeds the 50 MB limit")
                     chunks = bytearray()
                     async for chunk in response.aiter_bytes():
                         chunks.extend(chunk)
                         if len(chunks) > MAX_REMOTE_IMAGE_BYTES:
-                            raise ValueError("Provider image exceeds the 20 MB limit")
+                            raise ValueError("Provider image exceeds the 50 MB limit")
                     content = bytes(chunks)
         if len(content) > MAX_REMOTE_IMAGE_BYTES:
-            raise ValueError("Provider image exceeds the 20 MB limit")
+            raise ValueError("Provider image exceeds the 50 MB limit")
         declared_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if declared_type == "image/jpg":
             declared_type = "image/jpeg"
