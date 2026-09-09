@@ -34,7 +34,7 @@ class GenerateRequest(BaseModel):
     provider: str
     model: str
     prompt: str = Field(min_length=1, max_length=4000)
-    detail: Literal["low", "medium", "high", "original", "auto"] = "auto"
+    detail: Literal["low", "medium", "high", "xhigh", "max", "original", "auto"] = "auto"
     prompts: list[Annotated[str, Field(min_length=1, max_length=4000)]] | None = Field(
         default=None,
         max_length=8,

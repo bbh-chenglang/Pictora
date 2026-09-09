@@ -71,7 +71,7 @@ class OpenAIProvider(ImageProvider):
             "n": getattr(request, "count", 1),
             "size": output_size,
         }
-        if request.detail in {"auto", "low", "medium", "high"}:
+        if request.detail in {"auto", "low", "medium", "high", "xhigh", "max"}:
             arguments["quality"] = request.detail
         output_format = getattr(request, "output_format", None)
         if output_format:

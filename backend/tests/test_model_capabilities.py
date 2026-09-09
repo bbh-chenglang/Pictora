@@ -3,6 +3,7 @@ import pytest
 from app.model_capabilities import (
     UnsupportedModelError,
     UnsupportedModelParameterError,
+    filter_supported_model_ids,
     get_model_capabilities,
     normalize_generation_request,
 )
@@ -26,6 +27,43 @@ def test_gpt_image_two_accepts_registered_advanced_size() -> None:
     assert request.provider == "openai"
     assert request.size == "2048x1152"
     assert request.detail == "high"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"],
+)
+def test_gpt_image_25_models_support_their_extended_capabilities(model: str) -> None:
+    capability = get_model_capabilities("gpt", model)
+    request = normalize_generation_request(GenerateRequest(
+        provider="openai",
+        model=model,
+        prompt="draw",
+        size="1536x864",
+        detail="max",
+        background="transparent",
+        output_format="png",
+    ))
+
+    assert [option.value for option in capability.qualities] == [
+        "auto", "low", "medium", "high", "xhigh", "max",
+    ]
+    assert request.size == "1536x864"
+    assert request.detail == "max"
+    assert request.background == "transparent"
+
+
+def test_gpt_image_model_filter_includes_registered_25_models() -> None:
+    assert filter_supported_model_ids("gpt", [
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+        "gpt-5",
+    ]) == [
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+    ]
 
 
 def test_gemini_defaults_and_rejects_unsupported_quality() -> None:

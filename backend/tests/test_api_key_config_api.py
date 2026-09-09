@@ -318,6 +318,8 @@ def test_openai_model_discovery_stays_on_the_openai_endpoint(
                 {
                     "data": [
                         type("Model", (), {"id": "gpt-image-2"})(),
+                        type("Model", (), {"id": "gpt-image-2.5-flare"})(),
+                        type("Model", (), {"id": "gpt-image-2.5-sunburst"})(),
                         type("Model", (), {"id": "gpt-5"})(),
                     ]
                 },
@@ -342,6 +344,8 @@ def test_openai_model_discovery_stays_on_the_openai_endpoint(
     assert discovered.json() == {
         "models": [
             {"id": "gpt-image-2", "provider_type": "gpt"},
+            {"id": "gpt-image-2.5-flare", "provider_type": "gpt"},
+            {"id": "gpt-image-2.5-sunburst", "provider_type": "gpt"},
         ]
     }
     assert str(client_arguments["base_url"]) == "https://sub.beibeihai.xyz/v1"

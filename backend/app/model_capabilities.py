@@ -78,6 +78,11 @@ STANDARD_QUALITIES = (
     CapabilityOption(value="medium", label="中"),
     CapabilityOption(value="high", label="高"),
 )
+GPT_IMAGE_25_QUALITIES = (
+    *STANDARD_QUALITIES,
+    CapabilityOption(value="xhigh", label="超高"),
+    CapabilityOption(value="max", label="最高"),
+)
 GROK_2_QUALITIES = (
     CapabilityOption(value="low", label="低"),
     CapabilityOption(value="medium", label="中"),
@@ -92,14 +97,21 @@ GROK_RATIOS = (
 )
 
 
-def _gpt_capability(model: str, label: str, *, image_2: bool = False) -> ModelCapabilities:
+def _gpt_capability(
+    model: str,
+    label: str,
+    *,
+    image_2: bool = False,
+    image_2_5: bool = False,
+) -> ModelCapabilities:
+    supports_custom_sizes = image_2 or image_2_5
     return ModelCapabilities(
         provider_type="gpt",
         model=model,
         label=label,
         max_output_count=4,
         max_reference_images=16,
-        sizes=GPT_IMAGE_2_SIZES if image_2 else STANDARD_GPT_SIZES,
+        sizes=GPT_IMAGE_2_SIZES if supports_custom_sizes else STANDARD_GPT_SIZES,
         size_constraints=SizeConstraints(
             width_multiple=16,
             height_multiple=16,
@@ -107,8 +119,8 @@ def _gpt_capability(model: str, label: str, *, image_2: bool = False) -> ModelCa
             max_aspect_ratio=3,
             min_pixels=655_360,
             max_pixels=8_294_400,
-        ) if image_2 else None,
-        qualities=STANDARD_QUALITIES,
+        ) if supports_custom_sizes else None,
+        qualities=GPT_IMAGE_25_QUALITIES if image_2_5 else STANDARD_QUALITIES,
         output_formats=("png", "jpeg", "webp"),
         backgrounds=("auto", "opaque") if image_2 else ("auto", "opaque", "transparent"),
         supports_output_compression=True,
@@ -119,6 +131,12 @@ def _gpt_capability(model: str, label: str, *, image_2: bool = False) -> ModelCa
 
 
 MODEL_CAPABILITIES = (
+    _gpt_capability(
+        "gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst", image_2_5=True,
+    ),
+    _gpt_capability(
+        "gpt-image-2.5-flare", "GPT Image 2.5 Flare", image_2_5=True,
+    ),
     _gpt_capability("gpt-image-2", "GPT Image 2", image_2=True),
     _gpt_capability("gpt-image-1.5", "GPT Image 1.5"),
     _gpt_capability("gpt-image-1", "GPT Image 1"),
