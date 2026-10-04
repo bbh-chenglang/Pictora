@@ -400,3 +400,68 @@ def test_grok_uses_the_shared_endpoint_and_only_returns_grok_models(
     )
     assert created.status_code == 201
     assert created.json()["model"] == "grok-imagine-image"
+
+
+def test_gemini_preview_models_can_be_discovered_tested_and_selected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    register(client)
+    expected_models = [
+        {"id": "gemini-3.1-flash-image-preview", "provider_type": "gemini"},
+        {"id": "gemini-3-pro-image-preview", "provider_type": "gemini"},
+    ]
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["headers"]["x-goog-api-key"] == "preview-key"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            assert url == "https://sub.beibeihai.xyz/v1beta/models"
+            return httpx.Response(
+                200, request=httpx.Request("GET", url),
+                json={"models": [
+                    {"name": "models/gemini-3.1-flash-image-preview"},
+                    {"name": "models/gemini-3-pro-image-preview"},
+                    {"name": "models/gemini-3.1-flash"},
+                ]},
+            )
+
+    monkeypatch.setattr("app.api.settings.httpx.AsyncClient", FakeClient)
+    discovered = client.post(
+        "/api/settings/api-keys/models",
+        json={"api_key": "preview-key", "provider_type": "gemini"},
+    )
+    assert discovered.status_code == 200
+    assert discovered.json() == {"models": expected_models}
+
+    created = client.post(
+        "/api/settings/api-keys",
+        json={"alias": "Gemini preview", "api_key": "preview-key", "provider_type": "gemini"},
+    )
+    assert created.status_code == 201
+    config_id = created.json()["id"]
+    configured_models = client.get(f"/api/settings/api-keys/{config_id}/models")
+    assert configured_models.status_code == 200
+    assert configured_models.json() == {"models": expected_models}
+
+    tested = client.post(f"/api/settings/api-keys/{config_id}/test")
+    assert tested.status_code == 200
+    assert tested.json() == {
+        "available": True, "message": "API Key 可用", "models": expected_models,
+    }
+    capabilities = client.get("/api/providers").json()["capabilities"]
+    for model in expected_models:
+        assert any(item["model"] == model["id"] for item in capabilities)
+        updated = client.patch(
+            f"/api/settings/api-keys/{config_id}", json={"model": model["id"]},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["model"] == model["id"]

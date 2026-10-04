@@ -107,7 +107,12 @@ def test_gemini_provider_uses_native_gateway_headers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gemini_provider_sends_native_image_config_and_extracts_inline_data():
+@pytest.mark.parametrize("model", [
+    "gemini-3-pro-image",
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-image-preview",
+])
+async def test_gemini_provider_sends_native_image_config_and_extracts_inline_data(model):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -140,13 +145,13 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
         provider = GeminiProvider(
             api_key=SecretStr("secret"),
             base_url="https://sub.beibeihai.xyz/v1beta",
-            model="gemini-3-pro-image",
+            model=model,
             client=client,
         )
         response = await provider.generate_image(
             GenerateRequest(
                 provider="gemini",
-                model="gemini-3-pro-image",
+                model=model,
                 prompt="生成两只小猫",
                 aspect_ratio="16:9",
                 resolution="4K",
@@ -157,7 +162,7 @@ async def test_gemini_provider_sends_native_image_config_and_extracts_inline_dat
     request = captured["request"]
     assert str(request.url) == (
         "https://sub.beibeihai.xyz/v1beta/models/"
-        "gemini-3-pro-image:generateContent"
+        f"{model}:generateContent"
     )
     assert json.loads(request.content) == {
         "contents": [

@@ -98,3 +98,30 @@ def test_output_and_reference_limits_are_declared() -> None:
         normalize_generation_request(GenerateRequest(
             provider="gemini", model="gemini-2.5-flash-image", prompt="draw", count=5,
         ))
+
+
+def test_gemini_flash_preview_keeps_its_upstream_model_id() -> None:
+    capability = get_model_capabilities("gemini", "gemini-3.1-flash-image-preview")
+    stable = get_model_capabilities("gemini", "gemini-3.1-flash-image")
+    request = normalize_generation_request(GenerateRequest(
+        provider="gemini", model=capability.model, prompt="draw",
+        aspect_ratio="1:4", resolution="2K",
+    ))
+
+    assert capability.aspect_ratios == stable.aspect_ratios
+    assert capability.resolutions == stable.resolutions
+    assert capability.max_reference_images == stable.max_reference_images
+    assert request.model == "gemini-3.1-flash-image-preview"
+    assert request.aspect_ratio == "1:4"
+    assert request.resolution == "2K"
+
+
+def test_gemini_model_filter_includes_both_upstream_preview_models() -> None:
+    assert filter_supported_model_ids("gemini", [
+        "models/gemini-3.1-flash-image-preview",
+        "models/gemini-3-pro-image-preview",
+        "models/gemini-3.1-flash",
+    ]) == [
+        "gemini-3.1-flash-image-preview",
+        "gemini-3-pro-image-preview",
+    ]
