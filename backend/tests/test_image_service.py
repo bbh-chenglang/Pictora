@@ -167,6 +167,37 @@ async def test_openai_provider_forwards_gpt_image_25_max_quality() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])
+@pytest.mark.parametrize("quality", ["xhigh", "max"])
+async def test_openai_provider_forwards_gpt_image_25_reference_quality(
+    model: str,
+    quality: str,
+) -> None:
+    client = FakeClient()
+    provider = OpenAIProvider(
+        api_key=SecretStr("do-not-leak"),
+        base_url="https://api.example/v1",
+        model=model,
+        client=client,
+    )
+    reference = ReferenceImage(
+        data=b"reference-bytes",
+        content_type="image/png",
+        filename="reference.png",
+    )
+
+    await provider.generate_image(
+        GenerateRequest(provider="openai", model=model, prompt="draw", detail=quality),
+        reference,
+    )
+
+    assert client.images.request is None
+    assert client.images.edit_request["model"] == model
+    assert client.images.edit_request["quality"] == quality
+    assert client.images.edit_request["image"].read() == b"reference-bytes"
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_forwards_multiple_reference_images() -> None:
     client = FakeClient()
     provider = OpenAIProvider(

@@ -23,6 +23,7 @@ from app.schemas.generate import (
     CancelGenerationResponse,
     GenerateRequest,
     GenerateTaskResponse,
+    GenerationQuality,
     ReferenceImage,
     ReferenceImageInput,
 )
@@ -35,7 +36,6 @@ from app.api.upload_limits import read_reference_upload
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 logger = logging.getLogger(__name__)
 SUPPORTED_REFERENCE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-Detail = Literal["low", "medium", "high", "original", "auto"]
 AspectRatio = Literal[
     "auto", "1:1", "1:2", "1:4", "1:8", "2:1", "2:3", "3:2", "3:4",
     "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "19.5:9",
@@ -224,7 +224,7 @@ async def generate_image_from_reference(
     prompts: Annotated[list[str] | None, Form()] = None,
     views: Annotated[str | None, Form()] = None,
     count: Annotated[int, Form(ge=1, le=10)] = 1,
-    detail: Annotated[Detail, Form()] = "auto",
+    detail: Annotated[GenerationQuality, Form()] = "auto",
     size: Annotated[str | None, Form()] = None,
     aspect_ratio: Annotated[AspectRatio | None, Form()] = None,
     resolution: Annotated[Resolution | None, Form()] = None,

@@ -1,0 +1,286 @@
+/* A shared, quieter visual language for both creative workspaces. */
+.studio-shell {
+  --bg: #10141c;
+  --surface: #171d28;
+  --surface-subtle: #121822;
+  --surface-raised: #202938;
+  --text: #eaf0f9;
+  --text-soft: #bdc9da;
+  --muted: #8999af;
+  --muted-dim: #72839a;
+  --line: #293242;
+  --line-strong: #364254;
+  --blue: #719dff;
+  --blue-hover: #a0baff;
+  --blue-soft: rgba(113, 157, 255, .11);
+  --green: #55c59a;
+  --amber: #e5b671;
+  --danger: #f18b91;
+  --danger-soft: rgba(241, 139, 145, .1);
+  --shadow-menu: 0 16px 48px rgba(0, 0, 0, .28);
+  --polish-shadow-color: rgba(0, 0, 0, .55);
+  --prompt-snow-page: var(--bg);
+  --prompt-snow-surface: var(--surface);
+  --prompt-snow-surface-muted: var(--surface-subtle);
+  --prompt-snow-text: var(--text);
+  --prompt-snow-text-muted: var(--muted);
+  --prompt-snow-border: var(--line);
+  --prompt-snow-border-strong: var(--line-strong);
+  --prompt-snow-accent: var(--blue);
+  --prompt-snow-accent-hover: var(--blue-hover);
+  --prompt-snow-danger: var(--danger);
+  --prompt-snow-overlay: rgba(7, 12, 22, .64);
+  min-width: 320px;
+  background: var(--bg);
+  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.studio-shell.background-snowfall {
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-subtle: #f7f9fc;
+  --surface-raised: #eef3fa;
+  --text: #202c40;
+  --text-soft: #46546b;
+  --muted: #728096;
+  --muted-dim: #7c899c;
+  --line: #e5eaf2;
+  --line-strong: #d5deea;
+  --blue: #4878ed;
+  --blue-hover: #315fcf;
+  --blue-soft: #edf3ff;
+  --green: #329673;
+  --amber: #aa741f;
+  --danger: #ce5a66;
+  --danger-soft: #fff0f1;
+  --shadow-menu: 0 16px 48px rgba(36, 54, 83, .12);
+  --polish-shadow-color: rgba(39, 58, 86, .18);
+  --prompt-snow-overlay: rgba(29, 43, 65, .32);
+}
+.studio-shell .flowing-grid-background { opacity: .27; }
+.studio-shell .snowfall-background { opacity: .08; }
+.studio-shell:has(.studio-grid) { min-width: 320px; }
+.studio-shell .topbar {
+  height: 72px;
+  padding: 0 26px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.studio-shell .brand { gap: 10px; }
+.studio-shell .brand-mark { width: 35px; height: 35px; border-radius: 10px; }
+.studio-shell .brand strong { color: var(--text); font-size: 18px; letter-spacing: -.6px; font-weight: 700; }
+.studio-shell .brand small { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.studio-shell .topbar-actions { gap: 9px; }
+.studio-shell .user-chip { border: 0; border-radius: 8px; background: var(--surface-subtle); color: var(--muted); padding: 9px 10px; font-size: 11px; gap: 6px; }
+.studio-shell .status-indicator { font-size: 10px; margin-right: 10px; }
+.studio-shell .topbar-command { min-height: 35px; padding: 8px 11px; font-size: 11px; gap: 6px; }
+.studio-shell .media-mode-switch { margin-left: 36px; border: 1px solid var(--line); background: var(--surface-subtle); border-radius: 10px; padding: 4px; gap: 4px; }
+.studio-shell .media-mode-switch button { padding: 7px 16px; font-size: 12px; color: var(--muted); border-radius: 7px; min-height: 31px; }
+.studio-shell .media-mode-switch button.active { background: var(--surface); color: var(--blue); box-shadow: 0 2px 5px var(--polish-shadow-color); }
+.studio-shell.background-snowfall button:where(:not(.image-preview-trigger):not(.reference-preview-trigger):not(.composer-collapse-toggle)),
+.studio-shell.background-snowfall button:where(:not(.image-preview-trigger):not(.reference-preview-trigger):not(.composer-collapse-toggle)):hover:not(:disabled),
+.studio-shell button:where(:not(.image-preview-trigger):not(.reference-preview-trigger):not(.composer-collapse-toggle)),
+.studio-shell button:where(:not(.image-preview-trigger):not(.reference-preview-trigger):not(.composer-collapse-toggle)):hover:not(:disabled) {
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: background-color .16s, color .16s, border-color .16s;
+}
+.studio-shell button:where(:not(.image-preview-trigger):not(.reference-preview-trigger):not(.composer-collapse-toggle))::after { display: none; }
+.studio-shell .primary-action,
+.studio-shell.background-snowfall .primary-action {
+  background: #4878ed;
+  border: 1px solid #4878ed;
+  color: #ffffff;
+  border-radius: 9px;
+  font-weight: 500;
+  box-shadow: 0 3px 8px rgba(50, 92, 197, .15);
+}
+.studio-shell .primary-action:hover:not(:disabled),
+.studio-shell.background-snowfall .primary-action:hover:not(:disabled) { background: #3966d8; border-color: #3966d8; }
+.studio-shell .primary-action:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
+.studio-shell .secondary-action,
+.studio-shell.background-snowfall .secondary-action {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-weight: 500;
+  box-shadow: none;
+  text-decoration: none;
+}
+.studio-shell .secondary-action:hover:not(:disabled),
+.studio-shell.background-snowfall .secondary-action:hover:not(:disabled) { background: var(--surface-subtle); border-color: var(--line-strong); color: var(--text); }
+.studio-shell .secondary-action:disabled { opacity: .48; }
+.studio-shell .icon-action { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); box-shadow: none; }
+.studio-shell .icon-action:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-raised); color: var(--blue); }
+.studio-shell .danger-action { border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); border-radius: 8px; color: var(--danger); background: var(--danger-soft); box-shadow: none; }
+.studio-shell .text-action { border-radius: 5px; color: var(--muted); box-shadow: none; font-weight: 400; }
+.studio-shell .text-action:hover:not(:disabled) { color: var(--blue); background: var(--blue-soft); }
+.studio-shell .text-action.danger-text { color: var(--danger); }
+.studio-shell .studio-grid { grid-template-columns: 244px minmax(0, 1fr); height: calc(100dvh - 72px); }
+.studio-shell .project-sidebar { border-right: 1px solid var(--line); padding: 25px 13px 20px; background: var(--surface); backdrop-filter: none; box-shadow: none; }
+.studio-shell .sidebar-heading { padding: 0 9px 20px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.studio-shell .sidebar-heading span { color: var(--muted); font-size: 9px; letter-spacing: 1px; }
+.studio-shell .sidebar-heading h2 { margin-top: 6px; font-size: 17px; color: var(--text); font-weight: 600; }
+.studio-shell .sidebar-heading .icon-action { width: 30px; height: 30px; min-height: 30px; }
+.studio-shell .project-list { gap: 7px; }
+.studio-shell .project-group { padding: 6px; border: 1px solid transparent; border-radius: 10px; margin-bottom: 4px; }
+.studio-shell .project-group:hover { background: var(--surface-subtle); }
+.studio-shell .project-group.active { background: var(--blue-soft); border-color: color-mix(in srgb, var(--blue) 12%, transparent); box-shadow: none; }
+.studio-shell .project-group .project-select { border: 0; background: transparent; padding: 7px 4px; gap: 8px; }
+.studio-shell .project-select span { color: var(--text-soft); font-weight: 500; font-size: 12px; }
+.studio-shell .project-group.active .project-select span,
+.studio-shell .project-group.active .project-select>svg { color: var(--blue); }
+.studio-shell .project-select small { color: var(--muted-dim); border-radius: 5px; background: var(--surface); padding: 2px 5px; text-align: center; }
+.studio-shell .project-new-conversation,
+.studio-shell .project-toggle { border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.studio-shell .project-history { border-left: 1px solid var(--line-strong); margin-left: 13px; padding-left: 7px; }
+.studio-shell .sidebar-muted { font-size: 10px; color: var(--muted); padding: 7px 6px; }
+.studio-shell .history-select { background: transparent; border: 1px solid transparent; border-radius: 7px; color: var(--muted); box-shadow: none; }
+.studio-shell .history-select:hover { background: var(--surface); border-color: var(--line); }
+.studio-shell .history-select.video-history-active { outline: none; border-color: var(--line-strong); background: var(--surface); }
+.studio-shell .history-prompt { color: var(--text-soft); font-size: 11px; }
+.studio-shell .history-provider-model,
+.studio-shell .history-generation-meta { font-size: 9px; color: var(--muted); }
+.studio-shell .history-tools { gap: 4px; padding: 6px 2px; }
+.studio-shell .history-tools .text-action { font-size: 9px; gap: 4px; padding: 4px 5px; }
+.studio-shell .result-kicker { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-weight: 500; font-size: 9px; letter-spacing: 1.2px; }
+.studio-shell .result-kicker svg { color: var(--blue); }
+.studio-shell .workspace-panel { background: transparent; }
+.studio-shell .result-panel { padding: 27px 30px 20px; }
+.studio-shell .result-heading h2 { font-size: 25px; font-weight: 600; letter-spacing: -.7px; }
+.studio-shell .empty-shape { border-radius: 18px; box-shadow: none; }
+.studio-shell .image-card { background: var(--surface); border-color: var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 7px 22px -17px var(--polish-shadow-color); }
+.studio-shell .image-meta { background: var(--surface); border-color: var(--line); }
+.studio-shell .workspace-composer-panel { background: var(--surface); border-color: var(--line); }
+.studio-shell .prompt-row textarea { border-color: var(--line); border-radius: 12px; background: var(--surface-subtle); color: var(--text); font-weight: 400; line-height: 1.85; }
+.studio-shell .parameter-pill { border-color: var(--line); border-radius: 8px; font-weight: 400; background: var(--surface-subtle); color: var(--text-soft); }
+.studio-shell .settings-page { max-width: 1160px; padding-top: 32px; }
+.studio-shell .settings-section { border: 1px solid var(--line); border-radius: 15px; background: var(--surface); box-shadow: 0 8px 28px -22px var(--polish-shadow-color); }
+.studio-shell .settings-page-heading h1 { color: var(--text); letter-spacing: -1px; }
+.studio-shell .settings-heading h1,
+.studio-shell .settings-heading h2 { font-size: 18px; font-weight: 600; color: var(--text); }
+.studio-shell .video-key-row { padding: 16px; border: 1px solid var(--line); background: var(--surface-subtle); border-radius: 11px; }
+.studio-shell .video-key-actions .secondary-action,
+.studio-shell .video-key-actions .danger-action { font-size: 11px; padding: 7px 10px; }
+.studio-shell .video-task-card { border-radius: 15px; padding: 19px; border-color: var(--line); box-shadow: 0 6px 20px -17px var(--polish-shadow-color); }
+.studio-shell .video-task-card header>div { font-size: 12px; color: var(--text-soft); }
+.studio-shell .video-task-card header>div>svg { color: var(--blue); }
+.studio-shell .video-task-prompt { font-size: 13px; line-height: 1.85; }
+.studio-shell .video-task-meta,
+.studio-shell .video-task-id { font-size: 10px; line-height: 1.8; }
+.studio-shell .video-status { font-size: 10px; background: var(--surface-subtle); padding: 5px 8px; border-radius: 6px; }
+.studio-shell .video-status.completed { color: var(--green); background: color-mix(in srgb, var(--green) 8%, var(--surface)); }
+.studio-shell .video-status.failed,
+.studio-shell .video-status.storage_failed { color: var(--danger); background: var(--danger-soft); }
+.studio-shell .video-task-card footer { border-top: 1px solid var(--line); padding-top: 14px; }
+.studio-shell .video-task-card footer button { font-size: 10px; padding: 7px 9px; }
+.studio-shell .video-result video { border-radius: 10px; }
+.studio-shell .video-bind-form input { border-radius: 8px; background: var(--surface-subtle); }
+.studio-shell .video-task-card progress { accent-color: var(--blue); height: 5px; border: 0; border-radius: 3px; overflow: hidden; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 1200px) {
+  .studio-shell .studio-grid { grid-template-columns: 244px minmax(0, 1fr); }
+  .studio-shell .status-indicator { display: none; }
+  .studio-shell .topbar { padding: 0 20px; }
+}
+@media (max-width: 1020px) {
+  body:has(.video-studio-grid:not([style*="display: none"])) { overflow-y: auto; overflow-x: hidden; }
+  .studio-shell .video-studio-grid { height: calc(100dvh - 72px); overflow: hidden; }
+  .studio-shell .video-main { height: 100%; overflow-y: auto; }
+  .studio-shell .topbar-actions { gap: 6px; }
+  .studio-shell .media-mode-switch { margin-left: 15px; }
+  .studio-shell .user-chip { display: none; }
+}
+@media (max-width: 700px) {
+  .studio-shell .topbar { height: auto; min-height: 68px; padding: 13px 15px; gap: 12px; flex-wrap: wrap; }
+  .studio-shell .brand strong { font-size: 16px; }
+  .studio-shell .brand small { display: none; }
+  .studio-shell .brand-mark { width: 30px; height: 30px; }
+  .studio-shell .media-mode-switch { margin-left: auto; margin-right: 0; }
+  .studio-shell .media-mode-switch button { padding: 5px 11px; min-height: 28px; }
+  .studio-shell .topbar-actions { width: 100%; justify-content: flex-end; }
+  .studio-shell .topbar-command { min-height: 31px; font-size: 10px; padding: 6px 9px; }
+  .studio-shell .video-studio-grid { display: flex; flex-direction: column; height: auto; overflow: visible; }
+  .studio-shell .video-studio-grid>.project-sidebar { height: auto; padding: 13px 14px; border-right: 0; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .studio-shell .video-studio-grid .sidebar-heading { border: 0; margin: 0; padding: 0 0 10px; }
+  .studio-shell .video-studio-grid .sidebar-heading span { display: none; }
+  .studio-shell .video-studio-grid .sidebar-heading h2 { margin: 0; font-size: 12px; }
+  .studio-shell .video-studio-grid .project-list { display: flex; overflow-x: auto; align-items: flex-start; gap: 8px; }
+  .studio-shell .video-studio-grid .project-group { min-width: 195px; flex-shrink: 0; margin: 0; }
+  .studio-shell .video-studio-grid .project-history { max-height: 180px; overflow: auto; }
+  .studio-shell .video-main { height: auto; overflow: visible; }
+  .studio-shell .settings-page { padding: 20px 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-shell *, .studio-shell *::before, .studio-shell *::after { animation-duration: .01ms; transition-duration: .01ms; }
+}
+
+/* Keep the original image controls, but remove the heavy glass treatment. */
+.studio-shell .composer-dock { border-color:var(--line); border-radius:16px; box-shadow:0 8px 30px -22px var(--polish-shadow-color); background:var(--surface); }
+.studio-shell .parameter-toolbar { border-color:var(--line); border-radius:11px; background:var(--surface-subtle); }
+.studio-shell .parameter-trigger { border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--muted); font-size:11px; padding:10px; }
+.studio-shell .parameter-trigger strong { color:var(--text-soft); font-weight:500; }
+.studio-shell .parameter-trigger:hover { border-color:var(--line-strong); background:var(--surface-raised); }
+.studio-shell .multi-view-toggle { border-color:var(--line); border-radius:8px; background:var(--surface); color:var(--text-soft); font-size:11px; }
+.studio-shell .reference-module { border-color:var(--line); border-radius:12px; background:var(--surface-subtle); box-shadow:none; }
+.studio-shell .reference-module:focus-within { border-color:var(--blue); background:var(--surface-subtle); box-shadow:0 0 0 3px var(--blue-soft); }
+.studio-shell .upload-zone { border-color:var(--line-strong); border-radius:9px; background:var(--surface); }
+.studio-shell .upload-zone:hover,.studio-shell .upload-zone.is-dragging { border-color:var(--blue); background:var(--blue-soft); box-shadow:none; }
+.studio-shell .upload-zone label:hover,.studio-shell .upload-zone.is-dragging label { color:var(--text); }
+.studio-shell .parameter-menu { border-color:var(--line); border-radius:11px; background:var(--surface); box-shadow:var(--shadow-menu); }
+.studio-shell .parameter-option.is-selected { background:var(--blue-soft); color:var(--blue); }
+.studio-shell.background-snowfall .media-mode-switch button.active { background:var(--surface); color:var(--blue); box-shadow:0 1px 5px rgba(39,58,86,.12); }
+.studio-shell .video-composer label { margin:0; font-size:12px; }
+.studio-shell .video-composer input,.studio-shell .video-composer select,.studio-shell .video-composer textarea { font-weight:400; }
+.studio-shell .video-composer textarea { font-size:13px; }
+.studio-shell .video-heading p,.studio-shell .video-empty>p { font-size:13px; }
+.studio-shell .video-composer .video-prompt-label { margin-top:0; }
+
+/* The prompt fills its card without covering the save and generation controls. */
+.studio-shell .prompt-row { display:flex; flex-direction:column; border-radius:12px; background:var(--surface); }
+.studio-shell .prompt-row label { flex:1; min-height:0; height:auto; }
+.studio-shell .prompt-row textarea { min-height:140px; height:100%; }
+.studio-shell .prompt-row:focus-within { border-color:var(--blue); box-shadow:0 0 0 3px var(--blue-soft); }
+
+/* Adapt the original image composer as well, rather than clipping its columns. */
+@media (max-width: 1200px) {
+  .studio-shell .composer-main { grid-template-columns:minmax(160px,.8fr) minmax(0,2fr); }
+  .studio-shell .reference-row { grid-column:1/-1; grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media (max-width: 700px) {
+  body:has(.studio-grid),body:has(.settings-page) { overflow-y:auto; overflow-x:hidden; }
+  .studio-shell .studio-grid { display:flex; flex-direction:column; height:auto; overflow:visible; }
+  .studio-shell .studio-grid>.project-sidebar { height:auto; padding:13px 14px; border-right:0; border-bottom:1px solid var(--line); flex-shrink:0; }
+  .studio-shell .studio-grid .sidebar-heading { border:0; margin:0; padding:0 0 10px; }
+  .studio-shell .studio-grid .sidebar-heading span { display:none; }
+  .studio-shell .studio-grid .sidebar-heading h2 { margin:0; font-size:12px; }
+  .studio-shell .studio-grid .project-list { display:flex; overflow-x:auto; align-items:flex-start; gap:8px; }
+  .studio-shell .studio-grid .project-group { min-width:195px; flex-shrink:0; margin:0; }
+  .studio-shell .studio-grid .project-history { max-height:180px; overflow:auto; }
+  .studio-shell .workspace-panel { display:flex; flex-direction:column; overflow:visible; }
+  .studio-shell .result-panel { height:350px; min-height:350px; padding:22px 14px 16px; }
+  .studio-shell .result-heading { flex-wrap:wrap; gap:10px; }
+  .studio-shell .result-heading h2 { font-size:23px; }
+  .studio-shell .panel-resizer { height:16px; flex-shrink:0; cursor:default; }
+  .studio-shell .composer-collapse-toggle { opacity:1; }
+  .studio-shell .workspace-composer-panel { overflow:visible; }
+  .studio-shell .composer-dock { width:calc(100% - 28px); padding:14px; margin:14px auto 20px; }
+  .studio-shell .composer-main { grid-template-columns:minmax(0,1fr); gap:14px; }
+  .studio-shell .parameter-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .studio-shell .multi-view-control { grid-column:1/-1; }
+  .studio-shell .prompt-row { min-height:220px; }
+  .studio-shell .reference-row { grid-column:auto; grid-template-columns:minmax(0,1fr); }
+  .studio-shell .settings-page { height:auto; overflow:visible; grid-template-columns:minmax(0,1fr); grid-template-areas:"heading" "interface" "preferences" "community" "security"; row-gap:14px; }
+  .studio-shell .settings-section { padding:18px; }
+  .studio-shell .settings-heading { flex-wrap:wrap; gap:10px; }
+  .studio-shell .profile-form,.studio-shell .security-grid { grid-template-columns:minmax(0,1fr); }
+  .studio-shell .api-config-row { grid-template-columns:minmax(0,1fr); gap:12px; }
+  .studio-shell .settings-heading-actions,.studio-shell .api-config-actions { flex-wrap:wrap; }
+}
+
+.studio-shell .video-task-card progress::-webkit-progress-bar { background:var(--surface-raised); border-radius:4px; }
+.studio-shell .video-task-card progress::-webkit-progress-value { background:var(--blue); border-radius:4px; }
+.studio-shell .video-task-card progress::-moz-progress-bar { background:var(--blue); border-radius:4px; }

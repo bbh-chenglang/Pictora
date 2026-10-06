@@ -36,12 +36,27 @@ class Project(BaseModel):
     updated_at: datetime
 
 
+class VideoHistorySummary(BaseModel):
+    id: int
+    prompt: str
+    model: str
+    status: str
+    upstream_status: str | None = None
+    duration: int
+    resolution: str
+    ratio: str
+    created_at: datetime
+
+
 class ProjectSummary(Project):
     history: list[HistorySummary]
     history_count: int
+    video_history: list[VideoHistorySummary] = Field(default_factory=list)
+    video_history_count: int = 0
 
 
 class ProjectDeleteResult(BaseModel):
     deleted_history_count: int
+    deleted_video_count: int = 0
     selected_project_id: int
     projects: list[ProjectSummary]

@@ -2547,7 +2547,7 @@ body.workspace-is-resizing {
 
 .admin-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-block: 1px solid var(--line);
   margin-bottom: 34px;
 }
@@ -3931,4 +3931,17 @@ body.workspace-is-resizing {
     inset 0 1px 0 var(--button-glass-highlight),
     inset 0 -1px 0 rgba(71, 85, 105, .14),
     0 5px 14px var(--button-glass-shadow);
+}
+
+/* Independent image/video modes share projects, not generation channels. */
+.media-mode-switch { display:flex; align-items:center; border:1px solid var(--prompt-snow-border-strong); border-radius:8px; padding:3px; gap:3px; margin-right:auto; margin-left:24px; }
+.media-mode-switch button { display:flex; align-items:center; gap:6px; border:0; border-radius:5px; background:transparent; padding:8px 16px; color:var(--prompt-snow-text-muted); cursor:pointer; font:inherit; font-size:13px; }
+.media-mode-switch button.active { background:var(--prompt-snow-surface-muted); color:var(--prompt-snow-text); box-shadow:0 1px 4px #0001; }
+.video-main { min-height:0; min-width:0; overflow:hidden; height:100%; }
+.video-studio-grid { min-height:0; }
+@media(max-width:800px) { .media-mode-switch { margin-left:10px; }.media-mode-switch button { padding:7px 10px; }.video-main { height:auto; overflow:visible; } }
+
+@media (max-width: 700px) {
+  .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-metrics > div:nth-child(2n) { border-right: 0; }
 }

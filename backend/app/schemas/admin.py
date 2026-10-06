@@ -25,6 +25,7 @@ class AdminUserSummary(UtcTimestampModel):
     usage_count: int
     generation_count: int
     analysis_count: int
+    video_generation_count: int = 0
     total_elapsed_ms: int
     models_used: list[str]
 
@@ -37,6 +38,9 @@ class AdminUsageRecord(UtcTimestampModel):
     model: str
     detail: str
     image_count: int
+    video_count: int = 0
+    duration: int | None = None
+    ratio: str | None = None
     size: str | None = None
     resolution: str | None = None
     elapsed_ms: int | None = None
@@ -50,6 +54,7 @@ class AdminUserPage(BaseModel):
     result_total: int
     admin_total: int
     usage_total: int
+    video_usage_total: int = 0
     page: int
     page_size: int
 

@@ -4,7 +4,7 @@ from uuid import uuid4
 import aiosqlite
 
 from app.database import DATABASE_PATH
-from app.schemas.project import Project, ProjectDeleteResult, ProjectSummary
+from app.schemas.project import Project, ProjectDeleteResult, ProjectSummary, VideoHistorySummary
 from app.schemas.history import HistorySummary
 
 
@@ -53,16 +53,23 @@ class ProjectRepository:
                 (user_id,),
             )
             histories = await histories_cursor.fetchall()
+            videos = await (await connection.execute("SELECT id,project_id,prompt,model,status,upstream_status,duration,resolution,ratio,created_at FROM video_tasks WHERE user_id=? ORDER BY created_at DESC,id DESC", (user_id,))).fetchall()
         grouped: dict[int, list[HistorySummary]] = {}
         for row in histories:
             data = dict(row)
             project_id = data.pop("project_id")
             grouped.setdefault(project_id, []).append(HistorySummary.model_validate(data))
+        video_grouped: dict[int, list[VideoHistorySummary]] = {}
+        for row in videos:
+            data = dict(row)
+            video_grouped.setdefault(data.pop("project_id"), []).append(VideoHistorySummary.model_validate(data))
         return [
             ProjectSummary(
                 **dict(row),
                 history=grouped.get(row["id"], []),
                 history_count=len(grouped.get(row["id"], [])),
+                video_history=video_grouped.get(row["id"], []),
+                video_history_count=len(video_grouped.get(row["id"], [])),
             )
             for row in projects
         ]
@@ -146,6 +153,7 @@ class ProjectRepository:
                 (project_id, user_id),
             )
             deleted_count = (await history_cursor.fetchone())[0]
+            deleted_video_count = (await (await connection.execute("SELECT COUNT(*) FROM video_tasks WHERE project_id=? AND user_id=?", (project_id,user_id))).fetchone())[0]
             task_rows = await (await connection.execute(
                 """
                 SELECT task.id
@@ -177,6 +185,7 @@ class ProjectRepository:
         return (
             ProjectDeleteResult(
                 deleted_history_count=deleted_count,
+                deleted_video_count=deleted_video_count,
                 selected_project_id=summaries[0].id,
                 projects=summaries,
             ),

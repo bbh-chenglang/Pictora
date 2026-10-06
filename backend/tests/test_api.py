@@ -426,6 +426,97 @@ def test_generate_with_reference_uploads_image_and_parameters(service: FakeImage
     assert reference.filename == "room.jpg"
 
 
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])
+@pytest.mark.parametrize("quality", ["auto", "low", "medium", "high", "xhigh", "max"])
+@pytest.mark.parametrize("with_reference", [False, True], ids=["text", "reference"])
+def test_gpt_image_25_generation_accepts_matching_qualities(
+    service: FakeImageService,
+    model: str,
+    quality: str,
+    with_reference: bool,
+) -> None:
+    payload = {
+        "provider": "openai",
+        "model": model,
+        "prompt": "draw",
+        "detail": quality,
+    }
+    with TestClient(app) as client:
+        if with_reference:
+            response = client.post(
+                "/api/generate/reference",
+                data=payload,
+                files={"image": ("reference.png", b"reference-bytes", "image/png")},
+            )
+        else:
+            response = client.post("/api/generate", json=payload)
+        assert response.status_code == 202, response.json()
+        wait_for_generation(service)
+
+    request = service.generate_calls[-1]
+    assert request.model == model
+    assert request.detail == quality
+    reference = service.reference_images[-1]
+    if with_reference:
+        assert isinstance(reference, ReferenceImage)
+        assert reference.data == b"reference-bytes"
+    else:
+        assert reference is None
+
+
+@pytest.mark.parametrize("quality", ["xhigh", "max"])
+@pytest.mark.parametrize("with_reference", [False, True], ids=["text", "reference"])
+def test_generation_rejects_extended_quality_for_unsupported_model(
+    service: FakeImageService,
+    quality: str,
+    with_reference: bool,
+) -> None:
+    payload = {
+        "provider": "openai",
+        "model": "gpt-image-2",
+        "prompt": "draw",
+        "detail": quality,
+    }
+    with TestClient(app) as client:
+        if with_reference:
+            response = client.post(
+                "/api/generate/reference",
+                data=payload,
+                files={"image": ("reference.png", b"reference-bytes", "image/png")},
+            )
+        else:
+            response = client.post("/api/generate", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "unsupported_model_capability"
+    assert quality in response.json()["error"]["message"]
+    assert service.generate_calls == []
+
+
+@pytest.mark.parametrize("with_reference", [False, True], ids=["text", "reference"])
+def test_generation_rejects_unknown_quality(service: FakeImageService, with_reference: bool) -> None:
+    payload = {
+        "provider": "openai",
+        "model": "gpt-image-2.5-sunburst",
+        "prompt": "draw",
+        "detail": "unknown-quality",
+    }
+    with TestClient(app) as client:
+        if with_reference:
+            response = client.post(
+                "/api/generate/reference",
+                data=payload,
+                files={"image": ("reference.png", b"reference-bytes", "image/png")},
+            )
+        else:
+            response = client.post("/api/generate", json=payload)
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(error["loc"] == ["body", "detail"] for error in errors)
+    assert service.generate_calls == []
+
+
 def test_generate_with_multiple_reference_images(service: FakeImageService) -> None:
     with TestClient(app) as client:
         response = client.post(

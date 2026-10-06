@@ -31,6 +31,7 @@ class AdminRepository:
                     u.last_login_at, u.last_activity_at,
                     MAX(h.created_at) AS last_used_at,
                     COUNT(h.id) AS usage_count,
+                    (SELECT COUNT(*) FROM video_tasks v WHERE v.user_id=u.id) AS video_generation_count,
                     SUM(CASE WHEN h.kind = 'generate' THEN 1 ELSE 0 END) AS generation_count,
                     SUM(CASE WHEN h.kind = 'analyze' THEN 1 ELSE 0 END) AS analysis_count,
                     COALESCE(SUM(h.elapsed_ms), 0) AS total_elapsed_ms,
@@ -84,6 +85,7 @@ class AdminRepository:
                     u.last_login_at, u.last_activity_at,
                     MAX(h.created_at) AS last_used_at,
                     COUNT(h.id) AS usage_count,
+                    (SELECT COUNT(*) FROM video_tasks v WHERE v.user_id=u.id) AS video_generation_count,
                     SUM(CASE WHEN h.kind = 'generate' THEN 1 ELSE 0 END) AS generation_count,
                     SUM(CASE WHEN h.kind = 'analyze' THEN 1 ELSE 0 END) AS analysis_count,
                     COALESCE(SUM(h.elapsed_ms), 0) AS total_elapsed_ms,
@@ -111,7 +113,22 @@ class AdminRepository:
                 """,
                 (user_id, limit),
             )).fetchall()
-        return [AdminUsageRecord.model_validate(dict(row)) for row in rows]
+            videos = await (await connection.execute("""
+                SELECT v.id,'video' AS kind,v.status,'beibeihai-video' AS provider,v.model,
+                       v.upstream_status AS detail,0 AS image_count,
+                       (SELECT COUNT(*) FROM video_results r WHERE r.task_id=v.id AND r.stored=1) AS video_count,
+                       v.duration,v.ratio,v.ratio AS size,v.resolution,NULL AS elapsed_ms,
+                       v.created_at,v.completed_at
+                FROM video_tasks v WHERE v.user_id=? ORDER BY v.created_at DESC,v.id DESC LIMIT ?
+            """,(user_id,limit))).fetchall()
+        records=[AdminUsageRecord.model_validate(dict(row)) for row in rows]
+        records += [AdminUsageRecord.model_validate(dict(row)|{'detail':row['detail'] or ''}) for row in videos]
+        return sorted(records,key=lambda r:(r.created_at,r.id),reverse=True)[:limit]
+
+    async def video_usage_total(self) -> int:
+        async with aiosqlite.connect(self.database_path) as connection:
+            row=await (await connection.execute("SELECT COUNT(*) FROM video_tasks v JOIN users u ON u.id=v.user_id WHERE u.email IS NOT NULL")).fetchone()
+        return int(row[0])
 
     @staticmethod
     def _summary(row: sqlite3.Row) -> AdminUserSummary:

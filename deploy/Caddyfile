@@ -1,0 +1,5 @@
+{$PICTORA_DOMAIN} {
+    encode zstd gzip
+    # Do not log query strings: reference asset URLs contain HMAC signatures.
+    reverse_proxy web:80
+}

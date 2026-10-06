@@ -5,6 +5,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.database import DATABASE_PATH
+from app.repositories.r2_image_repository import R2ImageDestination, enqueue_new_image
 from app.schemas.common import GenerationViewSpec
 from app.schemas.history import (
     GenerationBatchDetail,
@@ -74,8 +75,10 @@ class GenerationTaskNotRunnableError(Exception):
 
 
 class HistoryRepository:
-    def __init__(self, database_path: Path = DATABASE_PATH) -> None:
+    def __init__(self, database_path: Path = DATABASE_PATH,
+                 *, r2_destination: R2ImageDestination | None = None) -> None:
         self.database_path = database_path
+        self.r2_destination = r2_destination
 
     @staticmethod
     async def _insert_generation_batch(
@@ -891,9 +894,14 @@ class HistoryRepository:
                 if cursor.rowcount != 1:
                     await connection.rollback()
                     raise GenerationTaskNotRunnableError(task_id)
-            await connection.commit()
             if cursor.lastrowid is None:
                 raise RuntimeError("Failed to store history image")
+            if role == "generated" and self.r2_destination is not None:
+                await enqueue_new_image(
+                    connection, self.r2_destination, image_id=cursor.lastrowid,
+                    mime_type=mime_type, data=data,
+                )
+            await connection.commit()
             return cursor.lastrowid
 
     async def add_reference_images(

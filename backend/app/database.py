@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -820,7 +820,7 @@ async def _migrate_prompts(connection: aiosqlite.Connection) -> None:
         await connection.execute(statement)
 
 
-async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
+async def _initialize_legacy_database(path: Path = DATABASE_PATH, **_: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as connection:
         await connection.execute("PRAGMA foreign_keys = ON")
@@ -936,7 +936,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 4:
@@ -998,7 +998,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 5:
@@ -1014,7 +1014,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 6:
@@ -1024,7 +1024,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 7:
@@ -1033,7 +1033,7 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 8:
@@ -1042,20 +1042,20 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_generation_tasks(connection)
             await _migrate_email_auth(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 9:
             await _migrate_generation_batches(connection)
             await _migrate_generation_tasks(connection)
             await _migrate_grok_provider(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         elif version < 10:
             await _migrate_generation_batches(connection)
             await _migrate_generation_tasks(connection)
-            await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            await connection.execute(f"PRAGMA user_version = 17")
             await connection.commit()
             return
         else:
@@ -1066,5 +1066,16 @@ async def initialize_database(path: Path = DATABASE_PATH, **_: object) -> None:
             await _migrate_grok_provider(connection)
         await _migrate_skills(connection)
         await _migrate_prompts(connection)
+        await connection.execute(f"PRAGMA user_version = 17")
+        await connection.commit()
+
+
+async def initialize_database(path: Path = DATABASE_PATH, **kwargs: object) -> None:
+    from app.video.database import migrate_video
+    await _initialize_legacy_database(path, **kwargs)
+    async with aiosqlite.connect(path) as connection:
+        await connection.execute("PRAGMA foreign_keys = ON")
+        await connection.execute("BEGIN IMMEDIATE")
+        await migrate_video(connection)
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

@@ -1,14 +1,14 @@
 # 北海 AI 多模型生图 API 接入文档
 
-> 文档版本：v2.4
+> 文档版本：v2.5
 >
-> 更新时间：2026-09-09
+> 更新时间：2026-10-04
 >
-> 适用版本：Pictora `V2`（已包含 GPT Image 2.5 与 `gemini-3-pro-image` 支持）
+> 适用版本：Pictora `V2`（已包含 GPT Image 2.5、Gemini Pro 与 `gemini-3.1-flash-image-preview` 支持；模型注册更新提交 `3fd2f64`）
 >
 > 接口协议：OpenAI Images API 兼容格式 + Google Gemini 原生 REST API 兼容格式
 
-本文档用于指导客户通过北海 AI 中转服务接入 GPT、Gemini 和 Grok 生图模型，包括模型查询、文生图、参考图生图、多图融合和结果解析。本文只描述客户直接调用中转服务的公开协议，不包含 Pictora 内部后台接口。
+本文档用于指导客户通过北海 AI 中转服务接入 GPT、Gemini 和 Grok 生图模型，包括模型查询、文生图、参考图生图、多图融合和结果解析。本文主要描述客户直接调用中转服务的公开协议，并说明 Pictora 当前客户端的模型过滤、质量参数和重试行为；不提供 Pictora 内部后台接口的调用协议。
 
 ## 1. 接入信息
 
@@ -188,15 +188,20 @@ curl "https://sub.beibeihai.xyz/v1beta/models" \
 {
   "models": [
     {
-      "name": "models/gemini-3-pro-image",
-      "displayName": "Gemini 3 Pro Image",
+      "name": "models/gemini-3.1-flash-image-preview",
+      "displayName": "Gemini 3.1 Flash Image Preview",
+      "supportedGenerationMethods": ["generateContent"]
+    },
+    {
+      "name": "models/gemini-3-pro-image-preview",
+      "displayName": "Gemini 3 Pro Image Preview",
       "supportedGenerationMethods": ["generateContent"]
     }
   ]
 }
 ```
 
-> 香蕉 Pro 当前使用的模型 ID 为 `gemini-3-pro-image`。它与旧的 `gemini-3-pro-image-preview` 是两个不同的完整 ID，调用时必须使用模型列表实际返回的值，不要自行追加或删除 `-preview`。
+> 上面的响应是返回两个 Preview 模型的示例，不代表每个 API Key 都拥有这两个模型。部分 Key 返回 `gemini-3-pro-image` 或 `gemini-3.1-flash-image`，另一些返回带 `-preview` 的 ID。调用时必须保留模型列表实际返回的完整 ID，不要自行追加或删除 `-preview`。
 
 ### 4.3 模型名称处理
 
@@ -208,6 +213,19 @@ OpenAI 兼容模型列表通常直接返回 `data[].id`，将该值原样放入 
 ```
 
 调用方可移除 Gemini 模型返回值开头的 `models/`，再放入生成接口路径。
+
+### 4.4 Pictora「测试 API」与模型过滤
+
+Pictora 的「测试 API」会查询上游模型列表，并通过客户端内置模型能力注册表过滤，只展示当前网站已适配的模型。因此，上游后台列出的模型名称数量，不一定等于网站显示的可用模型数量。
+
+2026-10-04 的更新补充登记了 `gemini-3.1-flash-image-preview`。修复前，该 ID 会被过滤掉；修复后，如果 Key 的模型列表返回以下两个 ID，网站应同时显示它们：
+
+- `gemini-3.1-flash-image-preview`
+- `gemini-3-pro-image-preview`
+
+这个更新保留原有不带 `-preview` 的模型支持，不替换模型名、不修改已有 API 配置。更新网站后需刷新页面并重新点击「测试」，以获取最新结果。
+
+「API Key 可用」只说明模型列表查询成功且存在网站支持的模型，不代表图片生成已经测试成功，也不能保证请求时上游始终有可用容量。图片生成、参考图编辑和特定质量参数仍需分别验证。
 
 ## 5. 当前版本兼容模型
 
@@ -230,11 +248,38 @@ GPT 输出格式为 `png`、`jpeg`、`webp`。GPT Image 2.5 背景支持 `auto`�
 
 OpenAI 官方参考：[GPT Image 2.5 Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare)、[GPT Image 2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)、[Image generation 指南](https://developers.openai.com/api/docs/guides/image-generation)。
 
+### 5.1.1 网站「生成质量」与模型名称的关系
+
+模型名称和质量是两个独立参数。Pictora 保持所选完整模型 ID，将界面上的「生成质量」单独发送为 OpenAI Images API 的 `quality` 字段；参考图编辑也使用同样的对应关系。
+
+| 网站选项 | 实际发送的 `quality` | 当前客户端支持范围 |
+| --- | --- | --- |
+| 自动 | `auto` | 5.1 节全部 GPT 模型 |
+| 低 | `low` | 5.1 节全部 GPT 模型 |
+| 中 | `medium` | 5.1 节全部 GPT 模型 |
+| 高 | `high` | 5.1 节全部 GPT 模型 |
+| 超高 | `xhigh` | 仅 `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` |
+| 最高 | `max` | 仅 `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` |
+
+例如，选择 Flare 和「高」时，请求包含：
+
+```json
+{
+  "model": "gpt-image-2.5-flare",
+  "quality": "high"
+}
+```
+
+以上仅展示模型与质量字段，完整生图请求还需填写 `prompt` 等参数。选择 Sunburst 和「最高」则发送 `model="gpt-image-2.5-sunburst"`、`quality="max"`。选择 `gpt-image-2` 和「高」仍请求 GPT Image 2，不会自动切换到 2.5。
+
+上游后台可能展示 `gpt-image-2.5`、`gpt-image-2.5-flare-high`、`gpt-image-2.5-flare-max`、`gpt-image-2.5-sunburst-high`、`gpt-image-2.5-sunburst-max` 等名称。它们不在当前 Pictora GPT 能力注册表中，网站不会自动选择或拼接这些名称。是否属于预设质量别名、是否与基础模型加 `quality=high/max` 等价，以及如何计费，必须依据上游实际映射规则确认，不能只凭名称判断。`auto` 也不承诺等于某个固定质量档位。
+
 ### 5.2 Gemini 模型
 
 | 模型 | 支持的图片比例 | `imageSize` | 参考图上限 | 当前客户端单次数量上限 |
 | --- | --- | --- | --- | --- |
 | `gemini-3.1-flash-image` | 标准比例，以及 `1:4`、`1:8`、`4:1`、`8:1` | `1K`、`2K`、`4K` | 14 张 | 4 张 |
+| `gemini-3.1-flash-image-preview` | 标准比例，以及 `1:4`、`1:8`、`4:1`、`8:1` | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3-pro-image` | 标准比例 | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3-pro-image-preview` | 标准比例 | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3.1-flash-lite-image-preview` | 标准比例 | 不发送 | 14 张 | 4 张 |
@@ -242,7 +287,7 @@ OpenAI 官方参考：[GPT Image 2.5 Flare](https://developers.openai.com/api/do
 
 Gemini 标准比例为 `1:1`、`2:3`、`3:2`、`3:4`、`4:3`、`4:5`、`5:4`、`9:16`、`16:9`、`21:9`。“不发送”表示当前版本不会设置 `generationConfig.imageConfig.imageSize`。
 
-`gemini-3-pro-image` 是当前香蕉 Pro 的正式模型 ID；`gemini-3-pro-image-preview` 仅用于仍然在模型列表中返回该旧 ID 的 API Key。两者不做自动别名转换。
+`gemini-3-pro-image` 与 `gemini-3-pro-image-preview`、`gemini-3.1-flash-image` 与 `gemini-3.1-flash-image-preview` 均是不同的完整模型 ID。Pictora 为 Flash Preview 注册了与已支持的 Flash 模型一致的客户端参数范围，但不会做自动别名转换；实际请求使用所选完整 ID，具体上游能力以该 Key 的实际结果为准。
 
 Gemini 原生接口没有 OpenAI Images API 的 `n` 参数。当前客户端的“单次数量”会转换为多次生成请求，不代表单个 Gemini 请求能返回指定数量。
 
@@ -802,12 +847,13 @@ Gemini 原生端点可能返回：
 
 | HTTP 状态码 | 含义 | 建议处理 |
 | --- | --- | --- |
-| `400` | 请求体、图片比例或分辨率不受支持 | 修改参数后重试，不要直接重复原请求 |
+| `400` | 通常为参数错误；也观察到上游用该状态码返回「系统过载」 | 先检查错误正文；参数错误应修正，明确过载应按 14.3 节处理 |
 | `401` | 未提供 API Key 或 Key 无效 | GPT/Grok 检查 `Authorization: Bearer`；Gemini 检查 `x-goog-api-key` |
-| `403` | API Key 无模型权限或账号受限 | 联系服务提供方检查权限 |
+| `403` | API Key 无模型权限、账号受限或所属分组已删除 | 联系服务提供方检查 Key、分组及模型权限 |
 | `404` | 接口或模型不存在 | GPT/Grok 查询 `/v1/models`；Gemini 查询 `/v1beta/models` |
 | `429` | 余额、频率或并发额度不足 | 根据响应信息稍后重试 |
-| `500` / `502` / `503` / `504` | 中转或上游暂时异常 | 使用指数退避进行有限次数重试 |
+| `500` / `502` / `503` / `504` | 中转或上游暂时异常 | 有限退避重试前注意重复生成风险；Pictora 当前行为见 15.2 节 |
+| `524` | 代理等待源站响应超时 | 确认原请求结果后再决定是否重试，避免重复生成或计费 |
 
 错误正文可能是平铺的 `code` / `message`，也可能使用嵌套 `error`。典型嵌套结构：
 
@@ -831,13 +877,47 @@ Gemini 原生端点可能返回：
 
 请勿发送完整 API Key、客户隐私图片或完整图片 Base64 数据。
 
+### 14.3 HTTP 400「当前系统过载」的排查
+
+2026-10-04 的一次本地请求观察到上游返回 HTTP `400`，错误正文包含：
+
+```text
+当前系统过载，如果高密集排队，请稍后重试
+```
+
+Pictora 会在界面中显示为 `Provider request failed (HTTP 400): ...`。前缀来自网站的错误包装，后面的过载说明来自上游响应；它不是网站自行推断的本机 CPU 或内存告警。不能只看到 `400` 就认定尺寸或质量不支持。
+
+此次已核对的任务记录（北京时间，2026-10-04）：
+
+| 请求时间 | 模型 | 质量 | 尺寸 | 结果 |
+| --- | --- | --- | --- | --- |
+| 18:15:57 | `gpt-image-2.5-flare` | `high` | `3840x2160` | 约 10.8 秒后返回过载错误 |
+| 18:16:40 | `gpt-image-2.5-flare` | `high` | `3840x2160` | 约 42.8 秒后成功生成 1 张图片 |
+
+两次任务的 API 配置、提示词、模型和已记录的生成参数相同。这支持该次失败属于上游暂时容量或拥堵问题，而非参数必然不兼容；不代表这组参数在任何时间、任何 Key 上都能成功。具体是哪个上游渠道、账号池或队列拥堵，仍需上游日志和请求标识确认。
+
+排查顺序：先保留脱敏错误正文和请求时间，区分参数错误与明确过载；再检查已有任务结果及同参数历史记录；只有在确认原请求状态后，才考虑由用户或调用方有界重试。不要因提示过载而盲目提高并发、自动切换模型或连续重复提交。
+
 ## 15. 超时与重试
 
+### 15.1 直接接入中转 API 的处理建议
+
 - 图片生成总超时建议设置为至少 `300` 秒。
-- `400`、`401`、`403`、`404` 等确定性错误应先修改请求或配置，不要自动重试。
-- 对 `429` 和 `5xx` 可采用 `1s`、`2s`、`4s` 指数退避，最多重试 3 次。
-- 网络断开或客户端超时不代表服务端一定停止处理，盲目重试可能造成重复生成和重复计费。
+- `400` 中的确定性参数错误，以及 `401`、`403`、`404` 配置或权限错误，应先修正请求或配置，不要自动重试。
+- 对明确返回「系统过载」的 `400`，先确认原任务状态及上游规则，再考虑有限、带退避的重试；不能把所有 `400` 都加入自动重试。
+- 对 `429` 和临时 `5xx` 可采用 `1s`、`2s`、`4s` 指数退避，最多重试 3 次；仅在明确拒绝或确认原任务状态后重试，并优先参考上游 `Retry-After`。
+- 网络断开、`524` 或客户端超时不代表服务端一定停止处理，盲目重试可能造成重复生成和重复计费。
 - 多张结果需要多次请求时，应限制并发，不要通过大量并发请求规避服务端额度。
+
+### 15.2 Pictora 当前已实现的行为
+
+以下描述当前程序行为，不代表所有中转 API 客户端都采用相同策略：
+
+- 对 `429`、`502`、`503`、`504`、`524` 最多自动重试 3 次，采用指数退避并加入随机抖动；`429` 的有效 `Retry-After` 优先使用，等待时间最多 30 秒。
+- `400`、`401`、`403`、`404`、`500` 不在当前状态码重试集合中。即使 `400` 正文写着「系统过载」，当前程序仍直接将该次请求报告为失败。
+- 上游返回空图片列表时，也存在有限重试逻辑；成功返回图片则结束重试。
+- 14.3 节中的失败任务只执行了一次，稍后成功的是另一条独立任务，不是网站在同一任务中的自动重试。
+- 本次更新只补充文档，没有更改重试代码，也没有新增 HTTP 400 自动重试。
 
 ## 16. 接入检查清单
 
@@ -857,3 +937,12 @@ Gemini 原生端点可能返回：
 ## 17. 技术支持
 
 反馈问题时，请向服务提供方提交请求时间、模型名称、HTTP 状态码、`x-request-id` 和已脱敏错误正文。不要提交完整 API Key 或客户隐私数据。
+
+## 18. 本次文档更新记录
+
+### v2.5（2026-10-04）
+
+- 同步 Pictora `V2` 提交 `3fd2f64`：补充 `gemini-3.1-flash-image-preview` 的模型列表示例、客户端能力及模型过滤说明，保留原有模型支持。
+- 增加网站质量选项与 `quality` 参数的对应关系，明确模型 ID 不自动添加 `-high`、`-max` 后缀，不推定上游别名等价关系。
+- 补充 HTTP 400 过载案例，区分上游暂时拥堵与参数不兼容，明确模型列表测试不等于生成验证。
+- 分开描述直接 API 接入建议与 Pictora 当前自动重试实现；记录有条件重试、重复生成及重复计费风险。

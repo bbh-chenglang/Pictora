@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Grid3X3,
   ImagePlus,
+  Film,
   LoaderCircle,
   Pencil,
   Plus,
@@ -39,6 +40,10 @@ import SkillsView, { type SkillWorkflow } from "./components/SkillsView.vue";
 import PromptsView, { type PromptEntry } from "./components/PromptsView.vue";
 import PromptEditorDialog, { type PromptForm } from "./components/PromptEditorDialog.vue";
 import PromptPickerPopover, { type PromptPickerEntry } from "./components/PromptPickerPopover.vue";
+import VideoWorkspace from "./components/VideoWorkspace.vue";
+import VideoProjectSidebar from "./components/VideoProjectSidebar.vue";
+import VideoSettings from "./components/VideoSettings.vue";
+import { videoStatusLabels, type VideoFeatures } from "./video";
 import pictoraMark from "./assets/pictora-mark.svg";
 
 type Provider = { id: string; label: string; models: string[] };
@@ -85,17 +90,20 @@ type AdminUser = {
   usage_count: number;
   generation_count: number;
   analysis_count: number;
+  video_generation_count?: number;
   total_elapsed_ms: number;
   models_used: string[];
 };
 type AdminUsage = {
   id: number;
-  kind: "generate" | "analyze";
-  status: "pending" | "completed" | "failed";
+  kind: "generate" | "analyze" | "video";
+  status: string;
   provider: string;
   model: string;
   detail: string;
   image_count: number;
+  video_count?: number;
+  duration?: number | null;
   size: string | null;
   resolution: string | null;
   elapsed_ms: number | null;
@@ -108,6 +116,7 @@ type AdminUserPage = {
   result_total: number;
   admin_total: number;
   usage_total: number;
+  video_usage_total?: number;
   page: number;
   page_size: number;
 };
@@ -391,7 +400,39 @@ const apiKeyConfigured = ref(false);
 const history = ref<HistorySummary[]>([]);
 const historyError = ref("");
 const projects = ref<ProjectSummary[]>([]);
+const mediaMode = ref<"image" | "video">("image");
+const videoProjectId = ref<number | null>(null);
+const videoSelectedTaskId = ref<number | null>(null);
+const videoAssetsReady = ref(false);
+const videoWorkspace = ref<InstanceType<typeof VideoWorkspace> | null>(null);
+const effectiveVideoProjectId = computed(() => videoProjectId.value ?? selectedProjectId.value ?? projects.value[0]?.id ?? null);
+const videoImageHistoryIds = computed(() => projects.value.find(p => p.id === effectiveVideoProjectId.value)?.history.filter(h => h.kind === "generate" && h.status === "completed").map(h => h.id) ?? []);
+async function loadVideoAvailability() {
+  try { const response = await apiFetch(API_BASE + "/api/videos/readiness"); if (response.ok) videoAssetsReady.value = Boolean((await response.json() as VideoFeatures).assets_ready); } catch { videoAssetsReady.value = false; }
+}
+function selectVideoProject(id: number) { videoProjectId.value = id; videoSelectedTaskId.value = null; }
+function openVideoTask(projectId: number, taskId: number) { videoProjectId.value = projectId; videoSelectedTaskId.value = taskId; }
+async function newVideoDraft(id: number) { selectVideoProject(id); await nextTick(); videoWorkspace.value?.newDraft(); }
+async function useImageForVideo(image: ImageResult) {
+  if (image.history_id == null || image.history_image_id == null || !videoAssetsReady.value) return;
+  mediaMode.value = "video";
+  if (!videoProjectId.value) videoProjectId.value = selectedProjectId.value;
+  await nextTick();
+  await videoWorkspace.value?.addHistoryImage(image.history_id, image.history_image_id);
+}
+function videoSelectionKey() { return "pictora.video.selection:" + (currentEmail.value || currentUsername.value); }
+function restoreVideoSelection() {
+  try { const saved = JSON.parse(localStorage.getItem(videoSelectionKey()) || "null"); if (saved) { mediaMode.value = saved.mode === "video" ? "video" : "image"; videoProjectId.value = Number.isInteger(saved.projectId) ? saved.projectId : null; videoSelectedTaskId.value = Number.isInteger(saved.taskId) ? saved.taskId : null; } } catch { /* Invalid selections do not affect image history. */ }
+  void loadVideoAvailability();
+}
+watch([mediaMode, videoProjectId, videoSelectedTaskId], () => { try { if (authView.value === "workspace") localStorage.setItem(videoSelectionKey(), JSON.stringify({ mode: mediaMode.value, projectId: videoProjectId.value, taskId: videoSelectedTaskId.value })); } catch { /* Optional local storage. */ } });
 const selectedProjectId = ref<number | null>(null);
+watch([mediaMode, selectedProjectId], () => {
+  // Freeze the initial video project selection; later image-side navigation is independent.
+  if (mediaMode.value === "video" && videoProjectId.value === null) {
+    videoProjectId.value = selectedProjectId.value ?? projects.value[0]?.id ?? null;
+  }
+});
 const projectError = ref("");
 const projectDialogMode = ref<"create" | "rename" | null>(null);
 const projectDialogProject = ref<ProjectSummary | null>(null);
@@ -453,6 +494,7 @@ const adminUserTotal = ref(0);
 const adminResultTotal = ref(0);
 const adminUserAdminTotal = ref(0);
 const adminUsageTotal = ref(0);
+const adminVideoUsageTotal = ref(0);
 const selectedAdminUserId = ref<number | null>(null);
 const adminLoading = ref(false);
 const adminError = ref("");
@@ -1095,6 +1137,7 @@ function applyCurrentUser(data: any) {
   profileUsername.value = currentUsername.value;
   currentIsAdmin.value = Boolean(data?.is_admin);
   restoreWorkspaceSelection();
+  restoreVideoSelection();
 }
 
 function startVerificationCooldown(seconds: number) {
@@ -1194,6 +1237,7 @@ async function loadAdminUsers(page = adminPage.value) {
     adminResultTotal.value = legacyItems?.length ?? Number(pageData?.result_total ?? pageData?.total ?? 0);
     adminUserAdminTotal.value = legacyItems?.filter((user) => user.is_admin).length ?? Number(pageData?.admin_total ?? 0);
     adminUsageTotal.value = legacyItems?.reduce((total, user) => total + user.usage_count, 0) ?? Number(pageData?.usage_total ?? 0);
+    adminVideoUsageTotal.value = Number(pageData?.video_usage_total ?? 0);
     if (!legacyItems && pageData?.page) adminPage.value = pageData.page;
     const lastPage = Math.max(1, Math.ceil(adminResultTotal.value / adminPageSize));
     if (adminPage.value > lastPage) {
@@ -1961,6 +2005,7 @@ async function loadProjects(restoreWorkspace = false) {
         persistWorkspaceSelection();
       }
     }
+    if (videoProjectId.value !== null && !projects.value.some(p => p.id === videoProjectId.value)) { videoProjectId.value = projects.value[0]?.id ?? null; videoSelectedTaskId.value = null; }
     projectError.value = "";
   } catch (exception) {
     projectError.value = exception instanceof Error ? exception.message : "无法加载项目";
@@ -1992,6 +2037,10 @@ function resetAccountWorkspace() {
   historyFailureGroups.value = [];
   history.value = [];
   projects.value = [];
+  mediaMode.value = "image";
+  videoProjectId.value = null;
+  videoSelectedTaskId.value = null;
+  videoAssetsReady.value = false;
   selectedProjectId.value = null;
   activeHistoryId.value = null;
   currentConversationId.value = null;
@@ -2121,7 +2170,8 @@ async function submitCreateProject(name: string) {
   if (!response.ok) { projectError.value = "创建项目失败"; return; }
   const data = await response.json();
   await loadProjects();
-  startNewConversation(data.id);
+  if (mediaMode.value === "video") await newVideoDraft(data.id);
+  else startNewConversation(data.id);
 }
 
 async function submitRenameProject(project: ProjectSummary, name: string) {
@@ -2133,9 +2183,10 @@ async function submitRenameProject(project: ProjectSummary, name: string) {
 
 async function submitDeleteProject(project: ProjectSummary) {
   const response = await apiFetch(`${API_BASE}/api/projects/${project.id}`, { method: "DELETE" });
-  if (!response.ok) { projectError.value = "删除项目失败"; return; }
+  if (!response.ok) { const result = await response.json(); projectError.value = result?.error?.message || "删除项目失败"; return; }
   const data = await response.json();
   discardGenerationRuns((run) => run.projectId === project.id);
+  if (effectiveVideoProjectId.value === project.id) { videoProjectId.value = data.selected_project_id; videoSelectedTaskId.value = null; }
   selectedProjectId.value = data.selected_project_id;
   await loadProjects();
   clearWorkspace();
@@ -3765,12 +3816,16 @@ onUnmounted(() => {
           <div><strong>Pictora</strong><small>AI 创作工作台</small></div>
         </div>
       </div>
+      <div v-if="currentView === 'workspace'" class="media-mode-switch" role="group" aria-label="创作模式">
+        <button type="button" data-mode="image" :aria-pressed="mediaMode === 'image'" :class="{active: mediaMode === 'image'}" @click="mediaMode = 'image'"><ImagePlus :size="15" />图片</button>
+        <button type="button" data-mode="video" :aria-pressed="mediaMode === 'video'" :class="{active: mediaMode === 'video'}" @click="mediaMode = 'video'"><Film :size="15" />视频</button>
+      </div>
       <div class="topbar-actions">
-        <span class="status-indicator" :class="{ configured: apiKeyConfigured }">
+        <span v-if="mediaMode === 'image'" class="status-indicator" :class="{ configured: apiKeyConfigured }">
           <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
         <span class="user-chip" :title="currentEmail"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
-        <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="skills" title="技能" @click="navigateToSkills"><Sparkles :size="16" />技能</button>
+        <button v-if="currentView === 'workspace' && mediaMode === 'image'" type="button" class="secondary-action topbar-command" data-action="skills" title="技能" @click="navigateToSkills"><Sparkles :size="16" />技能</button>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="prompts" title="提示词管理" @click="navigateToPrompts"><BookmarkPlus :size="16" />提示词</button>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="settings" title="设置" @click="navigateToSettings"><Settings :size="16" />设置</button>
         <button v-if="currentIsAdmin && currentView !== 'admin'" type="button" class="secondary-action topbar-command" data-action="admin" title="用户管理" @click="navigateToAdmin"><ShieldCheck :size="16" />管理</button>
@@ -3822,6 +3877,8 @@ onUnmounted(() => {
           </form>
         </div>
       </section>
+
+      <VideoSettings :api-fetch="apiFetch" :api-base="API_BASE" @changed="videoWorkspace?.refresh(); loadVideoAvailability()" />
 
       <div class="settings-preferences">
         <section class="settings-section settings-background" aria-labelledby="background-effect-title">
@@ -3892,7 +3949,8 @@ onUnmounted(() => {
       <div class="admin-metrics" aria-label="用户统计">
         <div><span>已验证用户</span><strong>{{ adminUserTotal }}</strong></div>
         <div><span>管理员</span><strong>{{ adminUserAdminTotal }}</strong></div>
-        <div><span>累计任务</span><strong>{{ adminUsageTotal }}</strong></div>
+        <div><span>图片 / 分析任务</span><strong>{{ adminUsageTotal }}</strong></div>
+        <div><span>视频任务</span><strong>{{ adminVideoUsageTotal }}</strong></div>
       </div>
 
       <section class="admin-directory" aria-labelledby="admin-users-title">
@@ -3940,21 +3998,22 @@ onUnmounted(() => {
         <div class="admin-user-facts">
           <span><small>生成</small><strong>{{ selectedAdminUser.generation_count }}</strong></span>
           <span><small>分析</small><strong>{{ selectedAdminUser.analysis_count }}</strong></span>
+          <span><small>视频任务</small><strong>{{ selectedAdminUser.video_generation_count || 0 }}</strong></span>
           <span><small>累计耗时</small><strong>{{ formatAdminDuration(selectedAdminUser.total_elapsed_ms) }}</strong></span>
           <span><small>最后使用</small><strong>{{ formatAdminDate(selectedAdminUser.last_used_at) }}</strong></span>
         </div>
         <div class="admin-table-wrap">
           <table class="admin-table admin-usage-table">
-            <thead><tr><th id="admin-usage-title">时间</th><th>类型</th><th>状态</th><th>服务商</th><th>模型</th><th>清晰度</th><th>比例/尺寸</th><th>分辨率</th><th>图片数</th><th>耗时</th></tr></thead>
+            <thead><tr><th id="admin-usage-title">时间</th><th>类型</th><th>状态</th><th>服务商</th><th>模型</th><th>清晰度</th><th>比例/尺寸</th><th>分辨率</th><th>图片数</th><th>视频数 / 时长</th><th>耗时</th></tr></thead>
             <tbody>
-              <tr v-for="record in adminUsage" :key="record.id">
+              <tr v-for="record in adminUsage" :key="record.kind + '-' + record.id">
                 <td>{{ formatAdminDate(record.created_at) }}</td>
-                <td>{{ record.kind === 'generate' ? '生成' : '分析' }}</td>
-                <td><span class="admin-status" :class="record.status">{{ record.status === 'completed' ? '完成' : record.status === 'pending' ? '进行中' : '失败' }}</span></td>
+                <td>{{ record.kind === 'video' ? '视频生成' : record.kind === 'generate' ? '图片生成' : '分析' }}</td>
+                <td><span class="admin-status" :class="record.status">{{ record.kind === 'video' ? (videoStatusLabels[record.status] || record.status) : record.status === 'completed' ? '完成' : record.status === 'pending' ? '进行中' : '失败' }}</span></td>
                 <td>{{ record.provider }}</td><td>{{ record.model }}</td><td>{{ record.detail }}</td>
-                <td>{{ record.size || '-' }}</td><td>{{ record.resolution || '-' }}</td><td>{{ record.image_count }}</td><td>{{ formatAdminDuration(record.elapsed_ms) }}</td>
+                <td>{{ record.size || '-' }}</td><td>{{ record.resolution || '-' }}</td><td>{{ record.image_count }}</td><td>{{ record.kind === 'video' ? (record.video_count || 0) + ' / ' + record.duration + ' 秒' : '-' }}</td><td>{{ formatAdminDuration(record.elapsed_ms) }}</td>
               </tr>
-              <tr v-if="adminUsage.length === 0"><td colspan="10" class="admin-empty">暂无使用记录</td></tr>
+              <tr v-if="adminUsage.length === 0"><td colspan="11" class="admin-empty">暂无使用记录</td></tr>
             </tbody>
           </table>
         </div>
@@ -3976,7 +4035,7 @@ onUnmounted(() => {
       @back="navigateToWorkspace"
     />
     <template v-else>
-    <div class="studio-grid">
+    <div v-show="mediaMode === 'image'" class="studio-grid">
       <ProjectSidebar
         id="project-sidebar"
         :projects="projects"
@@ -4040,6 +4099,7 @@ onUnmounted(() => {
                       <LoaderCircle v-if="deletingImageIds.includes(card.image.history_image_id)" class="spin" :size="15" />
                       <Trash2 v-else :size="15" />
                     </button>
+                    <button v-if="card.image.history_id != null && card.image.history_image_id != null" type="button" class="image-card-action" :disabled="!videoAssetsReady" :title="videoAssetsReady ? '用于视频' : '用于视频需要先配置公网 HTTPS 素材地址'" aria-label="用于视频" @click="useImageForVideo(card.image)"><Film :size="15" /></button>
                     <a v-if="imageSource(card.image)" class="download" :href="imageSource(card.image)" download="genimage-result.png" aria-label="下载图片" title="下载图片"><Download :size="16" /></a>
                   </div>
                 </div>
@@ -4223,12 +4283,16 @@ onUnmounted(() => {
     <ConfirmDialog
       :open="confirmAction !== null"
       :title="confirmAction === 'project' ? '删除项目' : confirmAction === 'history' ? '删除历史记录' : confirmAction === 'image' ? '删除图片' : '删除 API Key 配置'"
-      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条历史记录吗？` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : confirmAction === 'image' ? '确认删除这张图片吗？删除后无法恢复。' : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
+      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条图片历史、${confirmProject?.video_history_count ?? 0} 条视频记录吗？正在追踪的视频会阻止删除。` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : confirmAction === 'image' ? '确认删除这张图片吗？删除后无法恢复。' : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
       :busy="actionBusy"
       @confirm="confirmDeletion"
       @cancel="cancelConfirm"
     />
     </template>
+    <div v-show="currentView === 'workspace' && mediaMode === 'video'" class="studio-grid video-studio-grid">
+      <VideoProjectSidebar :projects="projects" :selected-project-id="effectiveVideoProjectId" :selected-task-id="videoSelectedTaskId" @select-project="selectVideoProject" @new-video="newVideoDraft" @create-project="createProject" @rename-project="renameProject" @delete-project="deleteProject" @open-video="openVideoTask" />
+      <div class="video-main"><p v-if="projectError" role="alert" class="error-message">{{ projectError }}</p><VideoWorkspace ref="videoWorkspace" :key="currentEmail || currentUsername" :active="currentView === 'workspace' && mediaMode === 'video'" :account="currentEmail || currentUsername" :project-id="effectiveVideoProjectId" :selected-task-id="videoSelectedTaskId" :image-history-ids="videoImageHistoryIds" :api-fetch="apiFetch" :api-base="API_BASE" @changed="loadProjects()" @select="videoSelectedTaskId = $event" @settings="navigateToSettings" /></div>
+    </div>
     </template>
   </main>
 </template>

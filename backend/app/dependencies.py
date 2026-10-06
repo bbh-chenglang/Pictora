@@ -28,6 +28,10 @@ from app.services.history_service import HistoryService
 from app.services.image_service import ImageService
 from app.services.generation_task_manager import GenerationTaskManager
 from app.services.auth_rate_limiter import AuthRateLimiter
+from app.repositories.r2_image_repository import R2ImageRepository
+from app.services.r2_image_storage import R2ImageStorage
+from app.video.repository import VideoRepository
+from app.video.service import VideoService
 
 
 @lru_cache
@@ -41,8 +45,13 @@ def get_api_key_config_repository() -> ApiKeyConfigRepository:
 
 
 @lru_cache
+def get_r2_image_storage() -> R2ImageStorage:
+    return R2ImageStorage(R2ImageRepository(DATABASE_PATH), Settings())
+
+
+@lru_cache
 def get_history_repository() -> HistoryRepository:
-    return HistoryRepository(DATABASE_PATH)
+    return HistoryRepository(DATABASE_PATH, r2_destination=get_r2_image_storage().destination)
 
 
 @lru_cache
@@ -173,6 +182,11 @@ def get_generation_task_manager() -> GenerationTaskManager:
     )
 
 
+@lru_cache
+def get_video_service() -> VideoService:
+    return VideoService(VideoRepository(DATABASE_PATH), Settings())
+
+
 def clear_dependency_caches() -> None:
     _registry_for.cache_clear()
     get_settings_repository.cache_clear()
@@ -186,3 +200,5 @@ def clear_dependency_caches() -> None:
     get_prompt_repository.cache_clear()
     get_email_sender.cache_clear()
     get_auth_rate_limiter.cache_clear()
+    get_r2_image_storage.cache_clear()
+    get_video_service.cache_clear()

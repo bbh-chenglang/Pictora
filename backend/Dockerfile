@@ -7,7 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app/backend
 
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir --requirement requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --requirement requirements.txt
 
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /app/backend/data \

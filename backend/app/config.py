@@ -31,6 +31,27 @@ class Settings(BaseSettings):
     generation_max_active_tasks: int = 32
     generation_max_tasks_per_user: int = 4
 
+    # Image archival keeps the existing server-specific R2 destination.
+    r2_enabled: bool = False
+    r2_endpoint: str = ""
+    r2_bucket: str = ""
+    r2_prefix: str = "pictora/generated"
+
+    video_api_base_url: str = "https://api.beibeihai.xyz"
+    video_public_base_url: str = ""
+    video_asset_signing_secret: SecretStr = SecretStr("")
+    video_poll_interval: float = 3
+    video_max_wait: float = 1200
+    video_max_concurrency: int = 2
+    video_max_tasks_per_user: int = 2
+    video_max_active_tasks: int = 32
+    video_result_max_bytes: int = 512 * 1024 * 1024
+    r2_account_id: str = ""
+    r2_access_key_id: SecretStr = SecretStr("")
+    r2_secret_access_key: SecretStr = SecretStr("")
+    r2_bucket_name: str = ""
+    r2_key_prefix: str = "pictora/videos/"
+
     @property
     def admin_email_set(self) -> set[str]:
         return {

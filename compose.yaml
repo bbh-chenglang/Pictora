@@ -5,6 +5,12 @@ services:
       dockerfile: backend/Dockerfile
     expose:
       - "8002"
+    # Shared R2 credentials come from env files, never blank interpolation defaults.
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.r2
+        required: false
     environment:
       APP_VERSION: ${APP_VERSION:-dev}
       WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
@@ -24,6 +30,19 @@ services:
       GENERATION_MAX_CONCURRENCY: ${GENERATION_MAX_CONCURRENCY:-4}
       GENERATION_MAX_ACTIVE_TASKS: ${GENERATION_MAX_ACTIVE_TASKS:-32}
       GENERATION_MAX_TASKS_PER_USER: ${GENERATION_MAX_TASKS_PER_USER:-4}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      VIDEO_API_BASE_URL: ${VIDEO_API_BASE_URL:-https://api.beibeihai.xyz}
+      VIDEO_PUBLIC_BASE_URL: ${VIDEO_PUBLIC_BASE_URL:-}
+      VIDEO_ASSET_SIGNING_SECRET: ${VIDEO_ASSET_SIGNING_SECRET:-}
+      VIDEO_POLL_INTERVAL: ${VIDEO_POLL_INTERVAL:-3}
+      VIDEO_MAX_WAIT: ${VIDEO_MAX_WAIT:-1200}
+      VIDEO_MAX_CONCURRENCY: ${VIDEO_MAX_CONCURRENCY:-2}
+      VIDEO_MAX_TASKS_PER_USER: ${VIDEO_MAX_TASKS_PER_USER:-2}
+      VIDEO_MAX_ACTIVE_TASKS: ${VIDEO_MAX_ACTIVE_TASKS:-32}
+      VIDEO_RESULT_MAX_BYTES: ${VIDEO_RESULT_MAX_BYTES:-536870912}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_KEY_PREFIX: ${R2_KEY_PREFIX:-pictora/videos/}
     volumes:
       - genimage_data:/app/backend/data
     restart: unless-stopped

@@ -27,3 +27,8 @@ backend-8001.*
 README.md
 compose.yaml
 deploy.sh
+.env
+.env.*
+**/.env.*
+.codex-*.bundle
+backups/

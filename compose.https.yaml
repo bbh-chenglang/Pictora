@@ -1,0 +1,26 @@
+# Optional HTTPS edge; requires Docker Compose 2.24.4+ for !override.
+services:
+  web:
+    ports: !override
+      - "127.0.0.1:8083:80"
+  backend:
+    environment:
+      COOKIE_SECURE: "true"
+  caddy:
+    image: caddy:2
+    environment:
+      PICTORA_DOMAIN: ${PICTORA_DOMAIN:?Set your public DNS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
-from app.dependencies import get_current_user, get_history_repository
+from app.dependencies import get_current_user, get_history_repository, get_r2_image_storage
 from app.image_thumbnails import ThumbnailGenerationError, create_webp_thumbnail
 from app.repositories.history_repository import HistoryRepository
+from app.services.r2_image_storage import R2ImageStorage
 from app.schemas.history import GenerationBatchDetail, HistoryDetail, HistoryImageEditSnapshot, HistorySummary
 from app.schemas.auth import StoredSessionUser
 
@@ -87,6 +88,7 @@ async def read_history_image(
     request: Request,
     user: StoredSessionUser = Depends(get_current_user),
     repository: HistoryRepository = Depends(get_history_repository),
+    storage: R2ImageStorage = Depends(get_r2_image_storage),
 ) -> Response:
     image = await repository.get_image(user.id, history_id, image_id)
     if image is None:
@@ -102,8 +104,9 @@ async def read_history_image(
     headers = _history_image_headers(history_id, image_id)
     if _etag_matches(request.headers.get("if-none-match"), headers["ETag"]):
         return Response(status_code=304, headers=headers)
+    data = await storage.read_or_fallback(image.id, image.data)
     return Response(
-        content=image.data,
+        content=data,
         media_type=image.mime_type,
         headers=headers,
     )

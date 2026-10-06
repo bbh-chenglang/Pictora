@@ -7,6 +7,11 @@ from app.schemas.common import GenerationViewSpec, ImageResult
 from app.schemas.history import ReferenceCategory
 
 
+GenerationQuality: TypeAlias = Literal[
+    "low", "medium", "high", "xhigh", "max", "original", "auto",
+]
+
+
 class ReferenceImage(BaseModel):
     data: bytes
     content_type: str
@@ -34,7 +39,7 @@ class GenerateRequest(BaseModel):
     provider: str
     model: str
     prompt: str = Field(min_length=1, max_length=4000)
-    detail: Literal["low", "medium", "high", "xhigh", "max", "original", "auto"] = "auto"
+    detail: GenerationQuality = "auto"
     prompts: list[Annotated[str, Field(min_length=1, max_length=4000)]] | None = Field(
         default=None,
         max_length=8,

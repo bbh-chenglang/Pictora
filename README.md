@@ -25,11 +25,13 @@ docker compose -p genimage-v1 -f compose.v1.yaml down
 
 Do not use `docker compose down -v` unless the isolated v1 database and generated images can be deleted.
 
-Pictora（画境）是一个基于 Vue、FastAPI 和 SQLite 的图片生成工作台。生产环境使用 Docker Compose 运行，统一通过服务器的 `8083` 端口访问。
+Pictora（画境）是一个基于 Vue、FastAPI 和 SQLite 的图片 / 视频生成工作台。保留原有图片生成、编辑、参考图和项目管理，新增独立视频 Key、多模态参考素材、异步视频任务及 R2 私有结果存储。基础生产部署仍通过服务器的 `8083` HTTP 端口访问；公网素材上传可选用 Caddy HTTPS。
+
+视频功能升级、备份、R2 / HTTPS 配置、接口及任务恢复说明见 [视频功能部署与接口](docs/视频功能部署与接口.md)。没有公网 HTTPS 时禁用本地素材上传 / 已有图片引用，没有 R2 或 ffprobe 时禁用视频提交；图片功能继续可用。升级前请先备份 SQLite 和数据卷。
 
 ## Linux 部署
 
-服务器需要安装 Git、Docker Engine 和 Docker Compose v2，并允许防火墙访问 TCP `8083` 端口。
+服务器需要安装 Git、Docker Engine 和 Docker Compose 2.24 或更新版本（可选私有环境文件所需），并允许防火墙访问 TCP `8083` 端口。
 
 ```bash
 git clone -b V1 https://github.com/bbh-chenglang/Pictora.git
@@ -87,7 +89,7 @@ docker compose down
 
 ## 数据备份
 
-SQLite 数据保存在名为 `genimage_data` 的 Docker 卷中。可在项目目录执行：
+SQLite 数据和视频参考素材保存在名为 `genimage_data` 的 Docker 卷中。先停止后端写入再复制整个卷；R2 结果需要另外备份，具体升级流程见上方视频部署文档。可在项目目录执行：
 
 ```bash
 docker run --rm \

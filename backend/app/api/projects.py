@@ -1,3 +1,4 @@
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.dependencies import (
@@ -82,6 +83,10 @@ async def delete_project(
         result, task_ids = await repository.delete_with_generation_tasks(project_id, user.id)
         await _cancel_local_generation_tasks(task_ids, task_manager)
         return result
+    except aiosqlite.IntegrityError as exc:
+        if "video_project_tracking" in str(exc):
+            raise project_error("video_project_tracking", "项目有追踪中的视频，请先完成或明确放弃追踪。放弃不会取消上游任务或退款。", 409) from None
+        raise
     except ProjectNotFoundError:
         raise project_error("project_not_found", "项目不存在", 404) from None
 

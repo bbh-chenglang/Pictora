@@ -19,12 +19,22 @@ from app.api.feedback import router as feedback_router
 from app.api.admin import router as admin_router
 from app.api.skills import router as skills_router
 from app.api.prompts import router as prompts_router
+from app.api.videos import router as videos_router, settings_router as video_settings_router
+from app.video.repository import VideoError
+from app.video.logging import install_video_log_filter
+from app.video.upload_limit import VideoUploadLimitMiddleware
 from app.providers.base import ProviderError
 from app.config import Settings
 from app.database import initialize_database
-from app.dependencies import get_generation_task_manager, get_history_repository
+from app.dependencies import (
+    get_generation_task_manager,
+    get_history_repository,
+    get_r2_image_storage,
+    get_video_service,
+)
 
 
+install_video_log_filter()
 logger = logging.getLogger(__name__)
 GENERATION_REAPER_INTERVAL_SECONDS = 30
 
@@ -45,20 +55,28 @@ async def lifespan(_: FastAPI):
         default_model=defaults.custom_model,
         default_api_key=defaults.custom_api_key.get_secret_value(),
     )
+    image_storage = get_r2_image_storage()
+    await image_storage.initialize()
     await get_history_repository().fail_stale_generation_tasks(include_queued=True)
     reaper_task = asyncio.create_task(
         _reap_stale_generation_tasks(),
         name="stale-generation-task-reaper",
     )
+    video_service = get_video_service()
+    await video_service.recover()
+    image_storage.start()
     try:
         yield
     finally:
         reaper_task.cancel()
         await asyncio.gather(reaper_task, return_exceptions=True)
         await get_generation_task_manager().shutdown()
+        await image_storage.shutdown()
+        await video_service.shutdown()
 
 
 app = FastAPI(title="Pictora API", lifespan=lifespan)
+app.add_middleware(VideoUploadLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -73,6 +91,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(VideoError)
+async def video_error_handler(_: Request, exc: VideoError):
+    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
 
 
 @app.exception_handler(ProviderError)
@@ -114,6 +137,8 @@ app.include_router(feedback_router)
 app.include_router(admin_router)
 app.include_router(skills_router)
 app.include_router(prompts_router)
+app.include_router(videos_router)
+app.include_router(video_settings_router)
 
 
 @app.get("/health")

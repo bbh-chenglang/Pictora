@@ -36,6 +36,7 @@ async def list_users(
         result_total=result_total,
         admin_total=admin_total,
         usage_total=usage_total,
+        video_usage_total=await repository.video_usage_total(),
         page=page,
         page_size=page_size,
     )
