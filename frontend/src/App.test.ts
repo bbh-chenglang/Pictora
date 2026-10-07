@@ -263,6 +263,8 @@ describe("Pictora workspace", () => {
     expect(wrapper.get(".admin-page").text()).toContain("gpt-image-1.5");
     expect(wrapper.get(".admin-page").text()).toContain("bcrypt 已加密");
     expect(wrapper.get(".admin-page").text()).toContain("北京时间");
+    expect(wrapper.get(".admin-page").text()).toContain("最后活动（最近使用）");
+    expect(wrapper.get("select[aria-label='用户排序方式']").element.value).toBe("last_activity");
     expect(wrapper.get(".admin-page").text()).toContain("2026/08/12 09:00");
     expect(wrapper.get(".admin-metrics").text()).toContain("28");
     expect(wrapper.get(".admin-pagination").text()).toContain("第 1 / 2 页");

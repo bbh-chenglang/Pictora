@@ -107,6 +107,39 @@ def test_admin_user_list_supports_server_side_search_and_pagination(admin_client
     assert second_page.json()["items"] == []
 
 
+def test_admin_user_list_can_sort_by_last_activity_or_created_at(admin_client) -> None:
+    client, repository, alice_id = admin_client
+    bob = asyncio.run(repository.create(
+        "bob", hash_password("secret6"), email="bob@example.com"
+    ))
+
+    async def set_sorting_timestamps() -> None:
+        async with aiosqlite.connect(repository.database_path) as connection:
+            await connection.execute(
+                "UPDATE users SET created_at = ?, last_activity_at = ? WHERE id = ?",
+                ("2026-08-01 00:00:00", "2026-08-03 00:00:00", alice_id),
+            )
+            await connection.execute(
+                "UPDATE users SET created_at = ?, last_activity_at = ? WHERE id = ?",
+                ("2026-08-02 00:00:00", "2026-08-01 00:00:00", bob.id),
+            )
+            await connection.commit()
+
+    asyncio.run(set_sorting_timestamps())
+
+    by_activity = client.get(
+        "/api/admin/users", params={"sort_by": "last_activity", "page_size": 10}
+    )
+    assert by_activity.status_code == 200
+    assert [user["id"] for user in by_activity.json()["items"][1:3]] == [alice_id, bob.id]
+
+    by_created_at = client.get(
+        "/api/admin/users", params={"sort_by": "created_at", "page_size": 10}
+    )
+    assert by_created_at.status_code == 200
+    assert [user["id"] for user in by_created_at.json()["items"][1:3]] == [bob.id, alice_id]
+
+
 def test_admin_can_reset_password_and_revoke_sessions(admin_client) -> None:
     client, repository, user_id = admin_client
     response = client.post(

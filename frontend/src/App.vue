@@ -70,6 +70,7 @@ type ModelCapability = {
 type ApiKeyProvider = "gpt" | "gemini" | "grok";
 type BackgroundEffect = "gravity-grid" | "snowfall";
 type CurrentView = "workspace" | "settings" | "admin" | "skills" | "prompts";
+type AdminUserSort = "last_activity" | "created_at";
 type ApiKeyConfig = {
   id: number;
   alias: string;
@@ -489,6 +490,7 @@ const feedbackSubmitting = ref(false);
 const adminUsers = ref<AdminUser[]>([]);
 const adminUsage = ref<AdminUsage[]>([]);
 const adminSearch = ref("");
+const adminSort = ref<AdminUserSort>("last_activity");
 const adminPage = ref(1);
 const adminPageSize = 20;
 const adminUserTotal = ref(0);
@@ -1227,6 +1229,7 @@ async function loadAdminUsers(page = adminPage.value) {
     const parameters = new URLSearchParams();
     if (adminPage.value > 1) parameters.set("page", String(adminPage.value));
     if (adminSearch.value.trim()) parameters.set("search", adminSearch.value.trim());
+    if (adminSort.value !== "last_activity") parameters.set("sort_by", adminSort.value);
     const query = parameters.size ? `?${parameters.toString()}` : "";
     const response = await apiFetch(`${API_BASE}/api/admin/users${query}`);
     const data = await parseJsonResponse(response);
@@ -1264,6 +1267,10 @@ function scheduleAdminSearch() {
     adminSearchTimer = undefined;
     void loadAdminUsers(1);
   }, 300);
+}
+
+function changeAdminSort() {
+  void loadAdminUsers(1);
 }
 
 function changeAdminPage(page: number) {
@@ -3967,7 +3974,15 @@ onUnmounted(() => {
       <section class="admin-directory" aria-labelledby="admin-users-title">
         <div class="admin-section-heading">
           <div><h2 id="admin-users-title">用户</h2><span class="admin-timezone">时间均为北京时间</span></div>
-          <input v-model="adminSearch" type="search" placeholder="搜索用户名或邮箱" aria-label="搜索用户" @input="scheduleAdminSearch" />
+          <div class="admin-directory-tools">
+            <label class="admin-sort-control">排序
+              <select v-model="adminSort" aria-label="用户排序方式" @change="changeAdminSort">
+                <option value="last_activity">最后活动（最近使用）</option>
+                <option value="created_at">注册时间（最新注册）</option>
+              </select>
+            </label>
+            <input v-model="adminSearch" type="search" placeholder="搜索用户名或邮箱" aria-label="搜索用户" @input="scheduleAdminSearch" />
+          </div>
         </div>
         <p v-if="adminError" class="error-message" role="alert">{{ adminError }}</p>
         <div class="admin-table-wrap">

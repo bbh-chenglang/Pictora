@@ -12,7 +12,12 @@ class AdminRepository:
         self.database_path = database_path
 
     async def list_users(
-        self, *, search: str = "", page: int = 1, page_size: int = 20
+        self,
+        *,
+        search: str = "",
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "last_activity",
     ) -> tuple[list[AdminUserSummary], int, int, int, int]:
         normalized_search = search.strip().casefold()
         where = "WHERE u.email IS NOT NULL"
@@ -22,6 +27,10 @@ class AdminRepository:
             pattern = f"%{normalized_search}%"
             parameters.extend([pattern, pattern])
         offset = (page - 1) * page_size
+        order_by = {
+            "last_activity": "COALESCE(u.last_activity_at, u.created_at)",
+            "created_at": "u.created_at",
+        }.get(sort_by, "COALESCE(u.last_activity_at, u.created_at)")
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             rows = await (await connection.execute(
@@ -40,7 +49,7 @@ class AdminRepository:
                 LEFT JOIN history AS h ON h.user_id = u.id
                 {where}
                 GROUP BY u.id
-                ORDER BY COALESCE(u.last_activity_at, u.created_at) DESC, u.id DESC
+                ORDER BY {order_by} DESC, u.id DESC
                 LIMIT ? OFFSET ?
                 """,
                 (*parameters, page_size, offset),

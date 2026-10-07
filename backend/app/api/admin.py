@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from typing import Literal
 
 from app.auth import hash_password
 from app.dependencies import (
@@ -24,11 +25,12 @@ async def list_users(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=10, le=100),
     search: str = Query(default="", max_length=200),
+    sort_by: Literal["last_activity", "created_at"] = Query(default="last_activity"),
     _: StoredSessionUser = Depends(get_current_admin),
     repository: AdminRepository = Depends(get_admin_repository),
 ) -> AdminUserPage:
     users, total, result_total, admin_total, usage_total = await repository.list_users(
-        search=search, page=page, page_size=page_size
+        search=search, page=page, page_size=page_size, sort_by=sort_by
     )
     return AdminUserPage(
         items=users,
