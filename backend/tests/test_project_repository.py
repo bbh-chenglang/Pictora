@@ -231,3 +231,69 @@ async def test_image_generation_cannot_use_video_projects(tmp_path: Path) -> Non
         with pytest.raises(ProjectNotFoundError):
             await service._resolve_project(video.id, user.id)
         assert await service._resolve_project(None, user.id) == image.id
+
+
+@pytest.mark.asyncio
+async def test_project_migration_preserves_existing_orphans(tmp_path: Path) -> None:
+    from app.database import _initialize_legacy_database, SCHEMA_VERSION
+
+    db = tmp_path / "legacy-orphans.db"
+    await _initialize_legacy_database(db)
+    async with aiosqlite.connect(db) as connection:
+        await connection.execute("INSERT INTO users(username,password_hash) VALUES('alice','hash')")
+        await connection.execute("""
+            INSERT INTO history_images(history_id,role,mime_type,data)
+            VALUES(9999,'generated','image/png',X'0102')
+        """)
+        await connection.execute("""
+            INSERT INTO generation_batches(history_id,api_key_config_id,prompt,provider,model,detail,image_count)
+            VALUES(9999,8888,'legacy','gpt','gpt-image-1','auto',1)
+        """)
+        await connection.commit()
+        before = await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
+        assert len(before) == 3
+
+    await initialize_database(db)
+    await initialize_database(db)
+    async with aiosqlite.connect(db) as connection:
+        assert await (await connection.execute("PRAGMA foreign_key_check")).fetchall() == before
+        assert await (await connection.execute("SELECT data FROM history_images")).fetchall() == [(b"\x01\x02",)]
+        assert await (await connection.execute("SELECT history_id,api_key_config_id FROM generation_batches")).fetchall() == [(9999, 8888)]
+        assert (await (await connection.execute("PRAGMA user_version")).fetchone())[0] == SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_existing", [False, True])
+async def test_project_migration_rejects_new_foreign_key_violations_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_existing: bool
+) -> None:
+    from app.database import _initialize_legacy_database
+    from app import project_migration
+
+    db = tmp_path / "new-orphans.db"
+    await _initialize_legacy_database(db)
+    async with aiosqlite.connect(db) as connection:
+        await connection.execute("INSERT INTO users(username,password_hash) VALUES('alice','hash')")
+        await connection.execute("""
+            INSERT INTO history_images(history_id,role,mime_type,data)
+            VALUES(9999,'generated','image/png',X'01')
+        """)
+        await connection.commit()
+        before = await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
+
+    original = project_migration.migrate_project_types
+
+    async def broken_migration(connection: aiosqlite.Connection) -> None:
+        await original(connection)
+        if replace_existing:
+            # An equal total count must not hide a different broken relationship.
+            await connection.execute("DELETE FROM history_images")
+        await connection.execute("INSERT INTO projects(user_id,name) VALUES(9999,'invalid')")
+
+    monkeypatch.setattr(project_migration, "migrate_project_types", broken_migration)
+    with pytest.raises(RuntimeError, match="introduced invalid foreign keys"):
+        await initialize_database(db)
+    async with aiosqlite.connect(db) as connection:
+        assert await (await connection.execute("PRAGMA foreign_key_check")).fetchall() == before
+        assert "media_type" not in {row[1] for row in await (await connection.execute("PRAGMA table_info(projects)")).fetchall()}
+        assert await (await connection.execute("SELECT COUNT(*) FROM projects WHERE user_id=9999")).fetchone() == (0,)

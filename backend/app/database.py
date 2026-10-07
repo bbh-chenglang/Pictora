@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import aiosqlite
@@ -1078,12 +1079,20 @@ async def initialize_database(path: Path = DATABASE_PATH, **kwargs: object) -> N
         await connection.execute("PRAGMA foreign_keys = OFF")
         await connection.execute("PRAGMA legacy_alter_table = ON")
         await connection.execute("BEGIN IMMEDIATE")
+        # Legacy databases can contain orphaned records unrelated to projects.
+        # Preserve them, but never allow this migration to introduce new ones.
+        existing_violations = Counter(
+            await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
+        )
         await migrate_video(connection)
         await migrate_project_types(connection)
         # Recreate the project deletion guard removed by a legacy table rebuild.
         await migrate_video(connection)
-        violations = await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
-        if violations:
-            raise RuntimeError("Project migration found invalid foreign keys")
+        violations = Counter(
+            await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
+        )
+        if violations - existing_violations:
+            await connection.rollback()
+            raise RuntimeError("Project migration introduced invalid foreign keys")
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()
