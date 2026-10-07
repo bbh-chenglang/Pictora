@@ -42,6 +42,7 @@ async def list_projects(
     user: StoredSessionUser = Depends(get_current_user),
     repository: ProjectRepository = Depends(get_project_repository),
 ) -> list[ProjectSummary]:
+    await repository.ensure_video_project(user.id)
     return await repository.list_with_history(user.id)
 
 
@@ -52,7 +53,7 @@ async def create_project(
     repository: ProjectRepository = Depends(get_project_repository),
 ) -> Project:
     try:
-        return await repository.create(user.id, request.name)
+        return await repository.create(user.id, request.name, request.media_type)
     except ProjectNameTakenError:
         raise project_error("project_name_taken", "项目名称已存在", 409) from None
 

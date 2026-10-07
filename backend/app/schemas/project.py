@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,6 +17,7 @@ def validate_project_name(value: str) -> str:
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    media_type: Literal["image", "video"] = "image"
 
     _normalize_name = field_validator("name")(validate_project_name)
 
@@ -32,6 +34,7 @@ class Project(BaseModel):
     id: int
     user_id: int
     name: str
+    media_type: Literal["image", "video"] = "image"
     created_at: datetime
     updated_at: datetime
 

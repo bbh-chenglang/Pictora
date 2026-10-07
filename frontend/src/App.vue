@@ -400,13 +400,14 @@ const apiKeyConfigured = ref(false);
 const history = ref<HistorySummary[]>([]);
 const historyError = ref("");
 const projects = ref<ProjectSummary[]>([]);
+const videoProjects = ref<ProjectSummary[]>([]);
 const mediaMode = ref<"image" | "video">("image");
 const videoProjectId = ref<number | null>(null);
 const videoSelectedTaskId = ref<number | null>(null);
 const videoAssetsReady = ref(false);
 const videoWorkspace = ref<InstanceType<typeof VideoWorkspace> | null>(null);
-const effectiveVideoProjectId = computed(() => videoProjectId.value ?? selectedProjectId.value ?? projects.value[0]?.id ?? null);
-const videoImageHistoryIds = computed(() => projects.value.find(p => p.id === effectiveVideoProjectId.value)?.history.filter(h => h.kind === "generate" && h.status === "completed").map(h => h.id) ?? []);
+const effectiveVideoProjectId = computed(() => videoProjects.value.find(p => p.id === videoProjectId.value)?.id ?? videoProjects.value[0]?.id ?? null);
+const videoImageHistoryIds = computed(() => projects.value.flatMap(p => p.history.filter(h => h.kind === "generate" && h.status === "completed").map(h => h.id)));
 async function loadVideoAvailability() {
   try { const response = await apiFetch(API_BASE + "/api/videos/readiness"); if (response.ok) videoAssetsReady.value = Boolean((await response.json() as VideoFeatures).assets_ready); } catch { videoAssetsReady.value = false; }
 }
@@ -416,7 +417,7 @@ async function newVideoDraft(id: number) { selectVideoProject(id); await nextTic
 async function useImageForVideo(image: ImageResult) {
   if (image.history_id == null || image.history_image_id == null || !videoAssetsReady.value) return;
   mediaMode.value = "video";
-  if (!videoProjectId.value) videoProjectId.value = selectedProjectId.value;
+  if (!videoProjectId.value) videoProjectId.value = videoProjects.value[0]?.id ?? null;
   await nextTick();
   await videoWorkspace.value?.addHistoryImage(image.history_id, image.history_image_id);
 }
@@ -430,7 +431,7 @@ const selectedProjectId = ref<number | null>(null);
 watch([mediaMode, selectedProjectId], () => {
   // Freeze the initial video project selection; later image-side navigation is independent.
   if (mediaMode.value === "video" && videoProjectId.value === null) {
-    videoProjectId.value = selectedProjectId.value ?? projects.value[0]?.id ?? null;
+    videoProjectId.value = videoProjects.value[0]?.id ?? null;
   }
 });
 const projectError = ref("");
@@ -1949,7 +1950,9 @@ async function loadProjects(restoreWorkspace = false) {
     const response = await apiFetch(`${API_BASE}/api/projects`);
     const data = await response.json();
     if (!response.ok) throw new Error("无法加载项目");
-    projects.value = Array.isArray(data) ? data : [];
+    const loaded: ProjectSummary[] = Array.isArray(data) ? data : [];
+    projects.value = loaded.filter(project => project.media_type !== "video");
+    videoProjects.value = loaded.filter(project => project.media_type === "video");
     const storedConversationProject = storedConversationId === null
       ? null
       : projects.value.find((project) => project.history.some((item) => item.id === storedConversationId)) ?? null;
@@ -2005,7 +2008,11 @@ async function loadProjects(restoreWorkspace = false) {
         persistWorkspaceSelection();
       }
     }
-    if (videoProjectId.value !== null && !projects.value.some(p => p.id === videoProjectId.value)) { videoProjectId.value = projects.value[0]?.id ?? null; videoSelectedTaskId.value = null; }
+    if (!videoProjects.value.some(p => p.id === videoProjectId.value)) {
+      const restoredVideoProject = videoProjects.value.find(p => p.video_history?.some(task => task.id === videoSelectedTaskId.value));
+      videoProjectId.value = restoredVideoProject?.id ?? videoProjects.value[0]?.id ?? null;
+      if (!restoredVideoProject) videoSelectedTaskId.value = null;
+    }
     projectError.value = "";
   } catch (exception) {
     projectError.value = exception instanceof Error ? exception.message : "无法加载项目";
@@ -2037,6 +2044,7 @@ function resetAccountWorkspace() {
   historyFailureGroups.value = [];
   history.value = [];
   projects.value = [];
+  videoProjects.value = [];
   mediaMode.value = "image";
   videoProjectId.value = null;
   videoSelectedTaskId.value = null;
@@ -2166,7 +2174,7 @@ function selectProject(projectId: number) {
 
 async function submitCreateProject(name: string) {
   if (!name) return;
-  const response = await apiFetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  const response = await apiFetch(`${API_BASE}/api/projects`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, media_type: mediaMode.value }) });
   if (!response.ok) { projectError.value = "创建项目失败"; return; }
   const data = await response.json();
   await loadProjects();
@@ -2186,10 +2194,13 @@ async function submitDeleteProject(project: ProjectSummary) {
   if (!response.ok) { const result = await response.json(); projectError.value = result?.error?.message || "删除项目失败"; return; }
   const data = await response.json();
   discardGenerationRuns((run) => run.projectId === project.id);
-  if (effectiveVideoProjectId.value === project.id) { videoProjectId.value = data.selected_project_id; videoSelectedTaskId.value = null; }
-  selectedProjectId.value = data.selected_project_id;
+  if (project.media_type === "video") {
+    if (effectiveVideoProjectId.value === project.id) { videoProjectId.value = data.selected_project_id; videoSelectedTaskId.value = null; }
+  } else {
+    selectedProjectId.value = data.selected_project_id;
+    clearWorkspace();
+  }
   await loadProjects();
-  clearWorkspace();
 }
 
 async function submitDeleteHistory(project: ProjectSummary, ids: number[]) {
@@ -4283,14 +4294,14 @@ onUnmounted(() => {
     <ConfirmDialog
       :open="confirmAction !== null"
       :title="confirmAction === 'project' ? '删除项目' : confirmAction === 'history' ? '删除历史记录' : confirmAction === 'image' ? '删除图片' : '删除 API Key 配置'"
-      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.history_count ?? 0} 条图片历史、${confirmProject?.video_history_count ?? 0} 条视频记录吗？正在追踪的视频会阻止删除。` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : confirmAction === 'image' ? '确认删除这张图片吗？删除后无法恢复。' : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
+      :message="confirmAction === 'project' ? `确认删除项目“${confirmProject?.name}”及其 ${confirmProject?.media_type === 'video' ? `${confirmProject?.video_history_count ?? 0} 条视频记录吗？正在追踪的视频会阻止删除。` : `${confirmProject?.history_count ?? 0} 条图片历史吗？`}` : confirmAction === 'history' ? `确认删除选中的 ${confirmHistoryIds.length} 条历史记录吗？` : confirmAction === 'image' ? '确认删除这张图片吗？删除后无法恢复。' : `确认删除 API Key 配置“${confirmConfig?.alias}”吗？`"
       :busy="actionBusy"
       @confirm="confirmDeletion"
       @cancel="cancelConfirm"
     />
     </template>
     <div v-show="currentView === 'workspace' && mediaMode === 'video'" class="studio-grid video-studio-grid">
-      <VideoProjectSidebar :projects="projects" :selected-project-id="effectiveVideoProjectId" :selected-task-id="videoSelectedTaskId" @select-project="selectVideoProject" @new-video="newVideoDraft" @create-project="createProject" @rename-project="renameProject" @delete-project="deleteProject" @open-video="openVideoTask" />
+      <VideoProjectSidebar :projects="videoProjects" :selected-project-id="effectiveVideoProjectId" :selected-task-id="videoSelectedTaskId" @select-project="selectVideoProject" @new-video="newVideoDraft" @create-project="createProject" @rename-project="renameProject" @delete-project="deleteProject" @open-video="openVideoTask" />
       <div class="video-main"><p v-if="projectError" role="alert" class="error-message">{{ projectError }}</p><VideoWorkspace ref="videoWorkspace" :key="currentEmail || currentUsername" :active="currentView === 'workspace' && mediaMode === 'video'" :account="currentEmail || currentUsername" :project-id="effectiveVideoProjectId" :selected-task-id="videoSelectedTaskId" :image-history-ids="videoImageHistoryIds" :api-fetch="apiFetch" :api-base="API_BASE" @changed="loadProjects()" @select="videoSelectedTaskId = $event" @settings="navigateToSettings" /></div>
     </div>
     </template>

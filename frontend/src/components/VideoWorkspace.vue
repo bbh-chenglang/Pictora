@@ -42,7 +42,7 @@ function restoreDraft() {
   } catch { /* Bad draft is ignored rather than blocking the workbench. */ }
 }
 function applyDefaults() { const m = selectedModel.value; if (!m) return; duration.value = m.default_duration; resolution.value = m.default_resolution; ratio.value = m.default_ratio; if (!allowedKinds.value.includes(kind.value)) kind.value = allowedKinds.value[0] || "image"; }
-function changeModel() { applyDefaults(); note.value = materials.value.length ? "已保留素材；请移除标记为不兼容的素材后再提交。" : ""; }
+function changeModel() { applyDefaults(); note.value = ""; }
 function changeKey() { const key = keys.value.find(k => k.id === keyId.value); if (key) modelId.value = key.model; changeModel(); }
 function changeResolution() { if (!durations.value.includes(duration.value)) duration.value = durations.value.includes(selectedModel.value?.default_duration || 0) ? selectedModel.value!.default_duration : durations.value[0] || 5; }
 async function loadConfiguration() {

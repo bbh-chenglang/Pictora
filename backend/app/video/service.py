@@ -57,7 +57,7 @@ class VideoService:
         existing=await self.repository.existing_request(user_id,request.request_id,request_json)
         if existing is not None: return existing
         await self.repository.get_key(user_id,request.api_key_config_id)
-        owned=await self.repository.rows('SELECT 1 FROM projects WHERE id=? AND user_id=?',(request.project_id,user_id))
+        owned=await self.repository.rows("SELECT 1 FROM projects WHERE id=? AND user_id=? AND media_type='video'",(request.project_id,user_id))
         if not owned: raise VideoError('project_not_found','项目不存在',404)
         if self.provider_error: raise self.provider_error
         await self.require_pipeline()

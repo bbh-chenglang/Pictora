@@ -24,18 +24,18 @@ class ProjectRepository:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             cursor = await connection.execute(
-                "SELECT id, user_id, name, created_at, updated_at FROM projects WHERE id = ? AND user_id = ?",
+                "SELECT id, user_id, name, media_type, created_at, updated_at FROM projects WHERE id = ? AND user_id = ?",
                 (project_id, user_id),
             )
             row = await cursor.fetchone()
         return Project.model_validate(dict(row)) if row else None
 
-    async def list_with_history(self, user_id: int) -> list[ProjectSummary]:
+    async def list_with_history(self, user_id: int, media_type: str | None = None) -> list[ProjectSummary]:
         async with aiosqlite.connect(self.database_path) as connection:
             connection.row_factory = aiosqlite.Row
             projects_cursor = await connection.execute(
                 """
-                SELECT id, user_id, name, created_at, updated_at
+                SELECT id, user_id, name, media_type, created_at, updated_at
                 FROM projects WHERE user_id = ?
                 ORDER BY updated_at DESC, id DESC
                 """,
@@ -71,16 +71,16 @@ class ProjectRepository:
                 video_history=video_grouped.get(row["id"], []),
                 video_history_count=len(video_grouped.get(row["id"], [])),
             )
-            for row in projects
+            for row in projects if media_type is None or row["media_type"] == media_type
         ]
 
-    async def create(self, user_id: int, name: str) -> Project:
+    async def create(self, user_id: int, name: str, media_type: str = "image") -> Project:
         normalized = name.strip()
         async with aiosqlite.connect(self.database_path) as connection:
             try:
                 cursor = await connection.execute(
-                    "INSERT INTO projects (user_id, name) VALUES (?, ?)",
-                    (user_id, normalized),
+                    "INSERT INTO projects (user_id, name, media_type) VALUES (?, ?, ?)",
+                    (user_id, normalized, media_type),
                 )
                 await connection.commit()
             except aiosqlite.IntegrityError as exc:
@@ -90,6 +90,16 @@ class ProjectRepository:
         if project is None:
             raise RuntimeError("Created project cannot be loaded")
         return project
+
+    async def ensure_video_project(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.database_path) as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            await connection.execute(
+                "INSERT INTO projects(user_id,name,media_type) SELECT ?, '第一个视频项目', 'video' "
+                "WHERE NOT EXISTS (SELECT 1 FROM projects WHERE user_id=? AND media_type='video')",
+                (user_id, user_id),
+            )
+            await connection.commit()
 
     async def rename(self, project_id: int, user_id: int, name: str) -> Project:
         normalized = name.strip()
@@ -137,7 +147,7 @@ class ProjectRepository:
             await connection.execute("PRAGMA foreign_keys = ON")
             await connection.execute("BEGIN IMMEDIATE")
             cursor = await connection.execute(
-                "SELECT id, name FROM projects WHERE id = ? AND user_id = ?",
+                "SELECT id, name, media_type FROM projects WHERE id = ? AND user_id = ?",
                 (project_id, user_id),
             )
             project = await cursor.fetchone()
@@ -145,7 +155,7 @@ class ProjectRepository:
                 await connection.rollback()
                 raise ProjectNotFoundError(project_id)
             count_cursor = await connection.execute(
-                "SELECT COUNT(*) FROM projects WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) FROM projects WHERE user_id = ? AND media_type = ?", (user_id, project["media_type"])
             )
             project_count = (await count_cursor.fetchone())[0]
             history_cursor = await connection.execute(
@@ -169,16 +179,16 @@ class ProjectRepository:
             if project_count == 1:
                 temporary_name = f"第一个项目（临时-{uuid4().hex}）"
                 await connection.execute(
-                    "INSERT INTO projects (user_id, name) VALUES (?, ?)",
-                    (user_id, temporary_name),
+                    "INSERT INTO projects (user_id, name, media_type) VALUES (?, ?, ?)",
+                    (user_id, temporary_name, project["media_type"]),
                 )
             await connection.execute(
                 "DELETE FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id)
             )
             if project_count == 1:
                 await connection.execute(
-                    "UPDATE projects SET name = '第一个项目', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
-                    (user_id, temporary_name),
+                    "UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
+                    ("第一个视频项目" if project["media_type"] == "video" else "第一个项目", user_id, temporary_name),
                 )
             await connection.commit()
         summaries = await self.list_with_history(user_id)
@@ -186,7 +196,7 @@ class ProjectRepository:
             ProjectDeleteResult(
                 deleted_history_count=deleted_count,
                 deleted_video_count=deleted_video_count,
-                selected_project_id=summaries[0].id,
+                selected_project_id=next(item.id for item in summaries if item.media_type == project["media_type"]),
                 projects=summaries,
             ),
             task_ids,

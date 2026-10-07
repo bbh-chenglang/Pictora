@@ -95,10 +95,11 @@ class HistoryService:
 
     async def _resolve_project(self, project_id: int | None, user_id: int) -> int:
         if project_id is not None:
-            if await self.project_repository.get_owned(project_id, user_id) is None:
+            project = await self.project_repository.get_owned(project_id, user_id)
+            if project is None or project.media_type != "image":
                 raise ProjectNotFoundError(project_id)
             return project_id
-        projects = await self.project_repository.list_with_history(user_id)
+        projects = await self.project_repository.list_with_history(user_id, "image")
         if not projects:
             raise ProjectNotFoundError(user_id)
         return projects[0].id

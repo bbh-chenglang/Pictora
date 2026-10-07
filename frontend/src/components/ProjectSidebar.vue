@@ -16,7 +16,7 @@ export type HistorySummary = {
   resolution?: string | null;
   created_at: string;
 };
-export type ProjectSummary = { id: number; name: string; history: HistorySummary[]; history_count: number; video_history?: VideoHistory[]; video_history_count?: number };
+export type ProjectSummary = { media_type?: "image" | "video"; id: number; name: string; history: HistorySummary[]; history_count: number; video_history?: VideoHistory[]; video_history_count?: number };
 export type RunningGenerationSummary = {
   id: number;
   projectId: number | null;

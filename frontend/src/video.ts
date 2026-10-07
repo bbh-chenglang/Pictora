@@ -10,7 +10,7 @@ export type VideoFeatures = { api_ready?: boolean; assets_ready: boolean; storag
 export type VideoKey = { id: number; alias: string; model: string; api_key_configured: boolean };
 export type VideoHistory = { id: number; prompt: string; model: string; status: string; upstream_status?: string | null; duration: number; resolution: string; ratio: string; created_at: string };
 export type VideoResult = { id: number; stored: number; filename: string; byte_size: number | null; duration_seconds: number | null; play_url: string; download_url: string };
-export type VideoTask = VideoHistory & { project_id: number; request_id: string; api_key_config_id: number | null; upstream_task_id: string | null; progress: number | null; tracking_abandoned: number; error_message: string | null; error_code: string | null; materials: VideoMaterial[]; results: VideoResult[] };
+export type VideoTask = VideoHistory & { started_at?: string | null; completed_at?: string | null; updated_at?: string | null; project_id: number; request_id: string; api_key_config_id: number | null; upstream_task_id: string | null; progress: number | null; tracking_abandoned: number; error_message: string | null; error_code: string | null; materials: VideoMaterial[]; results: VideoResult[] };
 export type ApiFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export const materialLabels: Record<MaterialType, string> = { image: "图片", video: "视频", audio: "音频" };
 export const activeVideoStatuses = new Set(["queued", "submitting", "running", "saving"]);
@@ -61,3 +61,25 @@ export async function videoJson<T>(fetcher: ApiFetch, base: string, route: strin
   return data as T;
 }
 export function jsonBody(body: unknown): RequestInit { return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }; }
+
+// SQLite CURRENT_TIMESTAMP values are UTC, even when they have no explicit zone.
+export function videoTimestamp(value?: string | null): number | null {
+  if (!value) return null;
+  const normalized = value.trim().replace(" ", "T");
+  const timestamp = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : normalized + "Z");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+export function videoElapsedMs(task: VideoTask, now: number): number | null {
+  const start = videoTimestamp(task.created_at) ?? videoTimestamp(task.started_at);
+  const finish = videoTimestamp(task.completed_at)
+    ?? (trackedVideoStatuses.has(task.status) && !task.tracking_abandoned ? now : videoTimestamp(task.updated_at));
+  return start === null || finish === null ? null : Math.max(0, finish - start);
+}
+export function formatVideoElapsed(elapsedMs: number): string {
+  const seconds = Math.floor(elapsedMs / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  return (hours ? String(hours).padStart(2, "0") + ":" : "")
+    + String(hours ? minutes : Math.floor(seconds / 60)).padStart(2, "0") + ":"
+    + String(seconds % 60).padStart(2, "0");
+}

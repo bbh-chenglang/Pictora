@@ -5,7 +5,7 @@ import VideoSettings from "./components/VideoSettings.vue";
 import VideoTaskCard from "./components/VideoTaskCard.vue";
 import VideoProjectSidebar from "./components/VideoProjectSidebar.vue";
 import App from "./App.vue";
-import { VideoApiError, materialIssue, videoJson, videoValidation, type VideoFeatures, type VideoModel, type VideoTask } from "./video";
+import { VideoApiError, formatVideoElapsed, videoElapsedMs, videoTimestamp, materialIssue, videoJson, videoValidation, type VideoFeatures, type VideoModel, type VideoTask } from "./video";
 
 const baseModel: VideoModel = {
   id: "sd-2.0-J2", default_duration: 5, default_resolution: "720p", default_ratio: "16:9",
@@ -167,6 +167,7 @@ describe("independent video workspace", () => {
     await wrapper.get('[data-field="video-model"]').setValue("seedance-2.5-101010");
     expect(wrapper.findAll(".video-materials article")).toHaveLength(1);
     expect(wrapper.find(".video-materials article.incompatible").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("已保留素材；");
     expect(wrapper.get('[data-action="generate-video"]').attributes("disabled")).toBeDefined();
     await wrapper.get('[data-field="video-model"]').setValue("sd-2.0-900-J3");
     expect(wrapper.text()).toContain("该素材类型的能力尚未确认");
@@ -296,11 +297,20 @@ describe("video task and Key controls", () => {
 describe("image/video workbench integration", () => {
   it("preserves both drafts and independent project selection when modes change", async () => {
     const { api } = server(); const fallback = api.getMockImplementation()!;
-    const projects = [1, 2].map(id => ({ id, name: "Project " + id, history_count: 0, history: [], video_history_count: 0, video_history: [] }));
+    const projects = [1, 2, 3, 4].map(id => ({ id, media_type: id < 3 ? "image" : "video", name: (id < 3 ? "Image " : "Video ") + id, history_count: 0, history: [], video_history_count: 0, video_history: [] }));
     api.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes("/api/videos/") || url.includes("video-api-keys")) return fallback(input, init);
       if (url.endsWith("/api/auth/me")) return response({ username: "alice", email: "alice@example.com", api_key_configured: false });
+      if (url.endsWith("/api/projects") && init?.method === "POST") {
+        const data = JSON.parse(String(init.body));
+        projects.push({ id: 5, media_type: data.media_type, name: data.name, history_count: 0, history: [], video_history_count: 0, video_history: [] });
+        return response({ id: 5, ...data }, 201);
+      }
+      if (url.endsWith("/api/projects/5") && init?.method === "DELETE") {
+        projects.splice(projects.findIndex(p => p.id === 5), 1);
+        return response({ selected_project_id: 3, projects, deleted_history_count: 0, deleted_video_count: 0 });
+      }
       if (url.endsWith("/api/projects")) return response(projects);
       if (url.endsWith("/api/settings")) return response({ model: "gpt-image-1.5", provider_type: "gpt", base_url: "https://sub.beibeihai.xyz/v1", api_key_configured: false });
       if (url.endsWith("/api/providers")) return response({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-1.5"] }] });
@@ -312,9 +322,64 @@ describe("image/video workbench integration", () => {
     await wrapper.get('[data-mode="image"]').trigger("click"); await flushPromises();
     expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("image draft");
     await wrapper.get(".studio-grid:not(.video-studio-grid) .project-group:nth-child(2) .project-select").trigger("click"); await flushPromises();
+    await wrapper.get(".prompt-row textarea").setValue("image 2 draft");
     await wrapper.get('[data-mode="video"]').trigger("click"); await flushPromises();
     expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("video draft");
-    expect(wrapper.get(".video-studio-grid .project-group.active .project-select").text()).toContain("Project 1");
+    expect(wrapper.get(".video-studio-grid .project-group.active .project-select").text()).toContain("Video 3");
+    expect(wrapper.get(".video-studio-grid .project-sidebar").text()).not.toContain("Image 1");
+    expect(wrapper.get(".studio-grid:not(.video-studio-grid) .project-sidebar").text()).not.toContain("Video 3");
     expect(api.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    await wrapper.get('.video-studio-grid [aria-label="新建项目"]').trigger("click");
+    await wrapper.get('.confirm-dialog input').setValue("新视频项目");
+    await wrapper.get('.confirm-dialog').trigger("submit"); await flushPromises();
+    const created = api.mock.calls.find(([url, init]) => String(url).endsWith("/api/projects") && init?.method === "POST");
+    expect(JSON.parse(String(created?.[1]?.body))).toEqual({ name: "新视频项目", media_type: "video" });
+    expect(wrapper.get('.video-studio-grid .project-group.active').text()).toContain("新视频项目");
+    await wrapper.get(".video-studio-grid .project-group.active .danger-text").trigger("click");
+    await wrapper.get('.confirm-dialog .danger-action').trigger("click"); await flushPromises();
+    await wrapper.get('[data-mode="image"]').trigger("click"); await flushPromises();
+    expect(wrapper.get('.studio-grid:not(.video-studio-grid) .project-group.active').text()).toContain("Image 2");
+    expect(wrapper.get<HTMLTextAreaElement>(".prompt-row textarea").element.value).toBe("image 2 draft");
+    await wrapper.get('.prompt-row textarea').setValue("retained image draft");
+    await wrapper.get('[data-mode="video"]').trigger("click"); await flushPromises();
+    await wrapper.get('[data-mode="image"]').trigger("click"); await flushPromises();
+    expect(wrapper.get<HTMLTextAreaElement>('.prompt-row textarea').element.value).toBe("retained image draft");
+  });
+});
+
+
+describe("video task elapsed timer", () => {
+  it("normalizes UTC database timestamps and formats hours", () => {
+    expect(videoTimestamp("2026-10-06 00:00:00")).toBe(Date.parse("2026-10-06T00:00:00Z"));
+    expect(videoTimestamp("not a timestamp")).toBeNull();
+    expect(formatVideoElapsed(65000)).toBe("01:05");
+    expect(formatVideoElapsed(3661000)).toBe("01:01:01");
+  });
+  it("ticks from persisted creation time, hides diagnostics and stops on completion", async () => {
+    vi.setSystemTime(new Date("2026-10-06T00:00:10Z"));
+    const wrapper = keep(mount(VideoTaskCard, { props: { apiBase: "", task: task(1, { upstream_task_id: "private-upstream-id", upstream_status: "running" }) } }));
+    expect(wrapper.get('[role="timer"]').text()).toContain("00:10");
+    expect(wrapper.text()).not.toContain("private-upstream-id");
+    expect(wrapper.text()).not.toContain("上游：");
+    expect(wrapper.text()).not.toContain("本地：");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(wrapper.get('[role="timer"]').text()).toContain("00:12");
+    await wrapper.setProps({ task: task(1, { status: "completed", completed_at: "2026-10-06T00:00:11Z" }) });
+    expect(wrapper.get('[role="timer"]').text()).toContain("总耗时00:11");
+    expect(wrapper.find(".is-timing").exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(wrapper.get('[role="timer"]').text()).toContain("00:11");
+    wrapper.unmount();
+    const restored = keep(mount(VideoTaskCard, { props: { apiBase: "", task: task() } }));
+    expect(restored.get('[role="timer"]').text()).toContain("00:17");
+    expect(vi.getTimerCount()).toBe(1);
+    restored.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("freezes failed/abandoned tasks and avoids fabricated durations for legacy data", () => {
+    const now = Date.parse("2026-10-06T00:01:00Z");
+    expect(videoElapsedMs(task(1, { status: "failed", updated_at: "2026-10-06 00:00:20" }), now)).toBe(20000);
+    expect(videoElapsedMs(task(1, { status: "abandoned", tracking_abandoned: 1, updated_at: "2026-10-06T00:00:15Z" }), now)).toBe(15000);
+    expect(videoElapsedMs(task(1, { status: "completed" }), now)).toBeNull();
   });
 });

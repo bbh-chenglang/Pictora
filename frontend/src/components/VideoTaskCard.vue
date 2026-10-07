@@ -1,10 +1,21 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { Download, Film, LoaderCircle, RefreshCw } from "lucide-vue-next";
-import { activeVideoStatuses, trackedVideoStatuses, videoStatusLabels, type VideoTask } from "../video";
+import { computed, onUnmounted, ref, watch } from "vue";
+import { Clock3, Download, Film, LoaderCircle, RefreshCw } from "lucide-vue-next";
+import { activeVideoStatuses, formatVideoElapsed, trackedVideoStatuses, videoElapsedMs, videoStatusLabels, type VideoTask } from "../video";
 const props = defineProps<{ task: VideoTask; apiBase: string; busy?: boolean }>();
 const emit = defineEmits<{ action: [task: VideoTask, action: string, upstreamId?: string]; reuse: [task: VideoTask] }>();
 const sourceVersion = ref(0), playerError = ref(false), upstreamId = ref("");
+const now = ref(Date.now());
+const timing = computed(() => trackedVideoStatuses.has(props.task.status) && !props.task.tracking_abandoned && !props.task.completed_at);
+const elapsed = computed(() => videoElapsedMs(props.task, now.value));
+let timer: ReturnType<typeof setInterval> | undefined;
+watch(timing, active => {
+  if (timer !== undefined) clearInterval(timer);
+  timer = undefined;
+  now.value = Date.now();
+  if (active) timer = setInterval(() => { now.value = Date.now(); }, 1000);
+}, { immediate: true });
+onUnmounted(() => { if (timer !== undefined) clearInterval(timer); });
 function refreshPlayer() { sourceVersion.value++; playerError.value = false; }
 </script>
 <template>
@@ -12,8 +23,12 @@ function refreshPlayer() { sourceVersion.value++; playerError.value = false; }
     <header><div><Film :size="17" /><strong>视频 #{{ task.id }}</strong></div><span class="video-status" :class="task.status"><LoaderCircle v-if="activeVideoStatuses.has(task.status)" class="spin" :size="14" />{{ videoStatusLabels[task.status] || task.status }}</span></header>
     <p class="video-task-prompt">{{ task.prompt }}</p>
     <p class="video-task-meta">{{ task.model }} · {{ task.duration }} 秒 · {{ task.resolution }} · {{ task.ratio }}</p>
-    <p class="video-task-meta">上游：{{ task.upstream_status || (task.status === 'queued' ? '尚未提交' : '待确认') }} · 本地：{{ videoStatusLabels[task.status] || task.status }}</p>
-    <p v-if="task.upstream_task_id" class="video-task-id">上游 ID：{{ task.upstream_task_id }}</p>
+    <div v-if="elapsed !== null" class="video-task-timer" :class="{ 'is-timing': timing }" role="timer" :aria-label="(timing ? '已用时 ' : '总耗时 ') + formatVideoElapsed(elapsed)">
+      <span class="video-timer-icon"><Clock3 :size="16" /></span>
+      <span>{{ timing ? '已用时' : '总耗时' }}</span>
+      <strong>{{ formatVideoElapsed(elapsed) }}</strong>
+      <span v-if="timing" class="video-timer-pulse" aria-hidden="true"></span>
+    </div>
     <progress v-if="activeVideoStatuses.has(task.status)" :value="task.progress ?? undefined" max="100" aria-label="视频任务进度"></progress>
     <p v-if="task.error_message" role="status" class="video-task-error">{{ task.error_message }}</p>
     <p v-if="task.status === 'submission_unknown'" class="video-task-error">请先核对上游控制台，勿新建重复付费任务。填写该 Key 名下的任务 ID 后可验证并接管。</p>
@@ -33,5 +48,13 @@ function refreshPlayer() { sourceVersion.value++; playerError.value = false; }
   </article>
 </template>
 <style scoped>
-.video-task-card { padding:20px; border:1px solid var(--prompt-snow-border); background:var(--prompt-snow-surface); color:var(--prompt-snow-text); min-width:0; }.video-task-card header,.video-task-card header>div,.video-status { display:flex; align-items:center; gap:8px; }.video-task-card header {justify-content:space-between; flex-wrap:wrap;}.video-status {font-size:12px; color:var(--prompt-snow-text-muted);}.video-status.completed{color:#25825f;}.video-status.failed,.video-status.storage_failed,.video-status.submission_unknown{color:var(--prompt-snow-danger);}.video-task-prompt{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;max-height:130px;overflow:auto;}.video-task-meta,.video-task-id{font-size:12px;color:var(--prompt-snow-text-muted);overflow-wrap:anywhere;}.video-task-error{font-size:13px;line-height:1.6;color:var(--prompt-snow-danger);}.video-task-card progress{width:100%;height:6px;}.video-task-card footer,.video-result-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px;}.video-result video{width:100%;max-height:420px;background:#10151b;margin-top:12px;}.video-result-actions span{margin-right:auto;font-size:12px;}.video-bind-form{display:flex;gap:8px;align-items:end;}.video-bind-form label{display:grid;gap:6px;flex:1;font-size:12px;}.video-bind-form input{padding:10px;width:100%;background:var(--prompt-snow-surface);border:1px solid var(--prompt-snow-border-strong);color:var(--prompt-snow-text);}
+.video-task-card { padding:20px; border:1px solid var(--prompt-snow-border); background:var(--prompt-snow-surface); color:var(--prompt-snow-text); min-width:0; }.video-task-card header,.video-task-card header>div,.video-status { display:flex; align-items:center; gap:8px; }.video-task-card header {justify-content:space-between; flex-wrap:wrap;}.video-status {font-size:12px; color:var(--prompt-snow-text-muted);}.video-status.completed{color:#25825f;}.video-status.failed,.video-status.storage_failed,.video-status.submission_unknown{color:var(--prompt-snow-danger);}.video-task-prompt{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;max-height:130px;overflow:auto;}.video-task-meta{font-size:12px;color:var(--prompt-snow-text-muted);overflow-wrap:anywhere;}.video-task-error{font-size:13px;line-height:1.6;color:var(--prompt-snow-danger);}.video-task-card progress{width:100%;height:6px;}.video-task-card footer,.video-result-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px;}.video-result video{width:100%;max-height:420px;background:#10151b;margin-top:12px;}.video-result-actions span{margin-right:auto;font-size:12px;}.video-bind-form{display:flex;gap:8px;align-items:end;}.video-bind-form label{display:grid;gap:6px;flex:1;font-size:12px;}.video-bind-form input{padding:10px;width:100%;background:var(--prompt-snow-surface);border:1px solid var(--prompt-snow-border-strong);color:var(--prompt-snow-text);}
+.video-task-timer { display:inline-flex; align-items:center; gap:9px; padding:8px 12px; margin:2px 0 12px; border:1px solid var(--prompt-snow-border); border-radius:12px; background:var(--prompt-snow-surface); font-size:12px; color:var(--prompt-snow-text-muted); }
+.video-task-timer strong { font-variant-numeric:tabular-nums; font-size:14px; letter-spacing:.7px; color:var(--prompt-snow-text); }
+.video-timer-icon { display:grid; place-items:center; }
+.video-task-timer.is-timing { border-color:var(--blue); color:var(--blue); }
+.is-timing .video-timer-icon { animation:video-clock-glow 2s ease-in-out infinite; }
+.video-timer-pulse { width:6px; height:6px; border-radius:50%; background:currentColor; animation:video-clock-glow 1.5s ease-in-out infinite; }
+@keyframes video-clock-glow { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+@media(prefers-reduced-motion:reduce) { .is-timing .video-timer-icon,.video-timer-pulse { animation:none; } }
 </style>

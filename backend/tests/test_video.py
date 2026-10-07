@@ -18,7 +18,7 @@ from PIL import Image
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.database import initialize_database
+from app.database import SCHEMA_VERSION, initialize_database
 from app.dependencies import get_current_user, get_history_repository, get_video_service
 from app.main import app
 from app.repositories.admin_repository import AdminRepository
@@ -113,8 +113,10 @@ async def context(tmp_path):
     repository=VideoRepository(db)
     for user in ('alice','bob'):
         await repository.execute('INSERT INTO users(username,email,password_hash) VALUES(?,?,?)',(user,user+'@example.com','test-hash'))
+    for user_id in (1,2):
+        await ProjectRepository(db).ensure_video_project(user_id)
     key=await repository.save_key(1,'Video','secret-video-key','sd-2.0-J2')
-    project=(await repository.rows('SELECT id FROM projects WHERE user_id=1'))[0]['id']
+    project=(await repository.rows('SELECT id FROM projects WHERE user_id=1 AND media_type="video"'))[0]['id']
     settings=Settings(_env_file=None,video_public_base_url='https://assets.example',video_asset_signing_secret='s'*40,video_poll_interval=0.001,video_max_wait=0.1)
     provider=FakeProvider(); storage=FakeStorage(); media=[]
     def download(request):
@@ -357,7 +359,7 @@ async def test_user_and_global_capacity_are_persisted(context):
     assert err.value.status==429
     context.settings.video_max_active_tasks=2
     other_key=await context.repository.save_key(2,'Video','bob-key','sd-2.0-J2')
-    other_project=(await context.repository.rows('SELECT id FROM projects WHERE user_id=2'))[0]['id']
+    other_project=(await context.repository.rows('SELECT id FROM projects WHERE user_id=2 AND media_type="video"'))[0]['id']
     with pytest.raises(VideoError): await context.service.create(2,request(context,project_id=other_project,api_key_config_id=other_key['id']))
     context.provider.block.set(); await drain(context.service)
 
@@ -471,10 +473,11 @@ def test_mp4_container_truncation_and_mov_rejected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_admin_video_counts_do_not_multiply_image_usage_and_project_summary(context):
-    await context.repository.execute("INSERT INTO history(user_id,project_id,kind,status,prompt,provider,model,detail,image_count) VALUES(1,?,'generate','completed','private','gpt','gpt-image-1','auto',2)",(context.project,))
+    image_project=(await ProjectRepository(context.db).list_with_history(1,"image"))[0].id
+    await context.repository.execute("INSERT INTO history(user_id,project_id,kind,status,prompt,provider,model,detail,image_count) VALUES(1,?,'generate','completed','private','gpt','gpt-image-1','auto',2)",(image_project,))
     task=await context.service.create(1,request(context)); await drain(context.service)
-    summary=(await ProjectRepository(context.db).list_with_history(1))[0]
-    assert summary.history_count==1 and summary.video_history_count==1
+    summary=(await ProjectRepository(context.db).list_with_history(1,"video"))[0]
+    assert summary.history_count==0 and summary.video_history_count==1
     admin=AdminRepository(context.db); user=await admin.get_user(1)
     assert user.usage_count==1 and user.generation_count==1 and user.video_generation_count==1
     usage=await admin.list_usage(1); assert len(usage)==2 and next(u for u in usage if u.kind=='video').image_count==0
@@ -559,7 +562,7 @@ async def test_version_17_upgrade_preserves_images_and_repeat_install(context):
         await db.execute('PRAGMA user_version=17'); await db.commit()
     await initialize_database(context.db); await initialize_database(context.db)
     async with aiosqlite.connect(context.db) as db:
-        assert (await (await db.execute('PRAGMA user_version')).fetchone())[0]==18
+        assert (await (await db.execute('PRAGMA user_version')).fetchone())[0]==SCHEMA_VERSION
         assert (await (await db.execute('SELECT COUNT(*) FROM users')).fetchone())[0]==2
         assert (await (await db.execute('SELECT COUNT(*) FROM video_api_key_configs')).fetchone())[0]==1
         assert not await (await db.execute('PRAGMA foreign_key_check')).fetchall()
@@ -598,7 +601,7 @@ async def test_optional_bad_video_root_does_not_break_service_initialization(con
 async def test_separate_video_semaphore_keeps_global_concurrency_at_two(context):
     context.provider.block=asyncio.Event()
     second_key=await context.repository.save_key(2,'Bob','secret-bob','sd-2.0-J2')
-    second_project=(await context.repository.rows('SELECT id FROM projects WHERE user_id=2'))[0]['id']
+    second_project=(await context.repository.rows('SELECT id FROM projects WHERE user_id=2 AND media_type="video"'))[0]['id']
     first=await context.service.create(1,request(context))
     second=await context.service.create(1,request(context))
     third=await context.service.create(2,request(context,project_id=second_project,api_key_config_id=second_key['id']))
@@ -621,7 +624,7 @@ async def test_partial_video_schema_migration_adds_retention_marker(context):
     async with aiosqlite.connect(context.db) as db:
         columns=await (await db.execute('PRAGMA table_info(video_assets)')).fetchall()
         assert 'ever_referenced' in {row[1] for row in columns}
-        assert (await (await db.execute('PRAGMA user_version')).fetchone())[0]==18
+        assert (await (await db.execute('PRAGMA user_version')).fetchone())[0]==SCHEMA_VERSION
 
 
 @pytest.mark.asyncio
@@ -701,3 +704,13 @@ async def test_invalid_optional_root_is_never_queried_or_echoed(context):
     assert 'private-value' not in json.dumps(features)
     assert len(await service.catalog.get())==11
     await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_video_submission_rejects_image_projects_before_paid_calls(context):
+    image = (await ProjectRepository(context.db).list_with_history(1, "image"))[0]
+    with pytest.raises(VideoError) as error:
+        await context.service.create(1, request(context, project_id=image.id))
+    assert error.value.code == "project_not_found"
+    assert context.provider.posts == []
+    assert await context.repository.rows("SELECT * FROM video_tasks") == []

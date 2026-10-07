@@ -9,7 +9,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -1072,10 +1072,18 @@ async def _initialize_legacy_database(path: Path = DATABASE_PATH, **_: object) -
 
 async def initialize_database(path: Path = DATABASE_PATH, **kwargs: object) -> None:
     from app.video.database import migrate_video
+    from app.project_migration import migrate_project_types
     await _initialize_legacy_database(path, **kwargs)
     async with aiosqlite.connect(path) as connection:
-        await connection.execute("PRAGMA foreign_keys = ON")
+        await connection.execute("PRAGMA foreign_keys = OFF")
+        await connection.execute("PRAGMA legacy_alter_table = ON")
         await connection.execute("BEGIN IMMEDIATE")
         await migrate_video(connection)
+        await migrate_project_types(connection)
+        # Recreate the project deletion guard removed by a legacy table rebuild.
+        await migrate_video(connection)
+        violations = await (await connection.execute("PRAGMA foreign_key_check")).fetchall()
+        if violations:
+            raise RuntimeError("Project migration found invalid foreign keys")
         await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await connection.commit()

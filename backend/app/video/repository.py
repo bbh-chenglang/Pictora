@@ -165,7 +165,8 @@ class VideoRepository:
                     raise VideoError('video_request_conflict','请求 ID 已用于不同参数',409)
                 return old['id'],False
             for table,value in (('projects',request.project_id),('video_api_key_configs',request.api_key_config_id)):
-                row=await (await db.execute(f'SELECT 1 FROM {table} WHERE id=? AND user_id=?',(value,user_id))).fetchone()
+                scope=" AND media_type='video'" if table=='projects' else ''
+                row=await (await db.execute(f'SELECT 1 FROM {table} WHERE id=? AND user_id=?'+scope,(value,user_id))).fetchone()
                 if not row:
                     raise VideoError('video_owner_mismatch','项目或视频配置不存在',404)
             await self.check_capacity(db,user_id,settings)

@@ -151,3 +151,83 @@ async def test_batch_delete_only_removes_selected_history_in_project(tmp_path: P
     assert await projects.delete_history(project.id, user.id, [ids[0]]) == 1
     assert await history.get(user.id, ids[0]) is None
     assert (await history.get(user.id, ids[1])) is not None
+
+
+@pytest.mark.asyncio
+async def test_project_names_and_deletion_are_scoped_by_media_type(tmp_path: Path) -> None:
+    db = tmp_path / "typed-projects.db"
+    await initialize_database(db)
+    user = await UserRepository(db).create("alice", hash_password("secret6"))
+    repository = ProjectRepository(db)
+    image = (await repository.list_with_history(user.id, "image"))[0]
+    video = await repository.create(user.id, image.name, "video")
+    assert image.id != video.id
+    assert video.media_type == "video"
+    await repository.rename(video.id, user.id, "视频项目")
+    result = await repository.delete(video.id, user.id)
+    assert (await repository.get_owned(image.id, user.id)).model_dump() == image.model_dump(exclude={"history", "history_count", "video_history", "video_history_count"})
+    replacement = await repository.get_owned(result.selected_project_id, user.id)
+    assert replacement.media_type == "video"
+    assert [p.id for p in await repository.list_with_history(user.id, "image")] == [image.id]
+    await repository.ensure_video_project(user.id)
+    await repository.ensure_video_project(user.id)
+    assert len(await repository.list_with_history(user.id, "video")) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_mixed_projects_are_split_losslessly_and_idempotently(tmp_path: Path) -> None:
+    from app.database import _initialize_legacy_database, SCHEMA_VERSION
+    from app.video.database import migrate_video
+    db = tmp_path / "legacy-mixed.db"
+    await _initialize_legacy_database(db)
+    async with aiosqlite.connect(db) as connection:
+        await migrate_video(connection)
+        await connection.execute("INSERT INTO users(username,password_hash) VALUES('alice','hash')")
+        image_project = (await (await connection.execute("SELECT id FROM projects")).fetchone())[0]
+        await connection.execute("INSERT INTO projects(user_id,name) VALUES(1,'纯视频')")
+        video_project = (await (await connection.execute("SELECT id FROM projects WHERE name='纯视频'")).fetchone())[0]
+        await connection.execute("INSERT INTO history(user_id,project_id,kind,status,prompt,provider,model,detail) VALUES(1,?,'generate','completed','image','gpt','gpt-image-1','auto')", (image_project,))
+        for project_id in (image_project, video_project):
+            await connection.execute("""
+                INSERT INTO video_tasks(user_id,project_id,request_id,request_json,payload_json,model,prompt,duration,resolution,ratio,status,upstream_task_id)
+                VALUES(1,?,?,'{}','{}','sd-2.0-J2','movie',5,'720p','16:9','running',?)
+            """, (project_id, str(project_id), "remote-" + str(project_id)))
+        await connection.execute("INSERT INTO video_results(task_id,position,object_key,filename,stored) VALUES(1,0,'keep-me','movie.mp4',1)")
+        await connection.execute("PRAGMA user_version=18")
+        await connection.commit()
+    await initialize_database(db)
+    repository = ProjectRepository(db)
+    projects = await repository.list_with_history(1)
+    image = next(p for p in projects if p.id == image_project)
+    video_only = next(p for p in projects if p.id == video_project)
+    split = next(p for p in projects if p.name == image.name and p.media_type == "video")
+    assert image.media_type == "image" and image.history_count == 1 and image.video_history_count == 0
+    assert video_only.media_type == "video" and video_only.video_history_count == 1
+    assert split.video_history_count == 1 and split.history_count == 0
+    async with aiosqlite.connect(db) as connection:
+        assert await (await connection.execute("PRAGMA foreign_key_check")).fetchall() == []
+        assert await (await connection.execute("SELECT object_key FROM video_results")).fetchall() == [("keep-me",)]
+        assert await (await connection.execute("SELECT * FROM video_storage_cleanup")).fetchall() == []
+        assert (await (await connection.execute("PRAGMA user_version")).fetchone())[0] == SCHEMA_VERSION
+        with pytest.raises(aiosqlite.IntegrityError, match="video_project_tracking"):
+            await connection.execute("DELETE FROM projects WHERE id=?", (split.id,))
+    await initialize_database(db)
+    assert await repository.list_with_history(1) == projects
+
+
+@pytest.mark.asyncio
+async def test_image_generation_cannot_use_video_projects(tmp_path: Path) -> None:
+    import httpx
+    from app.services.history_service import HistoryService
+    from app.repositories.project_repository import ProjectNotFoundError
+    db = tmp_path / "generation-scope.db"
+    await initialize_database(db)
+    user = await UserRepository(db).create("alice", hash_password("secret6"))
+    projects = ProjectRepository(db)
+    image = (await projects.list_with_history(user.id, "image"))[0]
+    video = await projects.create(user.id, "视频", "video")
+    async with httpx.AsyncClient() as client:
+        service = HistoryService(HistoryRepository(db), client, project_repository=projects)
+        with pytest.raises(ProjectNotFoundError):
+            await service._resolve_project(video.id, user.id)
+        assert await service._resolve_project(None, user.id) == image.id
