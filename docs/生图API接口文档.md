@@ -1,10 +1,10 @@
 # 北海 AI 多模型生图 API 接入文档
 
-> 文档版本：v2.5
+> 文档版本：v2.6
 >
-> 更新时间：2026-10-04
+> 更新时间：2026-10-08
 >
-> 适用版本：Pictora `V2`（已包含 GPT Image 2.5、Gemini Pro 与 `gemini-3.1-flash-image-preview` 支持；模型注册更新提交 `3fd2f64`）
+> 适用版本：Pictora `V2`（已包含 GPT Image 2.5、Gemini Pro、Gemini Nano Banana 2.1 与 `gemini-3.1-flash-image-preview` 支持）
 >
 > 接口协议：OpenAI Images API 兼容格式 + Google Gemini 原生 REST API 兼容格式
 
@@ -188,6 +188,11 @@ curl "https://sub.beibeihai.xyz/v1beta/models" \
 {
   "models": [
     {
+      "name": "models/gemini-nano-banana-2.1",
+      "displayName": "Gemini Nano Banana 2.1",
+      "supportedGenerationMethods": ["generateContent"]
+    },
+    {
       "name": "models/gemini-3.1-flash-image-preview",
       "displayName": "Gemini 3.1 Flash Image Preview",
       "supportedGenerationMethods": ["generateContent"]
@@ -201,7 +206,7 @@ curl "https://sub.beibeihai.xyz/v1beta/models" \
 }
 ```
 
-> 上面的响应是返回两个 Preview 模型的示例，不代表每个 API Key 都拥有这两个模型。部分 Key 返回 `gemini-3-pro-image` 或 `gemini-3.1-flash-image`，另一些返回带 `-preview` 的 ID。调用时必须保留模型列表实际返回的完整 ID，不要自行追加或删除 `-preview`。
+> 上面的响应是返回三个已适配模型的示例，不代表每个 API Key 都拥有这三个模型。部分 Key 返回 `gemini-3-pro-image`、`gemini-3.1-flash-image` 或其他完整模型 ID。调用时必须保留模型列表实际返回的完整 ID，不要自行追加或删除 `-preview`。
 
 ### 4.3 模型名称处理
 
@@ -218,8 +223,9 @@ OpenAI 兼容模型列表通常直接返回 `data[].id`，将该值原样放入 
 
 Pictora 的「测试 API」会查询上游模型列表，并通过客户端内置模型能力注册表过滤，只展示当前网站已适配的模型。因此，上游后台列出的模型名称数量，不一定等于网站显示的可用模型数量。
 
-2026-10-04 的更新补充登记了 `gemini-3.1-flash-image-preview`。修复前，该 ID 会被过滤掉；修复后，如果 Key 的模型列表返回以下两个 ID，网站应同时显示它们：
+2026-10-08 的更新补充登记了 `gemini-nano-banana-2.1`。旧模型不会被移除；如果 Key 的模型列表返回以下 ID，网站应显示对应的已适配模型：
 
+- `gemini-nano-banana-2.1`
 - `gemini-3.1-flash-image-preview`
 - `gemini-3-pro-image-preview`
 
@@ -278,6 +284,7 @@ OpenAI 官方参考：[GPT Image 2.5 Flare](https://developers.openai.com/api/do
 
 | 模型 | 支持的图片比例 | `imageSize` | 参考图上限 | 当前客户端单次数量上限 |
 | --- | --- | --- | --- | --- |
+| `gemini-nano-banana-2.1` | 标准比例，以及 `1:4`、`1:8`、`4:1`、`8:1` | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3.1-flash-image` | 标准比例，以及 `1:4`、`1:8`、`4:1`、`8:1` | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3.1-flash-image-preview` | 标准比例，以及 `1:4`、`1:8`、`4:1`、`8:1` | `1K`、`2K`、`4K` | 14 张 | 4 张 |
 | `gemini-3-pro-image` | 标准比例 | `1K`、`2K`、`4K` | 14 张 | 4 张 |
@@ -287,7 +294,7 @@ OpenAI 官方参考：[GPT Image 2.5 Flare](https://developers.openai.com/api/do
 
 Gemini 标准比例为 `1:1`、`2:3`、`3:2`、`3:4`、`4:3`、`4:5`、`5:4`、`9:16`、`16:9`、`21:9`。“不发送”表示当前版本不会设置 `generationConfig.imageConfig.imageSize`。
 
-`gemini-3-pro-image` 与 `gemini-3-pro-image-preview`、`gemini-3.1-flash-image` 与 `gemini-3.1-flash-image-preview` 均是不同的完整模型 ID。Pictora 为 Flash Preview 注册了与已支持的 Flash 模型一致的客户端参数范围，但不会做自动别名转换；实际请求使用所选完整 ID，具体上游能力以该 Key 的实际结果为准。
+`gemini-nano-banana-2.1`、`gemini-3-pro-image` 与 `gemini-3-pro-image-preview`、`gemini-3.1-flash-image` 与 `gemini-3.1-flash-image-preview` 均是不同的完整模型 ID。Pictora 为 Nano Banana 2.1 和 Flash Preview 注册了对应的客户端参数范围，但不会做自动别名转换；实际请求使用所选完整 ID，具体上游能力以该 Key 的实际结果为准。
 
 Gemini 原生接口没有 OpenAI Images API 的 `n` 参数。当前客户端的“单次数量”会转换为多次生成请求，不代表单个 Gemini 请求能返回指定数量。
 
@@ -517,7 +524,7 @@ Content-Type: application/json
 1:1、2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9
 ```
 
-`gemini-3.1-flash-image` 还支持更宽或更长的比例：
+`gemini-nano-banana-2.1` 与 `gemini-3.1-flash-image` 还支持更宽或更长的比例：
 
 ```text
 1:4、1:8、4:1、8:1
@@ -940,8 +947,9 @@ Pictora 会在界面中显示为 `Provider request failed (HTTP 400): ...`。前
 
 ## 18. 本次文档更新记录
 
-### v2.5（2026-10-04）
+### v2.6（2026-10-08）
 
+- 同步 Gemini Nano Banana 2.1：注册 `gemini-nano-banana-2.1` 的模型能力，并将新 Gemini 配置默认模型切换为该模型；保留旧模型支持。
 - 同步 Pictora `V2` 提交 `3fd2f64`：补充 `gemini-3.1-flash-image-preview` 的模型列表示例、客户端能力及模型过滤说明，保留原有模型支持。
 - 增加网站质量选项与 `quality` 参数的对应关系，明确模型 ID 不自动添加 `-high`、`-max` 后缀，不推定上游别名等价关系。
 - 补充 HTTP 400 过载案例，区分上游暂时拥堵与参数不兼容，明确模型列表测试不等于生成验证。

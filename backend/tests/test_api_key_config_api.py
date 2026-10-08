@@ -132,7 +132,7 @@ def test_can_create_activate_update_and_delete_config(client: TestClient) -> Non
     config = created.json()
     assert config["api_key_configured"] is True
     assert "api_key" not in config
-    assert config["model"] == "gemini-3.1-flash-image"
+    assert config["model"] == "gemini-nano-banana-2.1"
 
     config_id = config["id"]
     active = client.put("/api/settings/active", json={"config_id": config_id})
@@ -145,7 +145,7 @@ def test_can_create_activate_update_and_delete_config(client: TestClient) -> Non
     )
     assert updated.status_code == 200
     assert updated.json()["alias"] == "Gemini Final"
-    assert updated.json()["model"] == "gemini-3.1-flash-image"
+    assert updated.json()["model"] == "gemini-nano-banana-2.1"
     assert updated.json()["api_key_configured"] is True
 
     deleted = client.delete(f"/api/settings/api-keys/{config_id}")
@@ -402,13 +402,14 @@ def test_grok_uses_the_shared_endpoint_and_only_returns_grok_models(
     assert created.json()["model"] == "grok-imagine-image"
 
 
-def test_gemini_preview_models_can_be_discovered_tested_and_selected(
+def test_gemini_models_can_be_discovered_tested_and_selected(
     client: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
 
     register(client)
     expected_models = [
+        {"id": "gemini-nano-banana-2.1", "provider_type": "gemini"},
         {"id": "gemini-3.1-flash-image-preview", "provider_type": "gemini"},
         {"id": "gemini-3-pro-image-preview", "provider_type": "gemini"},
     ]
@@ -428,6 +429,7 @@ def test_gemini_preview_models_can_be_discovered_tested_and_selected(
             return httpx.Response(
                 200, request=httpx.Request("GET", url),
                 json={"models": [
+                    {"name": "models/gemini-nano-banana-2.1"},
                     {"name": "models/gemini-3.1-flash-image-preview"},
                     {"name": "models/gemini-3-pro-image-preview"},
                     {"name": "models/gemini-3.1-flash"},

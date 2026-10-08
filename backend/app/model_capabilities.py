@@ -143,6 +143,17 @@ MODEL_CAPABILITIES = (
     _gpt_capability("gpt-image-1-mini", "GPT Image 1 Mini"),
     ModelCapabilities(
         provider_type="gemini",
+        model="gemini-nano-banana-2.1",
+        label="Gemini Nano Banana 2.1",
+        max_output_count=4,
+        max_reference_images=14,
+        aspect_ratios=GEMINI_31_RATIOS,
+        resolutions=("1K", "2K", "4K"),
+        default_aspect_ratio="1:1",
+        default_resolution="1K",
+    ),
+    ModelCapabilities(
+        provider_type="gemini",
         model="gemini-3.1-flash-image",
         label="Gemini 3.1 Flash Image",
         max_output_count=4,
@@ -236,7 +247,7 @@ _CAPABILITIES_BY_KEY = {
 
 DEFAULT_MODEL_BY_PROVIDER: dict[ProviderType, str] = {
     "gpt": "gpt-image-2",
-    "gemini": "gemini-3.1-flash-image",
+    "gemini": "gemini-nano-banana-2.1",
     "grok": "grok-imagine-image",
 }
 

@@ -1,6 +1,7 @@
 import pytest
 
 from app.model_capabilities import (
+    DEFAULT_MODEL_BY_PROVIDER,
     UnsupportedModelError,
     UnsupportedModelParameterError,
     filter_supported_model_ids,
@@ -76,6 +77,28 @@ def test_gemini_defaults_and_rejects_unsupported_quality() -> None:
         normalize_generation_request(GenerateRequest(
             provider="gemini", model="gemini-3.1-flash-image", prompt="draw", detail="high",
         ))
+
+
+def test_gemini_nano_banana_21_uses_latest_flash_image_capabilities() -> None:
+    capability = get_model_capabilities("gemini", "gemini-nano-banana-2.1")
+    request = normalize_generation_request(GenerateRequest(
+        provider="gemini",
+        model=capability.model,
+        prompt="draw",
+        aspect_ratio="1:8",
+        resolution="4K",
+    ))
+
+    assert capability.label == "Gemini Nano Banana 2.1"
+    assert capability.max_reference_images == 14
+    assert capability.resolutions == ("1K", "2K", "4K")
+    assert request.model == "gemini-nano-banana-2.1"
+    assert request.aspect_ratio == "1:8"
+    assert request.resolution == "4K"
+
+
+def test_gemini_default_model_is_nano_banana_21() -> None:
+    assert DEFAULT_MODEL_BY_PROVIDER["gemini"] == "gemini-nano-banana-2.1"
 
 
 def test_gemini_three_pro_image_uses_native_pro_capabilities() -> None:
