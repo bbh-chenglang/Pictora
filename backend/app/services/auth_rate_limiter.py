@@ -26,6 +26,8 @@ class AuthRateLimiter:
         self._login_clients: dict[str, deque[float]] = {}
         self._verification_clients: dict[str, deque[float]] = {}
         self._verification_global: deque[float] = deque()
+        self._password_reset_identifiers: dict[str, deque[float]] = {}
+        self._password_reset_clients: dict[str, deque[float]] = {}
         self._lock = Lock()
 
     @staticmethod
@@ -109,3 +111,21 @@ class AuthRateLimiter:
             client_events.append(now)
             self._verification_global.append(now)
             return 0
+
+    def consume_password_reset_request(self, identifier: str, client_key: str) -> int:
+        now = self.clock()
+        with self._lock:
+            buckets = [
+                self._events(self._password_reset_identifiers, identifier),
+                self._events(self._password_reset_clients, client_key),
+            ]
+            for events in buckets:
+                self._prune(events, now - self.login_window_seconds)
+            retry_after = max(
+                self._retry_after(events, self.login_max_failures, now, self.login_window_seconds)
+                for events in buckets
+            )
+            if not retry_after:
+                for events in buckets:
+                    events.append(now)
+            return retry_after

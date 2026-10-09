@@ -19,19 +19,32 @@ class EmailSender:
         self.settings = settings
 
     async def send_verification_code(self, email: str, code: str) -> None:
+        await self._send_code(email, code, "注册")
+
+    async def send_password_reset_code(self, email: str, code: str) -> None:
+        await self._send_code(email, code, "找回密码")
+
+    def ensure_configured(self) -> None:
+        if not (
+            self.settings.smtp_username.strip()
+            and self.settings.smtp_app_password.get_secret_value().strip()
+            and (self.settings.smtp_sender.strip() or self.settings.smtp_username.strip())
+        ):
+            raise EmailSenderNotConfiguredError
+
+    async def _send_code(self, email: str, code: str, purpose: str) -> None:
+        self.ensure_configured()
         username = self.settings.smtp_username.strip()
         password = self.settings.smtp_app_password.get_secret_value().strip()
         sender = self.settings.smtp_sender.strip() or username
-        if not username or not password or not sender:
-            raise EmailSenderNotConfiguredError
 
         message = EmailMessage()
-        message["Subject"] = "Pictora 注册验证码"
+        message["Subject"] = f"Pictora {purpose}验证码"
         message["From"] = sender
         message["To"] = email
         minutes = max(1, self.settings.verification_code_ttl_seconds // 60)
         message.set_content(
-            f"你的 Pictora 注册验证码是：{code}\n\n"
+            f"你的 Pictora {purpose}验证码是：{code}\n\n"
             f"验证码将在 {minutes} 分钟后失效。若不是你本人操作，请忽略此邮件。"
         )
 

@@ -67,6 +67,19 @@ class VerificationCodeResponse(BaseModel):
     retry_after_seconds: int
 
 
+class PasswordResetRequest(VerificationCodeRequest):
+    verification_code: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=6)
+    new_password_confirmation: str = Field(min_length=6)
+
+    @field_validator("new_password_confirmation")
+    @classmethod
+    def passwords_must_match(cls, value: str, info) -> str:
+        if info.data.get("new_password") != value:
+            raise ValueError("两次新密码输入不一致")
+        return value
+
+
 class PasswordChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

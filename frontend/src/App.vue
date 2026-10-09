@@ -448,7 +448,7 @@ const activeHistoryId = ref<number | null>(null);
 const currentConversationId = ref<number | null>(null);
 const lightboxUrl = ref("");
 const openParameterMenu = ref<ParameterMenu | null>(null);
-const authView = ref<"checking" | "login" | "register" | "workspace">("checking");
+const authView = ref<"checking" | "login" | "register" | "reset" | "workspace">("checking");
 const username = ref("");
 const email = ref("");
 const verificationCode = ref("");
@@ -461,6 +461,7 @@ const profileUsername = ref("");
 const profileStatus = ref("");
 const profileSaving = ref(false);
 const authError = ref("");
+const authStatus = ref("");
 const authSubmitting = ref(false);
 const verificationSending = ref(false);
 const verificationCooldown = ref(0);
@@ -527,6 +528,30 @@ let apiKeySelectionQueue: Promise<void> = Promise.resolve();
 let apiKeySelectionVersion = 0;
 let referencePreviewSequence = 0;
 let verificationCooldownTimer: number | undefined;
+let authRequestVersion = 0;
+
+watch(authView, () => {
+  authRequestVersion += 1;
+  password.value = "";
+  passwordConfirmation.value = "";
+  verificationCode.value = "";
+  authError.value = "";
+  authStatus.value = "";
+  authSubmitting.value = false;
+  verificationSending.value = false;
+  verificationCooldown.value = 0;
+  if (verificationCooldownTimer !== undefined) window.clearInterval(verificationCooldownTimer);
+  verificationCooldownTimer = undefined;
+}, { flush: "sync" });
+
+watch(email, () => {
+  authRequestVersion += 1;
+  verificationCode.value = "";
+  authError.value = "";
+  authStatus.value = "";
+  authSubmitting.value = false;
+  verificationSending.value = false;
+}, { flush: "sync" });
 let adminSearchTimer: number | undefined;
 let hasStoredWorkspaceSelection = false;
 const referenceDragDepth: Record<ReferenceCategory, number> = {
@@ -1092,6 +1117,7 @@ function expectedGenerationImageCount(requestPrompt: string, prompts: string[], 
 
 async function submitAuth(mode: "login" | "register") {
   authError.value = "";
+  authStatus.value = "";
   if (authSubmitting.value) return;
   const passwordsMatch = mode === "login" || password.value === passwordConfirmation.value;
   const registrationValid = mode === "login" || (
@@ -1113,9 +1139,11 @@ async function submitAuth(mode: "login" | "register") {
       }
     : { email: email.value.trim(), password: password.value };
   authSubmitting.value = true;
+  const requestVersion = authRequestVersion;
   try {
     const response = await apiFetch(`${API_BASE}/api/auth/${mode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await parseJsonResponse(response);
+    if (requestVersion !== authRequestVersion) return;
     if (!response.ok) { authError.value = readableError(data, "登录失败"); return; }
     applyCurrentUser(data);
     password.value = "";
@@ -1128,9 +1156,47 @@ async function submitAuth(mode: "login" | "register") {
     await loadProjects(true);
     if (currentView.value === "admin") await loadAdminUsers();
   } catch {
-    authError.value = "无法连接服务器";
+    if (requestVersion === authRequestVersion) authError.value = "无法连接服务器";
   } finally {
-    authSubmitting.value = false;
+    if (requestVersion === authRequestVersion) authSubmitting.value = false;
+  }
+}
+
+async function submitPasswordReset() {
+  if (authSubmitting.value) return;
+  authError.value = "";
+  authStatus.value = "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())
+      || !/^\d{6}$/.test(verificationCode.value.trim())
+      || password.value.length < 6 || password.value !== passwordConfirmation.value) {
+    authError.value = "请填写有效邮箱和 6 位验证码，密码至少 6 位且两次输入一致";
+    return;
+  }
+  const requestVersion = authRequestVersion;
+  authSubmitting.value = true;
+  try {
+    const response = await apiFetch(`${API_BASE}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: email.value.trim().toLowerCase(),
+        verification_code: verificationCode.value.trim(),
+        new_password: password.value,
+        new_password_confirmation: passwordConfirmation.value,
+      }),
+    });
+    const data = await parseJsonResponse(response);
+    if (requestVersion !== authRequestVersion) return;
+    if (!response.ok) {
+      authError.value = readableError(data, "密码重置失败");
+      return;
+    }
+    authView.value = "login";
+    authStatus.value = "密码已重置，请使用新密码登录";
+  } catch {
+    if (requestVersion === authRequestVersion) authError.value = "无法连接服务器";
+  } finally {
+    if (requestVersion === authRequestVersion) authSubmitting.value = false;
   }
 }
 
@@ -1157,29 +1223,37 @@ function startVerificationCooldown(seconds: number) {
 
 async function sendVerificationCode() {
   authError.value = "";
-  if (!email.value.trim() || verificationSending.value || verificationCooldown.value > 0) {
-    if (!email.value.trim()) authError.value = "请先填写邮箱";
+  authStatus.value = "";
+  const mode = authView.value;
+  if (mode !== "register" && mode !== "reset") return;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())
+      || verificationSending.value || verificationCooldown.value > 0 || authSubmitting.value) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) authError.value = "请先填写有效邮箱";
     return;
   }
   verificationSending.value = true;
+  const requestVersion = authRequestVersion;
+  const endpoint = mode === "reset" ? "password-reset-code" : "verification-code";
   try {
-    const response = await apiFetch(`${API_BASE}/api/auth/verification-code`, {
+    const response = await apiFetch(`${API_BASE}/api/auth/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: email.value.trim() }),
+      body: JSON.stringify({ email: email.value.trim().toLowerCase() }),
     });
     const data = await parseJsonResponse(response);
+    if (requestVersion !== authRequestVersion) return;
     if (!response.ok) {
       authError.value = readableError(data, "验证码发送失败");
-      const retryAfter = Number(data?.error?.retry_after_seconds ?? 0);
+      const retryAfter = Number(data?.error?.retry_after_seconds ?? data?.detail?.error?.retry_after_seconds ?? 0);
       if (retryAfter > 0) startVerificationCooldown(retryAfter);
       return;
     }
     startVerificationCooldown(Number(data?.retry_after_seconds ?? 60));
+    if (mode === "reset") authStatus.value = String(data?.message ?? "请求已受理，如该邮箱已绑定账号，将收到找回密码验证码");
   } catch {
-    authError.value = "无法连接邮件服务";
+    if (requestVersion === authRequestVersion) authError.value = "无法连接邮件服务";
   } finally {
-    verificationSending.value = false;
+    if (requestVersion === authRequestVersion) verificationSending.value = false;
   }
 }
 
@@ -3765,6 +3839,7 @@ function handlePopState() {
 }
 window.addEventListener("popstate", handlePopState);
 onUnmounted(() => {
+  authRequestVersion += 1;
   finishWorkspaceResize();
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("popstate", handlePopState);
@@ -3799,30 +3874,33 @@ onUnmounted(() => {
           <p class="auth-intro-note">登录后即可继续使用你的项目与历史记录。</p>
         </aside>
 
-        <form class="auth-form" @submit.prevent="authView === 'register' ? submitAuth('register') : submitAuth('login')">
+        <form class="auth-form" @submit.prevent="authView === 'reset' ? submitPasswordReset() : authView === 'register' ? submitAuth('register') : submitAuth('login')">
           <div class="auth-form-heading">
             <div>
-              <p class="auth-kicker">欢迎回来</p>
-              <h2>{{ authView === 'register' ? '创建 Pictora 账号' : '登录 Pictora' }}</h2>
+              <p class="auth-kicker">{{ authView === 'reset' ? '找回账户访问权限' : '欢迎回来' }}</p>
+              <h2>{{ authView === 'reset' ? '找回密码' : authView === 'register' ? '创建 Pictora 账号' : '登录 Pictora' }}</h2>
             </div>
-            <span class="auth-step">{{ authView === 'register' ? '02' : '01' }}</span>
+            <span class="auth-step">{{ authView === 'reset' ? '03' : authView === 'register' ? '02' : '01' }}</span>
           </div>
 
-          <div class="auth-mode" role="tablist" aria-label="认证方式">
+          <div v-if="authView !== 'reset'" class="auth-mode" role="tablist" aria-label="认证方式">
             <button type="button" role="tab" :aria-selected="authView === 'login'" :class="{ active: authView === 'login' }" @click="authView = 'login'">登录</button>
             <button type="button" role="tab" :aria-selected="authView === 'register'" :class="{ active: authView === 'register' }" @click="authView = 'register'">注册</button>
           </div>
 
           <div class="auth-fields">
             <label v-if="authView === 'register'">用户名<input v-model="username" autocomplete="username" placeholder="输入用户名" required /></label>
-            <label>{{ authView === 'register' ? '邮箱' : '邮箱或旧用户名' }}<input v-model="email" :type="authView === 'register' ? 'email' : 'text'" :autocomplete="authView === 'register' ? 'email' : 'username'" :placeholder="authView === 'register' ? 'name@gmail.com' : '邮箱或旧用户名'" required /></label>
-            <label v-if="authView === 'register'">邮箱验证码<span class="verification-field"><input v-model="verificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="6 位验证码" required /><button type="button" class="secondary-action verification-action" :disabled="verificationSending || verificationCooldown > 0" @click="sendVerificationCode">{{ verificationSending ? '发送中' : verificationCooldown > 0 ? `${verificationCooldown} 秒` : '获取验证码' }}</button></span></label>
-            <label>密码<input v-model="password" type="password" :autocomplete="authView === 'register' ? 'new-password' : 'current-password'" placeholder="至少 6 位字符" minlength="6" required /></label>
-            <label v-if="authView === 'register'">确认密码<input v-model="passwordConfirmation" type="password" autocomplete="new-password" placeholder="再次输入密码" minlength="6" required /></label>
+            <label>{{ authView === 'reset' ? '已绑定邮箱' : authView === 'register' ? '邮箱' : '邮箱或旧用户名' }}<input v-model="email" :type="authView === 'login' ? 'text' : 'email'" :autocomplete="authView === 'login' ? 'username' : 'email'" :placeholder="authView === 'login' ? '邮箱或旧用户名' : 'name@gmail.com'" required /></label>
+            <label v-if="authView === 'register' || authView === 'reset'">邮箱验证码<span class="verification-field"><input v-model="verificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="6 位验证码" required /><button type="button" class="secondary-action verification-action" :disabled="verificationSending || verificationCooldown > 0 || authSubmitting" @click="sendVerificationCode">{{ verificationSending ? '发送中' : verificationCooldown > 0 ? `${verificationCooldown} 秒` : '获取验证码' }}</button></span></label>
+            <label>{{ authView === 'reset' ? '新密码' : '密码' }}<input v-model="password" type="password" :autocomplete="authView === 'login' ? 'current-password' : 'new-password'" placeholder="至少 6 位字符" minlength="6" required /></label>
+            <label v-if="authView === 'register' || authView === 'reset'">{{ authView === 'reset' ? '确认新密码' : '确认密码' }}<input v-model="passwordConfirmation" type="password" autocomplete="new-password" placeholder="再次输入密码" minlength="6" required /></label>
           </div>
           <p v-if="authError" class="error-message" role="alert">{{ authError }}</p>
-          <button type="submit" class="primary-action auth-submit" :disabled="authSubmitting">{{ authSubmitting ? '提交中...' : authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
-          <p class="auth-footnote">{{ authView === 'register' ? '已有账号？' : '还没有账号？' }}<button type="button" class="auth-link" @click="authView = authView === 'register' ? 'login' : 'register'">{{ authView === 'register' ? '返回登录' : '立即注册' }}</button></p>
+          <p v-if="authStatus" class="auth-footnote" role="status">{{ authStatus }}</p>
+          <p v-if="authView === 'reset'" class="auth-footnote">仅支持已绑定并验证的邮箱。未绑定邮箱的旧账号请联系管理员。</p>
+          <button type="submit" class="primary-action auth-submit" :disabled="authSubmitting">{{ authSubmitting ? '提交中...' : authView === 'reset' ? '重置密码' : authView === 'register' ? '注册并进入工作台' : '登录' }}</button>
+          <p v-if="authView === 'login'" class="auth-footnote"><button type="button" class="auth-link" data-action="forgot-password" @click="authView = 'reset'">忘记密码？</button></p>
+          <p class="auth-footnote"><template v-if="authView !== 'reset'">{{ authView === 'register' ? '已有账号？' : '还没有账号？' }}</template><button type="button" class="auth-link" data-action="switch-auth" @click="authView = authView === 'login' ? 'register' : 'login'">{{ authView === 'login' ? '立即注册' : '返回登录' }}</button></p>
         </form>
       </div>
     </section>

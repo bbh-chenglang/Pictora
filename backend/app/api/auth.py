@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+import asyncio
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
 
 from app.auth import (
     SESSION_COOKIE,
@@ -16,6 +19,7 @@ from app.dependencies import (
     get_email_sender,
     get_user_repository,
     get_verification_code_repository,
+    get_password_reset_repository,
 )
 from app.repositories.user_repository import (
     EmailAlreadyExistsError,
@@ -26,10 +30,12 @@ from app.repositories.verification_code_repository import (
     VerificationCodeCooldownError,
     VerificationCodeRepository,
 )
+from app.repositories.password_reset_repository import PasswordResetRepository
 from app.schemas.auth import (
     CurrentUserResponse,
     LoginRequest,
     PasswordChangeRequest,
+    PasswordResetRequest,
     ProfileUpdateRequest,
     RegistrationRequest,
     StoredSessionUser,
@@ -44,6 +50,87 @@ from app.services.email_sender import (
 from app.services.auth_rate_limiter import AuthRateLimiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
+
+
+async def deliver_password_reset_code(
+    sender: EmailSender, repository: PasswordResetRepository,
+    email: str, code: str, code_hash: str, eligible: bool,
+) -> None:
+    if not eligible:
+        return
+    try:
+        await sender.send_password_reset_code(email, code)
+    except Exception as exc:
+        await repository.invalidate(email, code_hash)
+        # SMTP exceptions may contain recipient information; omit their payload.
+        logger.error("Password reset email delivery failed (%s)", type(exc).__name__)
+
+
+@router.post("/password-reset-code", response_model=VerificationCodeResponse)
+async def send_password_reset_code(
+    payload: VerificationCodeRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    repository: UserRepository = Depends(get_user_repository),
+    reset_repository: PasswordResetRepository = Depends(get_password_reset_repository),
+    sender: EmailSender = Depends(get_email_sender),
+    rate_limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
+) -> VerificationCodeResponse:
+    retry_after = rate_limiter.consume_verification_request(request_client_key(request))
+    if retry_after:
+        raise_auth_rate_limited(retry_after)
+    try:
+        sender.ensure_configured()
+    except EmailSenderNotConfiguredError:
+        raise HTTPException(
+            503, {"error": {"code": "smtp_not_configured", "message": "邮件服务尚未配置"}},
+        ) from None
+    settings = Settings()
+    user = await repository.get_by_email(payload.email)
+    eligible = user is not None and user.email_verified_at is not None
+    code = new_verification_code()
+    code_hash = await asyncio.to_thread(hash_password, code)
+    try:
+        await reset_repository.store(
+            payload.email, user.id if eligible else None, code_hash,
+            ttl_seconds=settings.verification_code_ttl_seconds,
+            cooldown_seconds=settings.verification_code_cooldown_seconds,
+        )
+    except VerificationCodeCooldownError as exc:
+        raise HTTPException(
+            429,
+            {"error": {"code": "verification_code_cooldown",
+                       "message": f"请在 {exc.retry_after_seconds} 秒后重试",
+                       "retry_after_seconds": exc.retry_after_seconds}},
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from None
+    background_tasks.add_task(
+        deliver_password_reset_code, sender, reset_repository,
+        payload.email, code, code_hash, eligible,
+    )
+    return VerificationCodeResponse(
+        message="请求已受理，如该邮箱已绑定账号，将收到找回密码验证码。未收到邮件请检查垃圾邮件或稍后重试。",
+        retry_after_seconds=settings.verification_code_cooldown_seconds,
+    )
+
+
+@router.post("/reset-password", status_code=204)
+async def reset_password(
+    payload: PasswordResetRequest, request: Request, response: Response,
+    repository: PasswordResetRepository = Depends(get_password_reset_repository),
+    rate_limiter: AuthRateLimiter = Depends(get_auth_rate_limiter),
+) -> None:
+    retry_after = rate_limiter.consume_password_reset_request(payload.email, request_client_key(request))
+    if retry_after:
+        raise_auth_rate_limited(retry_after)
+    password_hash = await asyncio.to_thread(hash_password, payload.new_password)
+    if not await repository.reset_password(payload.email, payload.verification_code, password_hash):
+        raise HTTPException(
+            400, {"error": {"code": "invalid_verification_code", "message": "验证码错误或已失效"}},
+        )
+    rate_limiter.clear_login_identifier(payload.email)
+    response.delete_cookie(key=SESSION_COOKIE, path="/")
 
 
 def set_session_cookie(response: Response, token: str) -> None:

@@ -22,6 +22,7 @@ from app.repositories.admin_repository import AdminRepository
 from app.repositories.skill_repository import SkillRepository
 from app.repositories.prompt_repository import PromptRepository
 from app.repositories.verification_code_repository import VerificationCodeRepository
+from app.repositories.password_reset_repository import PasswordResetRepository
 from app.schemas.auth import StoredSessionUser
 from app.services.email_sender import EmailSender
 from app.services.history_service import HistoryService
@@ -67,6 +68,11 @@ def get_user_repository() -> UserRepository:
 @lru_cache
 def get_verification_code_repository() -> VerificationCodeRepository:
     return VerificationCodeRepository(DATABASE_PATH)
+
+
+@lru_cache
+def get_password_reset_repository() -> PasswordResetRepository:
+    return PasswordResetRepository(DATABASE_PATH)
 
 
 @lru_cache
