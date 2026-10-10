@@ -15,6 +15,7 @@ from app.video.media import VideoAssets,LIMITS,probe_media
 from app.video.network import https_url,safe_download
 from app.video.provider import VideoProvider,UnavailableVideoProvider
 from app.video.repository import VideoError,VideoRepository
+from app.video.errors import failure_details, failure_summary
 from app.video.storage import R2Storage
 from app.video.schemas import TRACKED_STATUSES
 
@@ -138,7 +139,7 @@ class VideoService:
                 await self.persist_upstream_id(task_id,upstream_id)
                 task=await self.repository.get_task(user_id,task_id)
             else:
-                await self.repository.update_task(task_id,status='running',error_code=None,error_message=None)
+                await self.repository.update_task(task_id,status='running',error_code=None,error_message=None,error_details_json=None)
                 response=None
             # An already completed upstream result can be saved from durable staging without re-querying.
             if key is None: key=(await self.repository.get_key(user_id,task['api_key_config_id']))['api_key']
@@ -157,13 +158,11 @@ class VideoService:
                     await self.save_results(user_id,task,response,key,deadline)
                     return
                 if status in ('failed','cancelled','expired'):
-                    upstream_error=response.get('error')
-                    if isinstance(upstream_error,dict):
-                        detail=upstream_error.get('message') or upstream_error.get('code')
-                    else:
-                        detail=None
-                    message='上游视频任务 '+str(status)+'。'+(' '+str(detail)[:300] if detail else '')
-                    await self.repository.update_task(task_id,status='failed',error_code='video_upstream_failed',error_message=message,completed_at=datetime.now(timezone.utc).isoformat())
+                    details=failure_details(response, 'generation', secret=key)
+                    if task.get('upstream_task_id'):
+                        details['upstream_task_id']=task['upstream_task_id']
+                    message=failure_summary(details, status)
+                    await self.repository.update_task(task_id,status='failed',error_code='video_upstream_failed',error_message=message,error_details_json=json.dumps(details, ensure_ascii=False),completed_at=datetime.now(timezone.utc).isoformat())
                     return
                 if status not in WAIT_STATUSES:
                     raise VideoError('video_status_unknown','上游返回未识别状态，已暂停查询，请排查或稍后恢复',502)
@@ -176,7 +175,7 @@ class VideoService:
             current=await self.repository.get_task(user_id,task_id)
             if not current['tracking_abandoned'] and current['status'] not in ('completed','failed'):
                 status='polling_paused' if current['upstream_task_id'] else ('queued' if current['status']=='queued' else 'submission_unknown')
-                await self.repository.update_task(task_id,status=status,error_code='video_worker_interrupted',error_message='本地任务中断，已有任务 ID 可恢复查询；未知提交需核对控制台')
+                await self.repository.update_task(task_id,status=status,error_code='video_worker_interrupted',error_message='本地任务中断，已有任务 ID 可恢复查询；未知提交需核对控制台',error_details_json=None)
             raise
         except Exception as exc:
             current=await self.repository.get_task(user_id,task_id)
@@ -184,11 +183,12 @@ class VideoService:
             code=exc.code if isinstance(exc,VideoError) else 'video_operation_error'
             message=exc.message if isinstance(exc,VideoError) else '视频处理发生错误，请恢复原任务或核对控制台，不要自动重新生成'
             if key: message=message.replace(key,'[redacted]')
+            details=exc.details if isinstance(exc,VideoError) else None
             if current['upstream_task_id']:
                 status='storage_failed' if current['upstream_status'] in ('succeeded','completed') else 'polling_paused'
             else:
                 status='failed' if code=='video_submit_rejected' or current['status']=='queued' else 'submission_unknown'
-            await self.repository.update_task(task_id,status=status,error_code=code,error_message=message)
+            await self.repository.update_task(task_id,status=status,error_code=code,error_message=message,error_details_json=json.dumps(details, ensure_ascii=False) if details else None)
             logger.warning('Video task paused task_id=%s code=%s',task_id,code)
 
     async def save_results(self,user_id,task,response,key=None,deadline=None):
@@ -221,7 +221,7 @@ class VideoService:
             await self.storage.upload(result['object_key'],ready)
             await self.repository.mark_result_stored(result['id'],ready.stat().st_size,metadata['duration_seconds'])
             ready.unlink(missing_ok=True)
-        await self.repository.update_task(task_id,status='completed',progress=100,error_code=None,error_message=None,completed_at=datetime.now(timezone.utc).isoformat())
+        await self.repository.update_task(task_id,status='completed',progress=100,error_code=None,error_message=None,error_details_json=None,completed_at=datetime.now(timezone.utc).isoformat())
 
     async def resume(self,user_id,task_id):
         # Existing upstream IDs remain queryable during a storage outage. Saving

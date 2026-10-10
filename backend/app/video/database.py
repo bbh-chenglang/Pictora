@@ -91,3 +91,7 @@ async def migrate_video(connection: aiosqlite.Connection) -> None:
     if "ever_referenced" not in columns:
         await connection.execute("ALTER TABLE video_assets ADD COLUMN ever_referenced INTEGER NOT NULL DEFAULT 0")
         await connection.execute("UPDATE video_assets SET ever_referenced=1 WHERE id IN (SELECT asset_id FROM video_task_assets)")
+
+    task_columns = {row[1] for row in await (await connection.execute("PRAGMA table_info(video_tasks)")).fetchall()}
+    if "error_details_json" not in task_columns:
+        await connection.execute("ALTER TABLE video_tasks ADD COLUMN error_details_json TEXT")

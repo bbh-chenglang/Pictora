@@ -6,8 +6,9 @@ import aiosqlite
 from app.video.schemas import ACTIVE_STATUSES, TRACKED_STATUSES
 
 class VideoError(Exception):
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400, details=None):
         self.code, self.message, self.status = code, message, status
+        self.details = details
         super().__init__(message)
 
 class VideoRepository:
@@ -133,6 +134,7 @@ class VideoRepository:
         task=dict(task)
         request=json.loads(task.pop('request_json'))
         task.pop('payload_json',None)
+        task['error_details']=json.loads(task.pop('error_details_json',None) or 'null')
         task['materials']=request.get('materials',[])
         task['results']=[dict(r) for r in task.get('results',[])]
         for result in task['results']:
@@ -225,7 +227,7 @@ class VideoRepository:
             if row['status'] not in ('polling_paused','storage_failed','abandoned') or not row['upstream_task_id']:
                 raise VideoError('video_cannot_resume','此任务无法恢复查询或保存',409)
             await self.check_capacity(db,user_id,settings)
-            await db.execute("UPDATE video_tasks SET status='running',tracking_abandoned=0,error_code=NULL,error_message=NULL WHERE id=?",(task_id,))
+            await db.execute("UPDATE video_tasks SET status='running',tracking_abandoned=0,error_code=NULL,error_message=NULL,error_details_json=NULL WHERE id=?",(task_id,))
             await db.commit()
         return True
 
@@ -241,7 +243,7 @@ class VideoRepository:
                 raise VideoError('video_bind_duplicate','此上游任务已被接管',409) from None
 
     async def update_task(self,task_id,**fields):
-        allowed={'status','upstream_task_id','upstream_status','progress','error_code','error_message','started_at','completed_at','tracking_abandoned'}
+        allowed={'status','upstream_task_id','upstream_status','progress','error_code','error_message','error_details_json','started_at','completed_at','tracking_abandoned'}
         if not fields or not set(fields)<=allowed:
             raise ValueError('Invalid task update')
         assignments=','.join(f'{key}=?' for key in fields)

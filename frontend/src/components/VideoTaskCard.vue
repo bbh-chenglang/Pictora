@@ -31,6 +31,20 @@ function refreshPlayer() { sourceVersion.value++; playerError.value = false; }
     </div>
     <progress v-if="activeVideoStatuses.has(task.status)" :value="task.progress ?? undefined" max="100" aria-label="视频任务进度"></progress>
     <p v-if="task.error_message" role="status" class="video-task-error">{{ task.error_message }}</p>
+    <details v-if="task.error_details" class="video-error-details">
+      <summary>查看失败详情</summary>
+      <dl>
+        <template v-if="task.error_details.stage"><dt>失败阶段</dt><dd>{{ task.error_details.stage === 'generation' ? '上游生成' : task.error_details.stage === 'submission' ? '提交' : task.error_details.stage === 'query' ? '查询' : task.error_details.stage }}</dd></template>
+        <template v-if="task.error_details.http_status"><dt>HTTP 状态</dt><dd>{{ task.error_details.http_status }}</dd></template>
+        <template v-if="task.error_details.upstream_code"><dt>上游错误码</dt><dd><code>{{ task.error_details.upstream_code }}</code></dd></template>
+        <template v-if="task.error_details.upstream_message"><dt>上游原因</dt><dd>{{ task.error_details.upstream_message }}</dd></template>
+        <template v-if="task.error_details.parameter"><dt>相关参数</dt><dd><code>{{ task.error_details.parameter }}</code></dd></template>
+        <template v-if="task.error_details.upstream_request_id"><dt>上游请求 ID</dt><dd><code>{{ task.error_details.upstream_request_id }}</code></dd></template>
+        <template v-if="task.error_details.upstream_task_id"><dt>上游任务 ID</dt><dd><code>{{ task.error_details.upstream_task_id }}</code></dd></template>
+        <template v-if="!task.error_details.reason_provided"><dt>原因状态</dt><dd>上游未提供具体失败原因</dd></template>
+        <template v-if="task.error_details.suggestion"><dt>排查建议</dt><dd>{{ task.error_details.suggestion }}</dd></template>
+      </dl>
+    </details>
     <p v-if="task.status === 'submission_unknown'" class="video-task-error">请先核对上游控制台，勿新建重复付费任务。填写该 Key 名下的任务 ID 后可验证并接管。</p>
     <form v-if="(task.status === 'submission_unknown' || task.status === 'abandoned') && !task.upstream_task_id" class="video-bind-form" @submit.prevent="emit('action', task, 'bind', upstreamId.trim())"><label>上游任务 ID<input v-model="upstreamId" maxlength="256" required /></label><button class="secondary-action" type="submit" :disabled="busy || !upstreamId.trim()">验证并接管</button></form>
     <div v-for="result in task.results.filter(r => r.stored)" :key="result.id" class="video-result">
@@ -49,6 +63,7 @@ function refreshPlayer() { sourceVersion.value++; playerError.value = false; }
 </template>
 <style scoped>
 .video-task-card { padding:20px; border:1px solid var(--prompt-snow-border); background:var(--prompt-snow-surface); color:var(--prompt-snow-text); min-width:0; }.video-task-card header,.video-task-card header>div,.video-status { display:flex; align-items:center; gap:8px; }.video-task-card header {justify-content:space-between; flex-wrap:wrap;}.video-status {font-size:12px; color:var(--prompt-snow-text-muted);}.video-status.completed{color:#25825f;}.video-status.failed,.video-status.storage_failed,.video-status.submission_unknown{color:var(--prompt-snow-danger);}.video-task-prompt{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;max-height:130px;overflow:auto;}.video-task-meta{font-size:12px;color:var(--prompt-snow-text-muted);overflow-wrap:anywhere;}.video-task-error{font-size:13px;line-height:1.6;color:var(--prompt-snow-danger);}.video-task-card progress{width:100%;height:6px;}.video-task-card footer,.video-result-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px;}.video-result video{width:100%;max-height:420px;background:#10151b;margin-top:12px;}.video-result-actions span{margin-right:auto;font-size:12px;}.video-bind-form{display:flex;gap:8px;align-items:end;}.video-bind-form label{display:grid;gap:6px;flex:1;font-size:12px;}.video-bind-form input{padding:10px;width:100%;background:var(--prompt-snow-surface);border:1px solid var(--prompt-snow-border-strong);color:var(--prompt-snow-text);}
+.video-error-details{margin-top:10px;padding:10px 12px;border:1px solid var(--prompt-snow-border);border-radius:8px;font-size:12px;line-height:1.6;}.video-error-details summary{cursor:pointer;font-weight:600;color:var(--prompt-snow-text);}.video-error-details dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:5px 12px;margin:10px 0 0;}.video-error-details dt{color:var(--prompt-snow-text-muted);}.video-error-details dd{margin:0;overflow-wrap:anywhere;}.video-error-details code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all;}
 .video-task-timer { display:inline-flex; align-items:center; gap:9px; padding:8px 12px; margin:2px 0 12px; border:1px solid var(--prompt-snow-border); border-radius:12px; background:var(--prompt-snow-surface); font-size:12px; color:var(--prompt-snow-text-muted); }
 .video-task-timer strong { font-variant-numeric:tabular-nums; font-size:14px; letter-spacing:.7px; color:var(--prompt-snow-text); }
 .video-timer-icon { display:grid; place-items:center; }

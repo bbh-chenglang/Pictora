@@ -395,6 +395,25 @@ describe("video task and Key controls", () => {
     await wrapper.get("input").setValue("up-manual"); await wrapper.get("form").trigger("submit");
     expect(wrapper.emitted("action")?.at(-1)?.slice(1)).toEqual(["bind", "up-manual"]);
   });
+  it("shows detailed upstream failure diagnostics without exposing secrets", async () => {
+    const wrapper = keep(mount(VideoTaskCard, { props: { apiBase: "", task: task(6, {
+      status: "failed",
+      error_message: "上游视频生成失败。错误码：upstream_generation_failed。上游未提供具体原因，请展开失败详情查看排查信息",
+      error_details: {
+        stage: "generation", upstream_code: "upstream_generation_failed",
+        upstream_message: "Upstream video generation failed", upstream_task_id: "task_example_123",
+        reason_provided: false,
+        suggestion: "上游未提供具体失败原因。请将上游任务 ID、模型、提交时间和错误码提供给服务方查询后台日志。",
+      },
+    }) } }));
+    expect(wrapper.text()).toContain("上游未提供具体原因");
+    expect(wrapper.find("details").exists()).toBe(true);
+    await wrapper.get("summary").trigger("click");
+    expect(wrapper.text()).toContain("upstream_generation_failed");
+    expect(wrapper.text()).toContain("上游未提供具体失败原因");
+    expect(wrapper.text()).toContain("task_example_123");
+    expect(wrapper.text()).not.toContain("Bearer ");
+  });
   it("uses owned playback/download routes and refreshes expiring playback without regeneration", async () => {
     const wrapper = keep(mount(VideoTaskCard, { props: { task: task(1, { status: "completed", results: [{ id: 2, stored: 1, filename: "clip.mp4", byte_size: 12345, duration_seconds: 5, play_url: "/api/videos/tasks/1/results/2/play", download_url: "/api/videos/tasks/1/results/2/download" }] }), apiBase: "" } }));
     expect(wrapper.get("video").attributes("src")).toContain("/play?v=0"); expect(wrapper.get("a").attributes("href")).toContain("/download");

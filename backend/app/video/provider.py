@@ -8,6 +8,7 @@ import httpx
 
 from app.video.network import https_url
 from app.video.repository import VideoError
+from app.video.errors import failure_details, failure_summary
 
 TASKS_PATH = "/api/v3/contents/generations/tasks"
 
@@ -57,24 +58,36 @@ class VideoProvider:
         raise VideoError("video_network", "视频查询重试耗尽", 502)
 
     @staticmethod
-    def json(response):
+    def json(response, key=None, stage="query"):
         if response.status_code >= 400:
             code = "video_auth" if response.status_code in (401, 403) else "video_upstream_http"
-            raise VideoError(code, f"视频服务返回 HTTP {response.status_code}", response.status_code if response.status_code in (400,401,403,404,422,429) else 502)
+            details = VideoProvider.error_details(response, key, stage)
+            raise VideoError(code, failure_summary(details), response.status_code if response.status_code in (400,401,403,404,422,429) else 502, details)
         try:
             data = response.json()
             if not isinstance(data, dict): raise ValueError()
             return data
         except ValueError: raise VideoError("video_response_invalid", "视频服务响应格式无效", 502) from None
 
+    @staticmethod
+    def error_details(response, key, stage):
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        return failure_details(data, stage, secret=key, http_status=response.status_code,
+                               request_id=response.headers.get("x-request-id"))
+
     async def create(self, key, payload):
         response = await self.request("POST", TASKS_PATH, key, payload)
-        if 400 <= response.status_code < 500: raise VideoError("video_submit_rejected", f"视频提交被拒绝（HTTP {response.status_code}），请检查密钥、额度和参数", response.status_code)
+        if 400 <= response.status_code < 500:
+            details = self.error_details(response, key, "submission")
+            raise VideoError("video_submit_rejected", failure_summary(details), response.status_code, details)
         if response.status_code >= 300: raise VideoError("video_submission_unknown", "视频提交结果不确定，请核对控制台，不要自动重新生成", 502)
-        return self.json(response)
+        return self.json(response, key, "submission")
 
     async def query(self, key, task_id, deadline=None):
-        return self.json(await self.request("GET", TASKS_PATH + "/" + quote(task_id, safe=""), key, deadline=deadline))
+        return self.json(await self.request("GET", TASKS_PATH + "/" + quote(task_id, safe=""), key, deadline=deadline), key)
 
     async def content_url(self, key, task_id, deadline=None):
         data = await self.query(key, task_id, deadline)
@@ -84,5 +97,5 @@ class VideoProvider:
         return https_url(url)
 
     async def test_key(self, key):
-        data = self.json(await self.request("GET", "/v1/models", key))
+        data = self.json(await self.request("GET", "/v1/models", key), key)
         return {"connected": True, "models": [item["id"] for item in data.get("data", []) if isinstance(item, dict) and isinstance(item.get("id"), str)], "message": "已通过非付费模型查询验证；具体模型权限及额度仍以上游为准"}

@@ -7,11 +7,25 @@ import pytest
 from app.video.capabilities import VideoCatalog, bundled_models, live_model, parse_model_capabilities
 from app.video.provider import VideoProvider
 from app.video.repository import VideoError
+from app.video.errors import failure_details, failure_summary
 from app.video.schemas import VideoTaskCreate
 from app.video.service import VideoService
 from app.config import Settings
 KEY = "video-secret"
 ROOT = "https://direct.beibeihai.xyz"
+
+def test_failure_details_preserve_upstream_code_without_guessing_reason():
+    details = failure_details({"id": "task-1", "status": "failed", "error": {"code": "upstream_generation_failed", "message": "Upstream video generation failed"}}, "generation", secret=KEY)
+    assert details["upstream_code"] == "upstream_generation_failed"
+    assert details["reason_provided"] is False
+    assert "未提供具体失败原因" in details["suggestion"]
+    assert "错误码：upstream_generation_failed" in failure_summary(details, "failed")
+
+def test_failure_details_redact_key_and_urls():
+    details = failure_details({"error": {"code": "bad_input", "message": f"key={KEY} https://cdn.example/signed?token=abc"}}, "submission", secret=KEY, http_status=422)
+    assert KEY not in str(details)
+    assert "https://" not in str(details)
+    assert details["reason_provided"] is True
 def settings(): return SimpleNamespace(video_api_base_url=ROOT, video_poll_interval=0.001)
 def model_response(requests):
     def respond(request):

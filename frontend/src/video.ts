@@ -10,7 +10,8 @@ export type VideoFeatures = { api_ready?: boolean; assets_ready: boolean; storag
 export type VideoKey = { id: number; alias: string; model: string; api_key_configured: boolean };
 export type VideoHistory = { id: number; prompt: string; model: string; status: string; upstream_status?: string | null; duration: number; resolution: string; ratio: string; created_at: string };
 export type VideoResult = { id: number; stored: number; filename: string; byte_size: number | null; duration_seconds: number | null; play_url: string; download_url: string };
-export type VideoTask = VideoHistory & { started_at?: string | null; completed_at?: string | null; updated_at?: string | null; project_id: number; request_id: string; api_key_config_id: number | null; upstream_task_id: string | null; progress: number | null; tracking_abandoned: number; error_message: string | null; error_code: string | null; materials: VideoMaterial[]; results: VideoResult[] };
+export type VideoErrorDetails = { stage?: string; upstream_code?: string; upstream_message?: string; parameter?: string; upstream_request_id?: string; upstream_task_id?: string; http_status?: number; reason_provided?: boolean; suggestion?: string };
+export type VideoTask = VideoHistory & { started_at?: string | null; completed_at?: string | null; updated_at?: string | null; project_id: number; request_id: string; api_key_config_id: number | null; upstream_task_id: string | null; progress: number | null; tracking_abandoned: number; error_message: string | null; error_code: string | null; error_details?: VideoErrorDetails | null; materials: VideoMaterial[]; results: VideoResult[] };
 export type VideoRequestState = { state: "missing" | "closed" | "accepted"; task: VideoTask | null };
 export type ApiFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export const materialLabels: Record<MaterialType, string> = { image: "图片", video: "视频", audio: "音频" };
