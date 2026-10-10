@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.vue";
 
 const TEST_CAPABILITIES = [
-  { provider_type: "gpt", model: "gpt-image-2", label: "GPT Image 2", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }, { value: "2048x2048", label: "2K 正方形" }, { value: "2048x1152", label: "2K 横向" }, { value: "1152x2048", label: "2K 纵向" }, { value: "3840x2160", label: "4K 横向" }, { value: "2160x3840", label: "4K 纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
+  { provider_type: "gpt", model: "gpt-image-2", label: "GPT Image 2", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "1K 正方形" }, { value: "2048x2048", label: "2K 正方形" }, { value: "2048x1152", label: "2K 横向" }, { value: "1152x2048", label: "2K 纵向" }, { value: "3840x2160", label: "4K 横向" }, { value: "2160x3840", label: "4K 纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
   { provider_type: "gpt", model: "gpt-image-1.5", label: "GPT Image 1.5", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
   { provider_type: "gpt", model: "gpt-image-1", label: "GPT Image 1", max_output_count: 10, max_reference_images: 16, sizes: [{ value: "auto", label: "自动" }, { value: "1024x1024", label: "正方形" }, { value: "1536x1024", label: "横向" }, { value: "1024x1536", label: "纵向" }], aspect_ratios: [], resolutions: [], qualities: [{ value: "auto", label: "自动" }, { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" }], output_formats: ["png", "jpeg", "webp"], backgrounds: ["auto", "opaque", "transparent"], supports_output_compression: true, moderation_levels: ["auto", "low"], default_size: "auto", default_quality: "auto" },
   { provider_type: "gemini", model: "gemini-3.1-flash-image", label: "Gemini", max_output_count: 4, max_reference_images: 14, sizes: [], aspect_ratios: ["1:1", "2:3", "3:2", "16:9", "9:16"], resolutions: ["1K", "2K", "4K"], qualities: [], output_formats: [], backgrounds: [], supports_output_compression: false, moderation_levels: [], default_aspect_ratio: "1:1", default_resolution: "1K", default_quality: "auto" },
@@ -503,20 +503,31 @@ describe("Pictora workspace", () => {
   });
 
   it("shows native GPT image sizes without a separate resolution", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/api/auth/me")) return jsonResponse({ username: "alice", api_key_configured: false });
+      if (url.endsWith("/api/providers")) return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: ["gpt-image-2"] }] });
+      if (url.endsWith("/api/settings")) return jsonResponse({ provider_name: "北海AI", model: "gpt-image-2", api_key_configured: false });
+      if (url.endsWith("/api/history")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
     const wrapper = mount(App);
     await flushPromises();
 
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
 
     const menu = wrapper.get("[data-parameter-menu='size']");
-    expect(menu.findAll(".parameter-option")).toHaveLength(4);
+    expect(menu.findAll(".parameter-option")).toHaveLength(7);
     expect(menu.text()).toContain("自动");
-    expect(menu.text()).toContain("正方形");
-    expect(menu.text()).toContain("横向");
-    expect(menu.text()).toContain("纵向");
+    expect(menu.text()).toContain("1K 正方形");
+    expect(menu.text()).toContain("2K 正方形");
+    expect(menu.text()).toContain("2K 横向");
+    expect(menu.text()).toContain("2K 纵向");
+    expect(menu.text()).toContain("4K 横向");
+    expect(menu.text()).toContain("4K 纵向");
     expect(menu.text()).toContain("1024x1024");
-    expect(menu.text()).toContain("1536x1024");
-    expect(menu.text()).toContain("1024x1536");
+    expect(menu.text()).not.toContain("1536x1024");
+    expect(menu.text()).not.toContain("1024x1536");
     expect(menu.findAll(".parameter-option.is-selected")).toHaveLength(1);
     expect(menu.find(".parameter-option.is-selected svg").exists()).toBe(true);
 
@@ -692,7 +703,7 @@ describe("Pictora workspace", () => {
         return jsonResponse({ providers: [{ id: "compatible", label: "北海AI", models: [] }] });
       }
       if (url.endsWith("/api/settings")) {
-        return jsonResponse({ model: "gpt-image-1.5", api_key_configured: true });
+        return jsonResponse({ model: "gpt-image-2", api_key_configured: true });
       }
       if (url.endsWith("/api/history")) return jsonResponse([]);
       throw new Error(`Unexpected request: ${url} ${init?.method ?? "GET"}`);
@@ -701,7 +712,7 @@ describe("Pictora workspace", () => {
     const wrapper = mount(App);
     await flushPromises();
     await wrapper.get("[data-parameter-trigger='size']").trigger("click");
-    await wrapper.get("[data-parameter-option='1536x1024']").trigger("click");
+    await wrapper.get("[data-parameter-option='2048x1152']").trigger("click");
     await wrapper.get(".prompt-row textarea").setValue("竖版海报");
     await wrapper.get(".primary-action").trigger("click");
     await flushPromises();
@@ -711,7 +722,7 @@ describe("Pictora workspace", () => {
     );
     expect(generateRequest).toBeDefined();
     expect(JSON.parse(String(generateRequest?.[1]?.body))).toMatchObject({
-      size: "1536x1024",
+      size: "2048x1152",
       output_format: "png",
       background: "auto",
       moderation: "auto",

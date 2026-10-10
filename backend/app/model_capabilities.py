@@ -65,7 +65,8 @@ STANDARD_GPT_SIZES = (
     CapabilityOption(value="1024x1536", label="纵向"),
 )
 GPT_IMAGE_2_SIZES = (
-    *STANDARD_GPT_SIZES,
+    CapabilityOption(value="auto", label="自动"),
+    CapabilityOption(value="1024x1024", label="1K 正方形"),
     CapabilityOption(value="2048x2048", label="2K 正方形"),
     CapabilityOption(value="2048x1152", label="2K 横向"),
     CapabilityOption(value="1152x2048", label="2K 纵向"),
