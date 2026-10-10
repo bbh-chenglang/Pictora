@@ -5,7 +5,7 @@ import VideoSettings from "./components/VideoSettings.vue";
 import VideoTaskCard from "./components/VideoTaskCard.vue";
 import VideoProjectSidebar from "./components/VideoProjectSidebar.vue";
 import App from "./App.vue";
-import { VideoApiError, formatVideoElapsed, videoElapsedMs, videoTimestamp, materialIssue, videoJson, videoValidation, type VideoFeatures, type VideoModel, type VideoTask } from "./video";
+import { VideoApiError, formatVideoElapsed, videoElapsedMs, videoTimestamp, materialIssue, videoJson, videoValidation, type MaterialType, type VideoFeatures, type VideoModel, type VideoTask } from "./video";
 
 const baseModel: VideoModel = {
   id: "sd-2.0-J2", default_duration: 5, default_resolution: "720p", default_ratio: "16:9",
@@ -62,6 +62,21 @@ beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { for (const w of wrappers.splice(0)) w.unmount(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/"); });
 
 describe("video capability validation", () => {
+  it.each([
+    ["seedance-2.0-933-720P（秒）", "image", 9],
+    ["seedance-2.0-933-720P（秒）", "video", 3],
+    ["seedance-2.0-933-720P（秒）", "audio", 3],
+    ["seedance-2.5-301010-1K（秒）", "image", 30],
+    ["seedance-2.5-301010-1K（秒）", "video", 10],
+    ["seedance-2.5-301010-1K（秒）", "audio", 10],
+  ] as const)("enforces the catalog limit for %s %s", (id, type, limit) => {
+    const model: VideoModel = { ...baseModel, id, reference_limits: id.includes("301010")
+      ? { image: 30, video: 10, audio: 10 } : { image: 9, video: 3, audio: 3 } };
+    const materials = Array.from({ length: limit }, (_, i) => ({ type, name: type + i, url: "https://example.com/" + type + i }));
+    expect(materialIssue(model, materials[0], materials)).toBe("");
+    const extra = { type, name: type + limit, url: "https://example.com/" + type + limit };
+    expect(materialIssue(model, extra, [...materials, extra])).toContain("上限（" + limit + "）");
+  });
   it("validates discrete durations and the exact 2k default", () => {
     expect(videoValidation(models[1], 15, "2k", "16:9", [])).toEqual([]);
     expect(videoValidation(models[1], 15, "720p", "16:9", [])).not.toEqual([]);
@@ -99,6 +114,33 @@ describe("video capability validation", () => {
 });
 
 describe("independent video workspace", () => {
+  it("shows confirmed catalog limits and disables Mini video references", async () => {
+    const { wrapper, api } = await workspace();
+    const fallback = api.getMockImplementation()!;
+    const standard: VideoModel = { ...baseModel, id: "seedance-2.0-933-720P（秒）", durations_by_resolution: { "480p": [5], "720p": [5] } };
+    const expanded: VideoModel = { ...standard, id: "seedance-2.5-301010-1K（秒）", reference_limits: { image: 30, video: 10, audio: 10 } };
+    const mini: VideoModel = { ...standard, id: "seedance-2.0-mini-903-720P（次）", default_resolution: "480p", reference_limits: { image: 9, video: 0, audio: 3 } };
+    api.mockImplementation(async (url, init) => String(url).split("?")[0].endsWith("/api/videos/models")
+      ? response({ models: [standard, expanded, mini], features: ready }) : fallback(url, init));
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh();
+    await wrapper.get('[data-field="video-model"]').setValue(standard.id);
+    expect(wrapper.get(".video-capabilities").text()).toContain("图片参考 · 最多 9 个");
+    expect(wrapper.get(".video-capabilities").text()).toContain("视频参考 · 最多 3 个");
+    expect(wrapper.get(".video-capabilities").text()).toContain("音频参考 · 最多 3 个");
+    expect(wrapper.get(".video-capabilities").text()).not.toContain("尚未确认");
+    expect(wrapper.findAll('[data-field="video-resolution"] option').map(o => o.text())).toEqual(["480p", "720p"]);
+    for (const type of ["image", "video", "audio"] as MaterialType[]) {
+      expect(wrapper.get('[data-field="video-material-type"] option[value="' + type + '"]').attributes("disabled")).toBeUndefined();
+    }
+    await wrapper.get('[data-field="video-model"]').setValue(expanded.id);
+    expect(wrapper.get(".video-capabilities").text()).toContain("图片参考 · 最多 30 个");
+    expect(wrapper.get(".video-capabilities").text()).toContain("视频参考 · 最多 10 个");
+    expect(wrapper.get(".video-capabilities").text()).toContain("音频参考 · 最多 10 个");
+    await wrapper.get('[data-field="video-model"]').setValue(mini.id);
+    expect(wrapper.get(".video-capabilities").text()).toContain("视频参考 · 不支持");
+    expect(wrapper.get('[data-field="video-material-type"] option[value="video"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get<HTMLSelectElement>('[data-field="video-resolution"]').element.value).toBe("480p");
+  });
   it("refreshes the upstream catalog and keeps a retired model draft visible until changed", async () => {
     const { wrapper, api } = await workspace();
     await wrapper.get('[data-field="video-prompt"]').setValue("keep this draft");
