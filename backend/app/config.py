@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     r2_bucket: str = ""
     r2_prefix: str = "pictora/generated"
 
-    video_api_base_url: str = "https://api.beibeihai.xyz"
+    video_api_base_url: str = "https://sub.beibeihai.xyz"
     video_public_base_url: str = ""
     video_asset_signing_secret: SecretStr = SecretStr("")
     video_poll_interval: float = 3

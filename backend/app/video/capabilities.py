@@ -3,45 +3,99 @@ import time
 import httpx
 from app.video.repository import VideoError
 
-# Verified from the customer contract (2026-10-06); unknown != unsupported or unlimited.
+# Reference counts verified against /api/pricing descriptions on 2026-10-08.
+# Missing reference types remain unknown, rather than unsupported or unlimited.
 RULES = {
- 'grok-1.5': (7,None,None), 'minimax-h3': (9,3,3),
- 'sd-2.0-900-J3': (9,None,None), 'sd-2.0-933-720-fast-原生真人': (9,3,3),
- 'sd-2.0-J1': (9,0,3), 'sd-2.0-J2': (9,3,3), 'sd-2.5-J2': (30,10,10),
- 'seedance-2.0-900': (9,None,None), 'seedance-2.5-101010': (10,0,10),
- 'seedance-2.5-301010': (30,0,10), 'seedance-2.5-900': (9,None,None),
+    'sd-2.0-J2': (9, 3, 3),
+    'sd-2.0-fast-803-J3': (8, None, 3),
+    'sd-2.5-J2': (30, 10, 10),
+    'grok-1.5': (7, None, None),
+    'minimax-h3': (9, 3, 3),
+    'sd-2.0-933-720-fast-原生真人': (9, 3, 3),
+    'sd-2.0-J1': (9, 0, 3),
 }
 
+def reference_capabilities(name):
+    return {
+        'reference_limits': dict(zip(('image', 'video', 'audio'), RULES.get(name, (None, None, None)))),
+        'max_total_materials': 10 if name == 'minimax-h3' else None,
+        'max_video_duration_seconds': 15 if name == 'minimax-h3' else None,
+    }
+
 def bundled_models():
-    result=[]
-    for name,limits in RULES.items():
-        low,high,default=4,30,5
-        if name=='grok-1.5': low,high=3,15
-        elif name=='minimax-h3': high,default=15,15
-        elif name=='sd-2.0-J1': high,default=15,15
-        elif name=='sd-2.0-J2': low,high=5,15
-        elif name=='sd-2.5-J2': low,default=5,30
-        elif name in ('seedance-2.0-900','sd-2.0-933-720-fast-原生真人'): high=15
-        elif name=='sd-2.0-900-J3': default=10
-        durations=[10,15] if name=='sd-2.0-900-J3' else list(range(low,high+1))
-        resolutions=['2k'] if name=='minimax-h3' else (['480p','720p','1080p'] if name=='sd-2.5-J2' else ['720p'])
-        result.append({'id':name,'default_duration':default,'default_resolution':'2k' if name=='minimax-h3' else '720p','default_ratio':'16:9','ratios':['9:16','1:1','3:4','4:3','16:9'] if name=='minimax-h3' else ['16:9','9:16','1:1'],'durations_by_resolution':{r:durations for r in resolutions},'reference_limits':dict(zip(('image','video','audio'),limits)),'max_total_materials':10 if name=='minimax-h3' else None,'max_video_duration_seconds':15 if name=='minimax-h3' else None})
+    # Offline snapshot of the seven public video models, including exact defaults.
+    presets = {
+        'sd-2.0-J2': (5, 15, 5, ('720p',)),
+        'sd-2.0-fast-803-J3': (4, 12, 12, ('720p', '1080p', '2k')),
+        'sd-2.5-J2': (5, 30, 30, ('480p', '720p', '1080p')),
+        'grok-1.5': (3, 15, 5, ('720p',)),
+        'minimax-h3': (4, 15, 15, ('2k',)),
+        'sd-2.0-933-720-fast-原生真人': (4, 15, 5, ('720p',)),
+        'sd-2.0-J1': (4, 15, 15, ('720p',)),
+    }
+    result = []
+    for name, (low, high, default, resolutions) in presets.items():
+        result.append({
+            'id': name,
+            'default_duration': default,
+            'default_resolution': '2k' if name == 'minimax-h3' else '720p',
+            'default_ratio': '16:9',
+            'ratios': ['9:16', '1:1', '3:4', '4:3', '16:9'] if name == 'minimax-h3' else ['16:9', '9:16', '1:1'],
+            'durations_by_resolution': {r: list(range(low, high + 1)) for r in resolutions},
+            **reference_capabilities(name),
+        })
     return result
+
+def live_model(row):
+    if not isinstance(row, dict):
+        return None
+    name, pricing = row.get('model_name'), row.get('video_pricing')
+    if not isinstance(name, str) or not name.strip() or len(name) > 160 or not isinstance(pricing, dict):
+        return None
+    endpoints = row.get('supported_endpoint_types')
+    if endpoints is not None and (not isinstance(endpoints, list) or 'openai-video' not in endpoints):
+        return None
+    tiers = {}
+    for tier in pricing.get('tiers', []) if isinstance(pricing.get('tiers'), list) else []:
+        if not isinstance(tier, dict):
+            continue
+        duration, resolution = tier.get('duration'), tier.get('resolution')
+        if type(duration) is int and 0 < duration <= 300 and isinstance(resolution, str) and resolution.strip() and len(resolution) <= 32:
+            tiers.setdefault(resolution, set()).add(duration)
+    ratios = pricing.get('ratios')
+    default_resolution = pricing.get('default_resolution')
+    default_duration = pricing.get('default_duration')
+    default_ratio = pricing.get('default_ratio', '16:9')
+    if (not isinstance(default_resolution, str) or type(default_duration) is not int
+            or default_duration not in tiers.get(default_resolution, set())
+            or not isinstance(ratios, list) or not ratios
+            or not all(isinstance(r, str) and r.strip() and len(r) <= 32 for r in ratios)
+            or default_ratio not in ratios):
+        return None
+    return {
+        'id': name,
+        'default_duration': default_duration,
+        'default_resolution': default_resolution,
+        'default_ratio': default_ratio,
+        'ratios': list(dict.fromkeys(ratios)),
+        'durations_by_resolution': {r: sorted(ds) for r, ds in tiers.items()},
+        **reference_capabilities(name),
+    }
 
 class VideoCatalog:
     def __init__(self,base_url,transport=None):
         self.base_url=base_url.rstrip('/')
         self.transport=transport
         self.models=bundled_models()
-        self.source='bundled_snapshot_2026-10-06'
+        self.source='bundled_snapshot_2026-10-08'
         self.expires=0.0
         self.lock=asyncio.Lock()
 
-    async def get(self):
-        if time.monotonic()<self.expires:
+    async def get(self, force=False):
+        if not force and time.monotonic()<self.expires:
             return self.models
         async with self.lock:
-            if time.monotonic()<self.expires:
+            if not force and time.monotonic()<self.expires:
                 return self.models
             try:
                 async with httpx.AsyncClient(transport=self.transport,timeout=15,follow_redirects=False,trust_env=False) as client:
@@ -51,22 +105,11 @@ class VideoCatalog:
                 if not isinstance(data,dict) or not isinstance(data.get('data'),list) or data.get('success') is False:
                     raise ValueError('Invalid catalog')
                 fresh=[]
+                seen=set()
                 for row in data['data']:
-                    name=row.get('model_name')
-                    pricing=row.get('video_pricing')
-                    if name not in RULES or not isinstance(pricing,dict): continue
-                    tiers={}
-                    for tier in pricing.get('tiers',[]):
-                        duration,resolution=tier.get('duration'),tier.get('resolution')
-                        if type(duration) is int and 0<duration<=300 and resolution in ('480p','720p','1080p','2k'):
-                            tiers.setdefault(resolution,set()).add(duration)
-                    ratios=pricing.get('ratios',[])
-                    default_resolution=pricing.get('default_resolution')
-                    default_duration=pricing.get('default_duration')
-                    if not tiers or default_duration not in tiers.get(default_resolution,set()) or not ratios or not all(isinstance(r,str) for r in ratios): continue
-                    model=next(m for m in bundled_models() if m['id']==name)
-                    model.update(default_duration=default_duration,default_resolution=default_resolution,default_ratio=pricing.get('default_ratio','16:9'),ratios=ratios,durations_by_resolution={r:sorted(ds) for r,ds in tiers.items()})
-                    if model['default_ratio'] not in ratios: continue
+                    model=live_model(row)
+                    if model is None or model['id'] in seen: continue
+                    seen.add(model['id'])
                     fresh.append(model)
                 if not fresh: raise ValueError('Empty catalog')
                 self.models=fresh
@@ -74,6 +117,8 @@ class VideoCatalog:
                 self.expires=time.monotonic()+600
             except (httpx.HTTPError,ValueError,TypeError,AttributeError):
                 # Preserve the last verified snapshot; never expand unknown capabilities.
+                if self.source == 'live_catalog':
+                    self.source = 'cached_live_catalog'
                 self.expires=time.monotonic()+60
         return self.models
 

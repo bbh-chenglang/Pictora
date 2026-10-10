@@ -100,5 +100,4 @@ class VideoProvider:
 
     async def test_key(self,key):
         data=self.json(await self.request('GET','/v1/models',key))
-        from app.video.capabilities import RULES
-        return {'connected':True,'models':[item['id'] for item in data.get('data',[]) if isinstance(item,dict) and item.get('id') in RULES],'message':'已通过非付费模型查询验证；具体模型权限及额度仍以上游为准'}
+        return {'connected':True,'models':[item['id'] for item in data.get('data',[]) if isinstance(item,dict) and isinstance(item.get('id'),str)],'message':'已通过非付费模型查询验证；具体模型权限及额度仍以上游为准'}

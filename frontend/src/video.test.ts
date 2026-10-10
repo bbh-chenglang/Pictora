@@ -18,7 +18,7 @@ const models: VideoModel[] = [
   { ...baseModel, id: "sd-2.0-900-J3", default_duration: 10, durations_by_resolution: { "720p": [10, 15] }, reference_limits: { image: 9, video: null, audio: null } },
   { ...baseModel, id: "seedance-2.5-101010", reference_limits: { image: 10, video: 0, audio: 10 } },
 ];
-const ready: VideoFeatures = { assets_ready: true, storage_configured: true, storage_ready: true, media_tools_ready: true, catalog_source: "mock", api_base_url: "https://api.beibeihai.xyz", notes: [] };
+const ready: VideoFeatures = { assets_ready: true, storage_configured: true, storage_ready: true, media_tools_ready: true, catalog_source: "mock", api_base_url: "https://sub.beibeihai.xyz", notes: [] };
 const task = (id = 1, overrides: Partial<VideoTask> = {}): VideoTask => ({
   id, project_id: 1, prompt: "video prompt", model: "sd-2.0-J2", status: "queued", duration: 5, resolution: "720p", ratio: "16:9", created_at: "2026-10-06T00:00:00Z",
   request_id: "e4ae7951-8f2c-4781-a2c0-3c8b445d708d", api_key_config_id: 11, upstream_task_id: null, upstream_status: null, progress: null,
@@ -31,7 +31,7 @@ function server(features = ready) {
   const tasks: VideoTask[] = [];
   const api = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
-    if (url.endsWith("/api/videos/models")) return response({ models, features });
+    if (url.split("?")[0].endsWith("/api/videos/models")) return response({ models, features });
     if (url.endsWith("/api/videos/readiness")) return response(features);
     if (url.endsWith("/api/settings/video-api-keys")) return response({ configs: [{ id: 11, alias: "视频配置", model: baseModel.id, api_key_configured: true }], active_config_id: 11 });
     if (url.includes("/api/videos/tasks?") || url.match(/\/api\/videos\/tasks\/\d+$/)) return response(url.includes("?") ? tasks : tasks[0]);
@@ -99,6 +99,22 @@ describe("video capability validation", () => {
 });
 
 describe("independent video workspace", () => {
+  it("refreshes the upstream catalog and keeps a retired model draft visible until changed", async () => {
+    const { wrapper, api } = await workspace();
+    await wrapper.get('[data-field="video-prompt"]').setValue("keep this draft");
+    const synced: VideoModel = { ...baseModel, id: "sd-2.0-fast-803-J3", default_duration: 12, durations_by_resolution: { "720p": [4, 12], "1080p": [4, 12], "2k": [4, 12] }, reference_limits: { image: 8, video: null, audio: 3 } };
+    const fallback = api.getMockImplementation()!;
+    api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/models?refresh=true")
+      ? response({ models: [synced], features: ready }) : fallback(url, init));
+    await button(wrapper, "刷新").trigger("click"); await flushPromises();
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("keep this draft");
+    expect(wrapper.get('[data-field="video-model"]').text()).toContain("已下线或暂不可用");
+    expect(wrapper.get('[data-action="generate-video"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-field="video-model"]').setValue(synced.id);
+    expect(wrapper.get<HTMLSelectElement>('[data-field="video-duration"]').element.value).toBe("12");
+    expect(wrapper.findAll('[data-field="video-resolution"] option').map(o => o.text())).toEqual(["720p", "1080p", "2k"]);
+    expect(api.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
   it("keeps the two-pane empty state actionable without changing the draft or submitting", async () => {
     const { wrapper, api } = await workspace();
     expect(wrapper.find(".video-stage .video-empty").exists()).toBe(true);
@@ -275,6 +291,7 @@ describe("video task and Key controls", () => {
       if (init?.method && init.method !== "GET") return response({}); return fallback(url, init);
     });
     const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
+    expect(wrapper.text()).toContain("默认服务根地址：https://sub.beibeihai.xyz");
     await button(wrapper, "非付费连接测试").trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("未生成视频");
     await wrapper.get('[data-action="add-video-key"]').trigger("click");
@@ -286,6 +303,34 @@ describe("video task and Key controls", () => {
     expect(JSON.parse(String(patch?.[1]?.body))).not.toHaveProperty("api_key");
     expect(api.mock.calls.some(([url]) => String(url).includes("/api/settings/api-keys"))).toBe(false);
     await button(wrapper, "删除").trigger("click"); expect(wrapper.text()).toContain("确认删除此视频 Key");
+  });
+  it("manually syncs settings models and saves a newly discovered default", async () => {
+    const { api } = server(); const fallback = api.getMockImplementation()!;
+    const discovered = { ...baseModel, id: "new-video-model" };
+    api.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/api/videos/models?refresh=true")) return response({ models: [discovered], features: { ...ready, catalog_source: "live_catalog" } });
+      if (init?.method === "POST") return response({});
+      return fallback(url, init);
+    });
+    const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
+    await wrapper.get('[data-action="sync-video-models"]').trigger("click"); await flushPromises();
+    expect(wrapper.text()).toContain("已同步 1 个视频模型");
+    await wrapper.get('[data-action="add-video-key"]').trigger("click");
+    expect(wrapper.get<HTMLSelectElement>("form select").element.value).toBe(discovered.id);
+    await wrapper.get("form input[maxlength='80']").setValue("Synced Key");
+    await wrapper.get('form input[type="password"]').setValue("secret-new");
+    await wrapper.get(".api-config-form").trigger("submit"); await flushPromises();
+    const create = api.mock.calls.find(([url, init]) => String(url).endsWith("video-api-keys") && init?.method === "POST");
+    expect(JSON.parse(String(create?.[1]?.body)).model).toBe(discovered.id);
+  });
+  it("reports a cached catalog when upstream synchronization fails", async () => {
+    const { api } = server(); const fallback = api.getMockImplementation()!;
+    api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/models?refresh=true")
+      ? response({ models, features: { ...ready, catalog_source: "cached_live_catalog" } }) : fallback(url, init));
+    const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
+    await wrapper.get('[data-action="sync-video-models"]').trigger("click"); await flushPromises();
+    expect(wrapper.text()).toContain("上游目录暂不可用，保留已有模型目录");
+    expect(api.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
   it("shows video-only project history and selects it without image history", async () => {
     const wrapper = keep(mount(VideoProjectSidebar, { props: { selectedProjectId: 1, selectedTaskId: null, projects: [{ id: 1, name: "project", history_count: 1, history: [{ id: 99, prompt: "image record", kind: "generate", created_at: "2026-10-06", status: "completed", provider: "gpt", model: "gpt-image-1", detail: "auto", image_count: 1 }], video_history_count: 1, video_history: [task(8)] }] } }));

@@ -101,7 +101,7 @@ async def fake_probe(file, kind):
 
 
 def snapshot_catalog():
-    catalog=VideoCatalog('https://api.beibeihai.xyz')
+    catalog=VideoCatalog('https://sub.beibeihai.xyz')
     catalog.expires=float('inf')
     return catalog
 
@@ -180,7 +180,7 @@ async def test_catalog_uses_live_discrete_tiers_and_preserves_verified_on_failur
         calls.append(req)
         if len(calls)>1: return httpx.Response(503)
         return httpx.Response(200,json={'data':[{'model_name':'sd-2.0-J2','video_pricing':{'default_duration':10,'default_resolution':'1080p','default_ratio':'1:1','ratios':['1:1'],'tiers':[{'duration':10,'resolution':'1080p'},{'duration':15,'resolution':'1080p'}]}}]})
-    catalog=VideoCatalog('https://api.beibeihai.xyz',httpx.MockTransport(respond))
+    catalog=VideoCatalog('https://sub.beibeihai.xyz',httpx.MockTransport(respond))
     model=(await catalog.get())[0]; assert model['default_resolution']=='1080p' and model['durations_by_resolution']=={'1080p':[10,15]}
     catalog.expires=0
     assert (await catalog.get())[0]==model
@@ -427,6 +427,42 @@ async def test_media_redirects_are_anonymous_and_bounded(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('configured_root', [None, 'https://video-relay.example'])
+async def test_provider_endpoints_use_default_root_and_environment_override(monkeypatch, configured_root):
+    if configured_root is None:
+        monkeypatch.delenv('VIDEO_API_BASE_URL', raising=False)
+    else:
+        monkeypatch.setenv('VIDEO_API_BASE_URL', configured_root)
+    root = configured_root or 'https://sub.beibeihai.xyz'
+    settings = Settings(_env_file=None)
+    assert settings.video_api_base_url == root
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.headers['authorization'] == 'Bearer test-video-key'
+        if request.url.path == '/v1/models':
+            return httpx.Response(200, json={'data': [{'id': 'sd-2.0-J2'}]})
+        if request.url.path == '/v1/videos/remote/content':
+            return httpx.Response(302, headers={'Location': '/download/remote.mp4'})
+        return httpx.Response(200, json={'id': 'remote', 'status': 'queued'})
+
+    provider = VideoProvider(settings, httpx.MockTransport(respond))
+    assert (await provider.test_key('test-video-key'))['models'] == ['sd-2.0-J2']
+    payload = {'model': 'sd-2.0-J2', 'prompt': 'test scene'}
+    assert (await provider.create('test-video-key', payload))['id'] == 'remote'
+    assert (await provider.query('test-video-key', 'remote'))['id'] == 'remote'
+    assert await provider.content_url('test-video-key', 'remote') == root + '/download/remote.mp4'
+    assert [(call.method, str(call.url)) for call in calls] == [
+        ('GET', root + '/v1/models'),
+        ('POST', root + '/v1/video/generations'),
+        ('GET', root + '/v1/videos/tasks/remote'),
+        ('GET', root + '/v1/videos/remote/content'),
+    ]
+    assert json.loads(calls[1].content) == payload
+
+
+@pytest.mark.asyncio
 async def test_provider_get_retries_and_post_never_retries(context):
     calls=[]
     def respond(request):
@@ -440,7 +476,7 @@ async def test_provider_get_retries_and_post_never_retries(context):
     with pytest.raises(VideoError): await provider.create('private-key',{'model':'sd-2.0-J2'})
     assert len([r for r in calls if r.method=='POST'])==1
     assert retry_after('0',3)==0 and retry_after('bad',3)==3
-    with pytest.raises(VideoError): VideoProvider(Settings(_env_file=None,video_api_base_url='https://api.beibeihai.xyz/v1'))
+    with pytest.raises(VideoError): VideoProvider(Settings(_env_file=None,video_api_base_url='https://sub.beibeihai.xyz/v1'))
 
 
 @pytest.mark.asyncio
@@ -523,6 +559,43 @@ async def test_api_202_secret_masks_auth_signed_expiry_range_and_key_test(contex
 
 
 @pytest.mark.asyncio
+async def test_api_sync_key_settings_and_connection_test_share_dynamic_catalog(context):
+    calls = []
+    def upstream(req):
+        calls.append(req)
+        assert req.url.host == 'sub.beibeihai.xyz'
+        if req.url.path == '/api/pricing':
+            return httpx.Response(200, json={'data': [{
+                'model_name': 'new-video-model', 'supported_endpoint_types': ['openai-video'],
+                'video_pricing': {'default_duration': 10, 'default_resolution': '4k', 'default_ratio': '1:1',
+                                  'ratios': ['1:1'], 'tiers': [{'duration': 10, 'resolution': '4k'}]},
+            }]})
+        assert req.url.path == '/v1/models' and req.headers['authorization'] == 'Bearer secret-video-key'
+        return httpx.Response(200, json={'data': [{'id': 'new-video-model'}, {'id': 'gpt-image-2'}, {'id': 'sd-2.0-J2'}]})
+    transport = httpx.MockTransport(upstream)
+    context.service.catalog = VideoCatalog('https://sub.beibeihai.xyz', transport)
+    context.service.provider = VideoProvider(context.settings, transport)
+    app.dependency_overrides[get_current_user] = lambda: StoredSessionUser(id=1, username='alice', email='alice@example.com', is_admin=False, api_key='', model='gpt-image-1')
+    app.dependency_overrides[get_video_service] = lambda: context.service
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            assert (await client.get('/api/videos/models')).json()['models'][0]['id'] == 'new-video-model'
+            await client.get('/api/videos/models')
+            assert len(calls) == 1
+            assert (await client.get('/api/videos/models?refresh=true')).status_code == 200
+            assert len(calls) == 2
+            created = await client.post('/api/settings/video-api-keys', json={'alias': 'Synced', 'api_key': 'test-secret', 'model': 'new-video-model'})
+            assert created.status_code == 201
+            assert (await client.patch(f'/api/settings/video-api-keys/{context.key}', json={'model': 'new-video-model'})).status_code == 200
+            assert (await client.post(f'/api/settings/video-api-keys/{context.key}/test')).json()['models'] == ['new-video-model']
+            rejected = await client.post('/api/settings/video-api-keys', json={'alias': 'Retired', 'api_key': 'test-secret', 'model': 'sd-2.0-J2'})
+            assert rejected.status_code == 422
+            assert all(call.method == 'GET' for call in calls)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_api_snapshot_is_independent_of_original_history_and_public_route(context):
     history=await context.repository.execute("INSERT INTO history(user_id,project_id,kind,status,prompt,provider,model,detail) VALUES(1,?,'generate','completed','x','gpt','gpt-image-1','auto')",(context.project,))
     image=await context.repository.execute("INSERT INTO history_images(history_id,role,mime_type,filename,position,data) VALUES(?,'generated','image/png','x.png',0,?)",(history,png()))
@@ -588,7 +661,7 @@ async def test_resume_queries_existing_id_during_storage_outage(context):
 
 @pytest.mark.asyncio
 async def test_optional_bad_video_root_does_not_break_service_initialization(context):
-    settings=context.settings.model_copy(update={'video_api_base_url':'https://api.beibeihai.xyz/v1'})
+    settings=context.settings.model_copy(update={'video_api_base_url':'https://sub.beibeihai.xyz/v1'})
     service=VideoService(context.repository,settings,storage=context.storage,catalog=snapshot_catalog(),probe=fake_probe)
     assert not (await service.features())['api_ready']
     with pytest.raises(VideoError,match='根地址'):
@@ -696,13 +769,13 @@ async def test_download_body_closed_when_response_disconnects_before_iteration()
 
 @pytest.mark.asyncio
 async def test_invalid_optional_root_is_never_queried_or_echoed(context):
-    settings=context.settings.model_copy(update={'video_api_base_url':'https://admin:private-value@api.beibeihai.xyz'})
+    settings=context.settings.model_copy(update={'video_api_base_url':'https://admin:private-value@sub.beibeihai.xyz'})
     service=VideoService(context.repository,settings,storage=context.storage,probe=fake_probe)
     assert service.catalog.expires==float('inf')
     features=await service.features()
     assert not features['api_ready'] and features['api_base_url']==''
     assert 'private-value' not in json.dumps(features)
-    assert len(await service.catalog.get())==11
+    assert len(await service.catalog.get())==7
     await service.shutdown()
 
 

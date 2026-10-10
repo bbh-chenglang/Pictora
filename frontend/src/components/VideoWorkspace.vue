@@ -45,14 +45,15 @@ function applyDefaults() { const m = selectedModel.value; if (!m) return; durati
 function changeModel() { applyDefaults(); note.value = ""; }
 function changeKey() { const key = keys.value.find(k => k.id === keyId.value); if (key) modelId.value = key.model; changeModel(); }
 function changeResolution() { if (!durations.value.includes(duration.value)) duration.value = durations.value.includes(selectedModel.value?.default_duration || 0) ? selectedModel.value!.default_duration : durations.value[0] || 5; }
-async function loadConfiguration() {
+async function loadConfiguration(force = false) {
   const version = ++configurationVersion;
   const [catalog, configs] = await Promise.all([
-    videoJson<{ models: VideoModel[]; features: VideoFeatures }>(props.apiFetch, props.apiBase, "/api/videos/models"),
+    videoJson<{ models: VideoModel[]; features: VideoFeatures }>(props.apiFetch, props.apiBase, "/api/videos/models" + (force ? "?refresh=true" : "")),
     videoJson<{ configs: VideoKey[]; active_config_id: number | null }>(props.apiFetch, props.apiBase, "/api/settings/video-api-keys"),
   ]);
   if (disposed || version !== configurationVersion) return;
   models.value = catalog.models; features.value = catalog.features; keys.value = configs.configs; activeKeyId.value = configs.active_config_id;
+  if (force) note.value = catalog.features.catalog_source === "live_catalog" ? "已同步 " + catalog.models.length + " 个视频模型" : "上游目录暂不可用，保留已有模型目录";
   if (!started) { started = true; restoreDraft(); if (!hasDraft()) { keyId.value = configs.active_config_id; applyDefaults(); } }
   if (!keys.value.some(k => k.id === keyId.value)) keyId.value = configs.active_config_id;
 }
@@ -75,7 +76,7 @@ async function loadTasks() {
   } catch (e) { if (!disposed && version === contextVersion) error.value = e instanceof Error ? e.message : "视频任务加载失败"; }
   finally { if (!disposed && version === contextVersion) nextPoll(); }
 }
-async function refresh() { const version = contextVersion; loading.value = true; error.value = ""; try { await loadConfiguration(); if (!disposed) await loadTasks(); } catch (e) { if (!disposed && version === contextVersion) error.value = e instanceof Error ? e.message : "加载失败"; } finally { if (!disposed && version === contextVersion) loading.value = false; } }
+async function refresh(force = false) { const version = contextVersion; loading.value = true; error.value = ""; try { await loadConfiguration(force); if (!disposed) await loadTasks(); } catch (e) { if (!disposed && version === contextVersion) error.value = e instanceof Error ? e.message : "加载失败"; } finally { if (!disposed && version === contextVersion) loading.value = false; } }
 function nextName(type: MaterialType, proposed = "") { if (proposed.trim() && !materials.value.some(m => m.name === proposed.trim())) return proposed.trim(); let i = 1; while (materials.value.some(m => m.name === materialLabels[type] + i)) i++; return materialLabels[type] + i; }
 function addURL() { const m: VideoMaterial = { type: kind.value, url: sourceURL.value.trim(), name: nextName(kind.value, sourceName.value) }; const issue = materialIssue(selectedModel.value, m, [...materials.value, m]); if (issue) { error.value = issue; return; } materials.value.push(m); sourceURL.value = ""; sourceName.value = ""; error.value = ""; }
 async function upload(event: Event) {
@@ -178,7 +179,7 @@ defineExpose({ addHistoryImage, refresh, newDraft });
           <p>让每一个想法，都有自己的镜头。</p>
         </div>
         <div class="video-heading-actions">
-          <button class="secondary-action video-refresh" type="button" :disabled="loading" @click="refresh"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
+          <button class="secondary-action video-refresh" type="button" :disabled="loading" @click="refresh(true)"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
           <button v-if="selectedTaskId" class="secondary-action" type="button" @click="emit('select', null)">全部任务</button>
         </div>
       </header>
@@ -222,7 +223,7 @@ defineExpose({ addHistoryImage, refresh, newDraft });
         <button v-if="pending" type="button" class="secondary-action video-pending" data-action="restore-video-pending" :disabled="busy" @click="restorePendingParameters">恢复待确认请求的原参数</button>
         <div class="video-parameters">
           <label class="video-key-field">视频 Key<select v-model="keyId" data-field="video-key" @change="changeKey"><option :value="null">请选择视频 Key</option><option v-for="key in keys" :key="key.id" :value="key.id">{{ key.alias }}</option></select></label>
-          <label class="video-model-field">视频模型<select v-model="modelId" data-field="video-model" @change="changeModel"><option v-for="model in models" :key="model.id" :value="model.id">{{ model.id }}</option></select></label>
+          <label class="video-model-field">视频模型<select v-model="modelId" data-field="video-model" @change="changeModel"><option v-if="!selectedModel && modelId" :value="modelId" disabled>{{ modelId }}（已下线或暂不可用）</option><option v-for="model in models" :key="model.id" :value="model.id">{{ model.id }}</option></select></label>
           <label>分辨率<select v-model="resolution" data-field="video-resolution" @change="changeResolution"><option v-for="r in Object.keys(selectedModel?.durations_by_resolution || {})" :key="r">{{ r }}</option></select></label>
           <label>时长<select v-model="duration" data-field="video-duration"><option v-for="d in durations" :key="d" :value="d">{{ d }} 秒</option></select></label>
           <label>比例<select v-model="ratio" data-field="video-ratio"><option v-for="r in selectedModel?.ratios || []" :key="r">{{ r }}</option></select></label>

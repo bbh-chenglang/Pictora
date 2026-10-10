@@ -10,7 +10,6 @@ from starlette.requests import Request
 
 from app.dependencies import get_current_user, get_history_repository, get_video_service
 from app.schemas.auth import StoredSessionUser
-from app.video.capabilities import RULES
 from app.video.repository import VideoError
 from app.video.schemas import (
     BindUpstreamTask, HistoryImageSource, VideoKeyCreate, VideoKeySelection,
@@ -35,7 +34,7 @@ async def list_keys(user: StoredSessionUser = Depends(get_current_user), service
 
 @settings_router.post("", status_code=201)
 async def create_key(body: VideoKeyCreate, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
-    if body.model not in RULES:
+    if not any(model['id'] == body.model for model in await service.catalog.get()):
         raise VideoError("video_model_unsupported", "视频模型未开放", 422)
     return await service.repository.save_key(user.id, body.alias, body.api_key.get_secret_value(), body.model)
 
@@ -50,7 +49,7 @@ async def select_key(body: VideoKeySelection, user: StoredSessionUser = Depends(
 async def update_key(config_id: int, body: VideoKeyUpdate, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     current = await service.repository.get_key(user.id, config_id)
     model = body.model or current["model"]
-    if model not in RULES:
+    if model != current['model'] and not any(item['id'] == model for item in await service.catalog.get()):
         raise VideoError("video_model_unsupported", "视频模型未开放", 422)
     return await service.repository.save_key(user.id, body.alias or current["alias"], body.api_key.get_secret_value() if body.api_key else None, model, config_id)
 
@@ -63,7 +62,9 @@ async def delete_key(config_id: int, user: StoredSessionUser = Depends(get_curre
 @settings_router.post("/{config_id}/test")
 async def test_key(config_id: int, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     config = await service.repository.get_key(user.id, config_id)
-    return await service.provider.test_key(config["api_key"])
+    result = await service.provider.test_key(config["api_key"])
+    available = {model['id'] for model in await service.catalog.get()}
+    return {**result, 'models': [model for model in result['models'] if model in available]}
 
 
 @router.get("/readiness")
@@ -72,8 +73,8 @@ async def readiness(user: StoredSessionUser = Depends(get_current_user), service
 
 
 @router.get("/models")
-async def models(user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
-    catalog = await service.catalog.get()
+async def models(refresh: bool = Query(False), user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
+    catalog = await service.catalog.get(force=refresh and service.provider_error is None)
     return {"models": catalog, "features": await service.features()}
 
 
