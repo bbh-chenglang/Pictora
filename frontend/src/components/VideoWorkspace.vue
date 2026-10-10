@@ -3,7 +3,7 @@ import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { ArrowUpRight, Check, CircleAlert, Film, ImagePlus, Info, Link2, Play, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles, Upload, X } from "lucide-vue-next";
 import VideoTaskCard from "./VideoTaskCard.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
-import { activeVideoStatuses, VideoApiError, jsonBody, materialIssue, materialLabels, videoJson, videoValidation, type ApiFetch, type MaterialType, type VideoFeatures, type VideoKey, type VideoMaterial, type VideoModel, type VideoTask } from "../video";
+import { activeVideoStatuses, VideoApiError, jsonBody, materialIssue, materialLabels, videoJson, videoValidation, type ApiFetch, type MaterialType, type VideoFeatures, type VideoKey, type VideoMaterial, type VideoModel, type VideoTask, type VideoRequestState } from "../video";
 const props = defineProps<{ active: boolean; account: string; projectId: number | null; selectedTaskId: number | null; apiFetch: ApiFetch; apiBase: string; imageHistoryIds?: number[] }>();
 const emit = defineEmits<{ changed: []; select: [id: number | null]; settings: [] }>();
 const accountId = props.account;
@@ -58,6 +58,32 @@ async function loadConfiguration(force = false) {
   if (!keys.value.some(k => k.id === keyId.value)) keyId.value = configs.active_config_id;
 }
 function nextPoll() { if (poll) clearTimeout(poll); if (disposed) return; poll = setTimeout(() => { void loadTasks(); }, tasks.value.some(t => activeVideoStatuses.has(t.status)) ? 3000 : 15000); }
+function settlePending(result: VideoRequestState, requestId: string, version: number) {
+  if (disposed || version !== contextVersion || pending.value?.requestId !== requestId) return;
+  if (result.state === "missing") return;
+  if (result.state === "accepted") {
+    const task = result.task;
+    if (!task || task.request_id !== requestId || task.project_id !== props.projectId) throw new Error("旧请求核对结果不匹配，已保留待确认记录");
+    tasks.value = [task, ...tasks.value.filter(t => t.id !== task.id)];
+    emit("select", task.id); emit("changed");
+    note.value = "已找到上次提交的任务，当前草稿已保留。再次生成会创建新视频。";
+  } else if (result.state === "closed") {
+    note.value = "旧请求未创建任务，已解除待确认状态。可使用当前参数生成视频。";
+  } else { throw new Error("旧请求核对结果无法读取，已保留待确认记录"); }
+  pending.value = null; error.value = ""; saveDraft();
+}
+async function resolvePending() {
+  if (busy.value || !pending.value || !props.projectId) return;
+  const requestId = pending.value.requestId, version = contextVersion, projectId = props.projectId;
+  busy.value = true; error.value = "";
+  try {
+    const result = await videoJson<VideoRequestState>(props.apiFetch, props.apiBase, "/api/videos/requests/" + encodeURIComponent(requestId) + "/resolve", jsonBody({ project_id: projectId }));
+    if (result.state === "missing") throw new Error("旧请求尚未完成核对，请稍后重试");
+    settlePending(result, requestId, version);
+  } catch (e) {
+    if (!disposed && version === contextVersion && pending.value?.requestId === requestId) error.value = e instanceof Error ? e.message : "旧请求核对失败，请重试";
+  } finally { busy.value = false; }
+}
 async function loadTasks() {
   if (!started || disposed || !props.projectId) return;
   const version = contextVersion, projectId = props.projectId;
@@ -66,8 +92,14 @@ async function loadTasks() {
     if (disposed || version !== contextVersion) return;
     const before = tasks.value.map(t => t.id + ":" + t.status).join();
     tasks.value = data;
-    const accepted = pending.value && data.find(t => t.request_id === pending.value?.requestId);
-    if (accepted) { pending.value = null; saveDraft(); }
+    const requestId = pending.value?.requestId;
+    if (requestId) {
+      const accepted = data.find(t => t.request_id === requestId);
+      const result = accepted ? { state: "accepted" as const, task: accepted }
+        : await videoJson<VideoRequestState>(props.apiFetch, props.apiBase, "/api/videos/requests/" + encodeURIComponent(requestId));
+      if (disposed || version !== contextVersion) return;
+      settlePending(result, requestId, version);
+    }
     if (before !== data.map(t => t.id + ":" + t.status).join()) emit("changed");
     if (props.selectedTaskId && !data.some(t => t.id === props.selectedTaskId)) {
       try { const detail = await videoJson<VideoTask>(props.apiFetch, props.apiBase, "/api/videos/tasks/" + props.selectedTaskId); if (detail.project_id === projectId && version === contextVersion) tasks.value = [...data, detail]; }
@@ -115,11 +147,11 @@ async function showImagePicker() {
 function insertMention(material: VideoMaterial) { const input = promptInput.value; const start = input?.selectionStart ?? prompt.value.length, end = input?.selectionEnd ?? start; const text = "@" + material.name.trim() + " "; prompt.value = prompt.value.slice(0,start) + text + prompt.value.slice(end); void nextTick(() => { input?.focus(); input?.setSelectionRange(start + text.length, start + text.length); }); }
 function removeMaterial(index: number) { materials.value.splice(index, 1); }
 async function submit() {
+  if (pending.value) { await resolvePending(); return; }
   if (!canSubmit.value) return;
   busy.value = true; error.value = "";
   const body = { project_id: props.projectId, api_key_config_id: keyId.value, model: modelId.value, prompt: prompt.value.trim(), duration: duration.value, resolution: resolution.value, ratio: ratio.value, materials: materials.value.map(m => ({ type: m.type, name: m.name.trim(), ...(m.asset_id ? { asset_id: m.asset_id } : { url: m.url }) })) };
   const fingerprint = JSON.stringify(body);
-  if (pending.value && pending.value.fingerprint !== fingerprint) { error.value = "上次本地请求尚待确认，请先刷新任务或使用原参数重试，勿创建重复视频。"; busy.value = false; return; }
   if (!pending.value) {
     // randomUUID is unavailable on non-localhost HTTP; getRandomValues remains available.
     const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
@@ -135,7 +167,7 @@ async function submit() {
     if (disposed || version !== contextVersion) return;
     const rejected = e instanceof VideoApiError && e.status >= 400 && e.status < 500 && e.code !== "video_request_conflict";
     if (rejected) { pending.value = null; saveDraft(); }
-    error.value = (e instanceof Error ? e.message : "请求失败") + (rejected ? "。此次请求未受理，可修改后提交。" : "。可用相同参数核对；本地请求 UUID 保持不变，不会重复创建任务。");
+    error.value = (e instanceof Error ? e.message : "请求失败") + (rejected ? "。此次请求未受理，可修改后提交。" : "。请点击“核对并解除待确认请求”，核对不会生成新视频。");
     await loadTasks();
   }
   finally { busy.value = false; }
@@ -158,10 +190,10 @@ function restorePendingParameters() {
     modelId.value = body.model; keyId.value = body.api_key_config_id; prompt.value = body.prompt;
     duration.value = body.duration; resolution.value = body.resolution; ratio.value = body.ratio;
     materials.value = body.materials.map((m: VideoMaterial) => ({ ...m, preview_url: m.asset_id ? "/api/videos/assets/" + m.asset_id + "/file" : undefined }));
-    error.value = ""; note.value = "已恢复上次提交的原参数；确认时沿用同一个请求 UUID。";
+    error.value = ""; note.value = "已恢复上次请求的原参数。核对旧请求不会创建新视频。";
   } catch { error.value = "待确认请求的本地数据无法读取，请核对历史任务或联系管理员。"; }
 }
-function newDraft() { if (pending.value) { error.value = "上次请求待确认，请先刷新任务，暂不清空草稿。"; return; } prompt.value = ""; materials.value = []; emit("select", null); applyDefaults(); }
+function newDraft() { if (pending.value) { error.value = "上次请求待确认，请先核对并解除待确认请求，暂不清空草稿。"; return; } prompt.value = ""; materials.value = []; emit("select", null); applyDefaults(); }
 watch([prompt, modelId, keyId, duration, resolution, ratio, materials, pending], saveDraft, { deep: true });
 watch(() => props.projectId, () => { contextVersion++; tasks.value = []; pickerOpen.value = false; confirm.value = null; error.value = ""; note.value = ""; loading.value = false; if (started) { restoreDraft(); if (!hasDraft()) applyDefaults(); void loadTasks(); } else if (props.active) void refresh(); });
 watch(() => props.active, active => { if (active) void refresh(); }, { immediate: true });
@@ -220,7 +252,11 @@ defineExpose({ addHistoryImage, refresh, newDraft });
     <form class="video-composer" @submit.prevent="submit">
       <header class="video-composer-heading"><span class="video-composer-icon"><SlidersHorizontal :size="18" /></span><div><h3>创作设置</h3><p>为你的下一段故事设定镜头</p></div></header>
       <div class="video-composer-body">
-        <button v-if="pending" type="button" class="secondary-action video-pending" data-action="restore-video-pending" :disabled="busy" @click="restorePendingParameters">恢复待确认请求的原参数</button>
+        <div v-if="pending" class="video-pending">
+          <p>上次提交的结果尚未确认。核对后会找回已有任务，或解除旧请求；当前草稿会保留。</p>
+          <button type="button" class="secondary-action" data-action="resolve-video-pending" :disabled="busy" @click="resolvePending">核对并解除待确认请求</button>
+          <button type="button" class="text-action" data-action="restore-video-pending" :disabled="busy" @click="restorePendingParameters">恢复待确认请求的原参数</button>
+        </div>
         <div class="video-parameters">
           <label class="video-key-field">视频 Key<select v-model="keyId" data-field="video-key" @change="changeKey"><option :value="null">请选择视频 Key</option><option v-for="key in keys" :key="key.id" :value="key.id">{{ key.alias }}</option></select></label>
           <label class="video-model-field">视频模型<select v-model="modelId" data-field="video-model" @change="changeModel"><option v-if="!selectedModel && modelId" :value="modelId" disabled>{{ modelId }}（已下线或暂不可用）</option><option v-for="model in models" :key="model.id" :value="model.id">{{ model.id }}</option></select></label>
@@ -241,7 +277,7 @@ defineExpose({ addHistoryImage, refresh, newDraft });
         <ul v-if="issues.length && models.length" class="video-validation"><li v-for="issue in issues" :key="issue">{{ issue }}</li></ul>
         <details class="video-upload-guidelines"><summary>素材限制与使用说明</summary><p>首尾帧控制暂未开放。应用上传限制：图片 10 MB、MP4 100 MB、MP3/WAV 20 MB，不代表上游支持保证。素材重命名后请同步检查提示词中的 @引用。</p></details>
       </div>
-      <footer class="video-submit-row"><button class="primary-action" data-action="generate-video" type="submit" :disabled="!canSubmit"><Sparkles :size="16" />{{ busy ? '处理中…' : pending ? '确认上次提交（相同 UUID）' : '生成视频' }}<ArrowUpRight v-if="!busy && !pending" :size="17" /></button><p><ShieldCheck :size="12" />生成结果保存至 R2 私有存储</p></footer>
+      <footer class="video-submit-row"><button class="primary-action" data-action="generate-video" type="submit" :disabled="busy || (pending ? !projectId : !canSubmit)"><Sparkles :size="16" />{{ busy ? '处理中…' : pending ? '核对上次提交（不生成）' : '生成视频' }}<ArrowUpRight v-if="!busy && !pending" :size="17" /></button><p><ShieldCheck :size="12" />生成结果保存至 R2 私有存储</p></footer>
     </form>
     <div v-if="pickerOpen" class="video-picker-layer" role="dialog" aria-modal="true" aria-label="选择已有图片" @click.self="pickerOpen = false"><section><header><h3>已有生成图片（当前项目最近 20 条）</h3><button class="icon-action" type="button" aria-label="关闭图片选择" @click="pickerOpen = false"><X :size="20" /></button></header><div class="video-image-picker"><button v-for="image in imageChoices" :key="image.id" type="button" :disabled="busy" @click="addHistoryImage(image.history_id,image.id)"><img :src="apiBase + image.url" :alt="image.filename || '生成图片'" /></button></div><p v-if="!imageChoices.length">暂无可选图片。</p></section></div>
     <ConfirmDialog :open="confirm !== null" :title="confirm?.action === 'abandon' ? '放弃本地追踪' : confirm?.action === 'bind' ? '接管上游任务' : '删除视频记录'" :message="confirm?.action === 'abandon' ? '放弃仅停止本站查询，不会取消上游任务，也不会触发退款。确定放弃吗？' : confirm?.action === 'bind' ? '将使用原视频 Key 查询此上游 ID，验证通过后继续查询或保存；不创建新视频。确定接管吗？' : '将删除视频记录及无人引用的素材，R2 对象进入可重试的持久化清理队列。无法恢复。'" :confirm-label="confirm?.action === 'abandon' ? '确认放弃本地追踪' : confirm?.action === 'bind' ? '验证并接管' : '确认删除'" :busy="busy" @confirm="confirm && runAction(confirm.task,confirm.action,confirm.upstreamId)" @cancel="confirm = null" />
@@ -302,7 +338,8 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 .video-composer-heading h3 { font-size:14px; margin:0 0 4px; font-weight:600; }
 .video-composer-heading p { font-size:10px; color:var(--muted); margin:0; }
 .video-composer-body { padding:21px; overflow:auto; flex:1; min-height:0; }
-.video-pending { width:100%; margin-bottom:16px; }
+.video-pending { display:grid; gap:10px; margin-bottom:16px; padding:12px; border:1px solid var(--line); border-radius:9px; }
+.video-pending p { margin:0; color:var(--text-soft); font-size:11px; line-height:1.6; }
 .video-parameters { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px 9px; }
 .video-parameters .video-key-field { grid-column:1; }
 .video-parameters .video-model-field { grid-column:span 2; }

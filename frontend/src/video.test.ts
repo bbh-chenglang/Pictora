@@ -29,11 +29,19 @@ const wrappers: VueWrapper[] = [];
 function keep<T extends VueWrapper>(wrapper: T): T { wrappers.push(wrapper); return wrapper; }
 function server(features = ready) {
   const tasks: VideoTask[] = [];
+  const closedRequests = new Set<string>();
   const api = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     if (url.split("?")[0].endsWith("/api/videos/models")) return response({ models, features });
     if (url.endsWith("/api/videos/readiness")) return response(features);
     if (url.endsWith("/api/settings/video-api-keys")) return response({ configs: [{ id: 11, alias: "视频配置", model: baseModel.id, api_key_configured: true }], active_config_id: 11 });
+    const requestMatch = url.match(/\/api\/videos\/requests\/([^/]+)(\/resolve)?$/);
+    if (requestMatch) {
+      const accepted = tasks.find(t => t.request_id === requestMatch[1]);
+      if (accepted) return response({ state: "accepted", task: accepted });
+      if (requestMatch[2] && init?.method === "POST") closedRequests.add(requestMatch[1]);
+      return response({ state: closedRequests.has(requestMatch[1]) ? "closed" : "missing", task: null });
+    }
     if (url.includes("/api/videos/tasks?") || url.match(/\/api\/videos\/tasks\/\d+$/)) return response(url.includes("?") ? tasks : tasks[0]);
     if (url.endsWith("/api/videos/tasks") && init?.method === "POST") {
       const body = JSON.parse(String(init.body)); const created = task(tasks.length + 1, { ...body, status: "queued" }); tasks.unshift(created);
@@ -268,15 +276,81 @@ describe("independent video workspace", () => {
     expect(creates).toHaveLength(2);
     expect(JSON.parse(String(creates[0][1]?.body)).request_id).not.toBe(JSON.parse(String(creates[1][1]?.body)).request_id);
   });
-  it("persists ambiguous submission UUIDs and restores exact original parameters", async () => {
-    const { wrapper, api } = await workspace(); const fallback = api.getMockImplementation()!;
-    api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/tasks") && init?.method === "POST" ? response({}, 503) : fallback(url, init));
+  it("resolves an ambiguous old request before generating with changed parameters", async () => {
+    const { wrapper, api } = await workspace(); const fallback = api.getMockImplementation()!; let reject = true;
+    api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/tasks") && init?.method === "POST" && reject ? response({}, 503) : fallback(url, init));
     await wrapper.get('[data-field="video-prompt"]').setValue("original"); await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
-    await wrapper.get('[data-field="video-prompt"]').setValue("different"); await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
-    expect(wrapper.text()).toContain("上次本地请求尚待确认");
-    await wrapper.get('[data-action="restore-video-pending"]').trigger("click"); await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
+    expect(JSON.parse(localStorage.getItem("pictora.video.draft:alice:1")!).pending).not.toBeNull();
+    await wrapper.get('[data-field="video-prompt"]').setValue("different");
+    await wrapper.get('[data-field="video-model"]').setValue("minimax-h3");
+    await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
+    expect(wrapper.text()).toContain("已解除待确认状态");
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("different");
+    expect(wrapper.get<HTMLSelectElement>('[data-field="video-model"]').element.value).toBe("minimax-h3");
+    expect(api.mock.calls.filter(([url, init]) => String(url).endsWith("/api/videos/tasks") && init?.method === "POST")).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem("pictora.video.draft:alice:1")!).pending).toBeNull();
+    reject = false;
+    await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
     const creates = api.mock.calls.filter(([url, init]) => String(url).endsWith("/api/videos/tasks") && init?.method === "POST");
-    expect(creates).toHaveLength(2); expect(creates[0][1]?.body).toBe(creates[1][1]?.body);
+    expect(creates).toHaveLength(2);
+    expect(JSON.parse(String(creates[0][1]?.body)).request_id).not.toBe(JSON.parse(String(creates[1][1]?.body)).request_id);
+    expect(JSON.parse(String(creates[1][1]?.body))).toMatchObject({ prompt: "different", model: "minimax-h3", resolution: "2k" });
+    const resolution = api.mock.calls.find(([url]) => String(url).endsWith("/resolve"))!;
+    expect(String(resolution[0])).toContain(JSON.parse(String(creates[0][1]?.body)).request_id);
+  });
+  it("resolves retired model drafts without restoring unsupported parameters or sending a generation", async () => {
+    const original = { project_id: 1, api_key_config_id: 11, model: "retired-model", prompt: "old", duration: 4, resolution: "720p", ratio: "16:9", materials: [] };
+    const requestId = task().request_id;
+    localStorage.setItem("pictora.video.draft:alice:1", JSON.stringify({ modelId: "retired-model", keyId: 11, prompt: "new scene", duration: 4, resolution: "720p", ratio: "16:9", materials: [], pending: { requestId, fingerprint: JSON.stringify(original) } }));
+    const { wrapper, api } = await workspace();
+    expect(wrapper.get('[data-action="generate-video"]').attributes("disabled")).toBeUndefined();
+    await wrapper.get('[data-action="resolve-video-pending"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('[data-action="resolve-video-pending"]').exists()).toBe(false);
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("new scene");
+    expect(api.mock.calls.some(([url]) => String(url).endsWith("/api/videos/tasks"))).toBe(false);
+    await wrapper.get('[data-field="video-model"]').setValue(baseModel.id);
+    expect(wrapper.get('[data-action="generate-video"]').attributes("disabled")).toBeUndefined();
+  });
+  it("keeps pending state and changed draft if resolution cannot reach the server", async () => {
+    const { wrapper, api } = await workspace(); const fallback = api.getMockImplementation()!;
+    api.mockImplementation(async (url, init) => (String(url).endsWith("/api/videos/tasks") && init?.method === "POST") || String(url).endsWith("/resolve")
+      ? response({}, 503) : fallback(url, init));
+    await wrapper.get('[data-field="video-prompt"]').setValue("old"); await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
+    await wrapper.get('[data-field="video-prompt"]').setValue("new");
+    await wrapper.get('[data-action="resolve-video-pending"]').trigger("click"); await flushPromises();
+    expect(JSON.parse(localStorage.getItem("pictora.video.draft:alice:1")!).pending).not.toBeNull();
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("new");
+    expect(api.mock.calls.filter(([url, init]) => String(url).endsWith("/api/videos/tasks") && init?.method === "POST")).toHaveLength(1);
+  });
+  it("finds an accepted request outside the history page without creating another task", async () => {
+    const state = server(); const fallback = state.api.getMockImplementation()!;
+    const found = task(101);
+    const original = { project_id: 1, model: baseModel.id };
+    localStorage.setItem("pictora.video.draft:alice:1", JSON.stringify({ modelId: baseModel.id, keyId: 11, prompt: "changed scene", materials: [], pending: { requestId: found.request_id, fingerprint: JSON.stringify(original) } }));
+    state.api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/requests/" + found.request_id)
+      ? response({ state: "accepted", task: found }) : fallback(url, init));
+    const wrapper = keep(mount(VideoWorkspace, { props: { active: true, account: "alice", projectId: 1, selectedTaskId: null, apiFetch: state.api, apiBase: "" } }));
+    await flushPromises();
+    expect(wrapper.find('[data-action="resolve-video-pending"]').exists()).toBe(false);
+    expect(wrapper.emitted("select")?.[0]).toEqual([101]);
+    expect(wrapper.find('[data-video-task="101"]').exists()).toBe(true);
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("changed scene");
+    expect(state.api.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+  it("does not apply late resolution results to another project's pending request", async () => {
+    const { wrapper, api } = await workspace(); const fallback = api.getMockImplementation()!;
+    let resolve!: (r: Response) => void;
+    api.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/resolve")) return new Promise(r => { resolve = r; });
+      if (String(url).endsWith("/api/videos/tasks") && init?.method === "POST") return response({}, 503);
+      return fallback(url, init);
+    });
+    await wrapper.get('[data-field="video-prompt"]').setValue("project one"); await wrapper.get(".video-composer").trigger("submit"); await flushPromises();
+    const resolving = wrapper.get('[data-action="resolve-video-pending"]').trigger("click");
+    await wrapper.setProps({ projectId: 2 }); await flushPromises();
+    await wrapper.get('[data-field="video-prompt"]').setValue("project two");
+    resolve(response({ state: "closed", task: null })); await resolving; await flushPromises();
+    expect(wrapper.get<HTMLTextAreaElement>('[data-field="video-prompt"]').element.value).toBe("project two");
     expect(JSON.parse(localStorage.getItem("pictora.video.draft:alice:1")!).pending).not.toBeNull();
   });
   it("removes pending state when polling discovers the accepted UUID", async () => {

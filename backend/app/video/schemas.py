@@ -75,6 +75,9 @@ class VideoTaskCreate(StrictModel):
 class VideoKeySelection(StrictModel):
     config_id: int = Field(gt=0)
 
+class ResolveVideoRequest(StrictModel):
+    project_id: int = Field(gt=0)
+
 class HistoryImageSource(StrictModel):
     history_id: int = Field(gt=0)
     image_id: int = Field(gt=0)

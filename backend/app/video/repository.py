@@ -145,10 +145,38 @@ class VideoRepository:
     async def existing_request(self,user_id,request_id,request_json):
         rows=await self.rows('SELECT id,request_json FROM video_tasks WHERE user_id=? AND request_id=?',(user_id,str(request_id)))
         if not rows:
+            closed=await self.rows('SELECT 1 FROM video_closed_requests WHERE user_id=? AND request_id=?',(user_id,str(request_id)))
+            if closed:
+                raise VideoError('video_request_closed','旧请求已关闭，请使用新的请求编号提交',410)
             return None
         if rows[0]['request_json']!=request_json:
             raise VideoError('video_request_conflict','同一个请求 ID 不能用于不同参数',409)
         return await self.get_task(user_id,rows[0]['id'],public=True)
+
+    async def lookup_request(self,user_id,request_id):
+        rows=await self.rows('SELECT id FROM video_tasks WHERE user_id=? AND request_id=?',(user_id,str(request_id)))
+        if rows:
+            return {'state':'accepted','task':await self.get_task(user_id,rows[0]['id'],public=True)}
+        closed=await self.rows('SELECT 1 FROM video_closed_requests WHERE user_id=? AND request_id=?',(user_id,str(request_id)))
+        return {'state':'closed' if closed else 'missing','task':None}
+
+    async def resolve_request(self,user_id,request_id,project_id):
+        async with self.connect() as db:
+            # Serialize resolution with create_task. Either creation wins and
+            # we return that task, or closure wins and every delayed POST fails.
+            await db.execute('BEGIN IMMEDIATE')
+            project=await (await db.execute("SELECT 1 FROM projects WHERE id=? AND user_id=? AND media_type='video'",(project_id,user_id))).fetchone()
+            if not project:
+                raise VideoError('project_not_found','项目不存在',404)
+            task=await (await db.execute('SELECT id,project_id FROM video_tasks WHERE user_id=? AND request_id=?',(user_id,str(request_id)))).fetchone()
+            if task and task['project_id']!=project_id:
+                raise VideoError('video_request_conflict','该请求属于其他项目',409)
+            if not task:
+                await db.execute('INSERT OR IGNORE INTO video_closed_requests(user_id,request_id) VALUES(?,?)',(user_id,str(request_id)))
+            await db.commit()
+        if task:
+            return {'state':'accepted','task':await self.get_task(user_id,task['id'],public=True)}
+        return {'state':'closed','task':None}
 
     async def check_capacity(self,db,user_id,settings):
         marks=','.join('?' for _ in ACTIVE_STATUSES)
@@ -164,6 +192,9 @@ class VideoRepository:
                 if old['request_json']!=request_json:
                     raise VideoError('video_request_conflict','请求 ID 已用于不同参数',409)
                 return old['id'],False
+            closed=await (await db.execute('SELECT 1 FROM video_closed_requests WHERE user_id=? AND request_id=?',(user_id,str(request.request_id)))).fetchone()
+            if closed:
+                raise VideoError('video_request_closed','旧请求已关闭，请使用新的请求编号提交',410)
             for table,value in (('projects',request.project_id),('video_api_key_configs',request.api_key_config_id)):
                 scope=" AND media_type='video'" if table=='projects' else ''
                 row=await (await db.execute(f'SELECT 1 FROM {table} WHERE id=? AND user_id=?'+scope,(value,user_id))).fetchone()

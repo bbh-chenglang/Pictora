@@ -3,6 +3,7 @@ import asyncio
 import re
 from typing import Literal
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -13,7 +14,7 @@ from app.schemas.auth import StoredSessionUser
 from app.video.repository import VideoError
 from app.video.schemas import (
     BindUpstreamTask, HistoryImageSource, VideoKeyCreate, VideoKeySelection,
-    VideoKeyUpdate, VideoTaskCreate,
+    VideoKeyUpdate, VideoTaskCreate, ResolveVideoRequest,
 )
 from app.video.service import VideoService
 
@@ -116,6 +117,16 @@ async def asset_file(asset_id: str, user: StoredSessionUser = Depends(get_curren
 async def create_task(body: VideoTaskCreate, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     task = await service.create(user.id, body)
     return {"task_id": task["id"], "status_url": f"/api/videos/tasks/{task['id']}", "task": task}
+
+
+@router.get("/requests/{request_id}")
+async def lookup_request(request_id: UUID, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
+    return await service.repository.lookup_request(user.id, request_id)
+
+
+@router.post("/requests/{request_id}/resolve")
+async def resolve_request(request_id: UUID, body: ResolveVideoRequest, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
+    return await service.repository.resolve_request(user.id, request_id, body.project_id)
 
 
 @router.get("/tasks")

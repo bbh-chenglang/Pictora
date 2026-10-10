@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS video_tasks (
  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(user_id, request_id), UNIQUE(user_id, upstream_task_id)
 );
+-- Keep closed request ids even after a project is deleted, so a delayed POST
+-- can never create a paid task after the client has resolved that request.
+CREATE TABLE IF NOT EXISTS video_closed_requests (
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ request_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(user_id, request_id)
+);
 CREATE TABLE IF NOT EXISTS video_task_assets (
  task_id INTEGER NOT NULL REFERENCES video_tasks(id) ON DELETE CASCADE,
  asset_id TEXT NOT NULL REFERENCES video_assets(id) ON DELETE RESTRICT,
