@@ -10,7 +10,7 @@ class StrictModel(BaseModel):
 class VideoKeyCreate(StrictModel):
     alias: str = Field(min_length=1, max_length=80)
     api_key: SecretStr
-    model: str = "sd-2.0-J2"
+    model: str = "seedance-2.0-933-720P（秒）"
 
     @field_validator("alias", "model")
     @classmethod
@@ -58,7 +58,7 @@ class VideoTaskCreate(StrictModel):
     request_id: UUID
     project_id: int = Field(gt=0)
     api_key_config_id: int = Field(gt=0)
-    model: str = Field(default="sd-2.0-J2", min_length=1, max_length=160)
+    model: str = Field(default="seedance-2.0-933-720P（秒）", min_length=1, max_length=160)
     prompt: str = Field(min_length=1, max_length=20000)
     duration: int | None = Field(default=None, gt=0, strict=True)
     resolution: str | None = None
@@ -85,3 +85,4 @@ class BindUpstreamTask(StrictModel):
 
 ACTIVE_STATUSES = ("queued", "submitting", "running", "saving")
 TRACKED_STATUSES = (*ACTIVE_STATUSES, "polling_paused", "submission_unknown", "storage_failed")
+

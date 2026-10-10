@@ -18,7 +18,7 @@ export const trackedVideoStatuses = new Set([...activeVideoStatuses, "polling_pa
 export const videoStatusLabels: Record<string, string> = {
   queued: "本地排队", submitting: "提交上游中", running: "上游生成中", saving: "已生成，正在保存",
   completed: "已保存完成", failed: "生成失败", polling_paused: "查询暂停", storage_failed: "已生成，保存失败",
-  submission_unknown: "提交结果待确认", abandoned: "已放弃本地追踪",
+  submission_unknown: "提交结果待确认", abandoned: "已放弃本地追踪", expired: "上游任务已过期",
 };
 export function materialIssue(model: VideoModel | undefined, material: VideoMaterial, all: VideoMaterial[]): string {
   if (!model) return "模型能力尚未加载";
@@ -83,3 +83,6 @@ export function formatVideoElapsed(elapsedMs: number): string {
     + String(hours ? minutes : Math.floor(seconds / 60)).padStart(2, "0") + ":"
     + String(seconds % 60).padStart(2, "0");
 }
+
+
+

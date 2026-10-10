@@ -34,7 +34,7 @@ async def list_keys(user: StoredSessionUser = Depends(get_current_user), service
 
 @settings_router.post("", status_code=201)
 async def create_key(body: VideoKeyCreate, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
-    if not any(model['id'] == body.model for model in await service.catalog.get()):
+    if not any(model['id'] == body.model for model in await service.catalog.get(body.api_key.get_secret_value(), force=True)):
         raise VideoError("video_model_unsupported", "视频模型未开放", 422)
     return await service.repository.save_key(user.id, body.alias, body.api_key.get_secret_value(), body.model)
 
@@ -49,7 +49,7 @@ async def select_key(body: VideoKeySelection, user: StoredSessionUser = Depends(
 async def update_key(config_id: int, body: VideoKeyUpdate, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     current = await service.repository.get_key(user.id, config_id)
     model = body.model or current["model"]
-    if model != current['model'] and not any(item['id'] == model for item in await service.catalog.get()):
+    if model != current['model'] and not any(item['id'] == model for item in await service.catalog.get(current['api_key'], force=True)):
         raise VideoError("video_model_unsupported", "视频模型未开放", 422)
     return await service.repository.save_key(user.id, body.alias or current["alias"], body.api_key.get_secret_value() if body.api_key else None, model, config_id)
 
@@ -63,8 +63,7 @@ async def delete_key(config_id: int, user: StoredSessionUser = Depends(get_curre
 async def test_key(config_id: int, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     config = await service.repository.get_key(user.id, config_id)
     result = await service.provider.test_key(config["api_key"])
-    available = {model['id'] for model in await service.catalog.get()}
-    return {**result, 'models': [model for model in result['models'] if model in available]}
+    return result
 
 
 @router.get("/readiness")
@@ -74,7 +73,10 @@ async def readiness(user: StoredSessionUser = Depends(get_current_user), service
 
 @router.get("/models")
 async def models(refresh: bool = Query(False), user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
-    catalog = await service.catalog.get(force=refresh and service.provider_error is None)
+    keys = await service.repository.list_keys(user.id)
+    active = next((item for item in keys['configs'] if item['id'] == keys['active_config_id']), None)
+    key = (await service.repository.get_key(user.id, active['id']))['api_key'] if active else None
+    catalog = await service.catalog.get(key, force=refresh and service.provider_error is None)
     return {"models": catalog, "features": await service.features()}
 
 
@@ -134,7 +136,7 @@ async def resume_task(task_id: int, user: StoredSessionUser = Depends(get_curren
 @router.post("/tasks/{task_id}/retry-save")
 async def retry_save(task_id: int, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service)):
     task = await service.repository.get_task(user.id, task_id)
-    if task["status"] != "storage_failed" or task["upstream_status"] != "completed":
+    if task["status"] != "storage_failed" or task["upstream_status"] not in ("succeeded", "completed"):
         raise VideoError("video_save_invalid", "只有已生成但保存失败的任务可以重试保存", 409)
     return await service.resume(user.id, task_id)
 

@@ -19,7 +19,7 @@ from app.video.storage import R2Storage
 from app.video.schemas import TRACKED_STATUSES
 
 logger=logging.getLogger(__name__)
-WAIT_STATUSES={'queued','in_progress','unknown','pending','processing'}
+WAIT_STATUSES={'queued','running'}
 
 class VideoService:
     def __init__(self,repository,settings,*,storage=None,provider=None,catalog=None,probe=probe_media,media_transport=None):
@@ -56,7 +56,7 @@ class VideoService:
         request_json=json.dumps(request.model_dump(mode='json'),ensure_ascii=False,sort_keys=True,separators=(',',':'))
         existing=await self.repository.existing_request(user_id,request.request_id,request_json)
         if existing is not None: return existing
-        await self.repository.get_key(user_id,request.api_key_config_id)
+        key_config=await self.repository.get_key(user_id,request.api_key_config_id)
         owned=await self.repository.rows("SELECT 1 FROM projects WHERE id=? AND user_id=? AND media_type='video'",(request.project_id,user_id))
         if not owned: raise VideoError('project_not_found','项目不存在',404)
         if self.provider_error: raise self.provider_error
@@ -79,23 +79,13 @@ class VideoService:
                 item['url']=https_url(material.url)
             materials.append(item)
         # Check model/type/count rules before fetching any external material.
-        model=next((m for m in await self.catalog.get() if m['id']==request.model),None)
+        model=next((m for m in await self.catalog.get(key_config['api_key']) if m['id']==request.model),None)
         if not model: raise VideoError('video_model_unsupported','视频模型未开放',422)
         for kind,count in counts.items():
             limit=model['reference_limits'][kind]
             if count and (limit is None or count>limit):
                 raise VideoError('video_material_unsupported',f'所选模型不支持、尚未确认或超过{kind}参考数量',422)
-        if request.model=='minimax-h3':
-            for item in materials:
-                if item['type']=='video' and not item.get('duration_seconds'):
-                    temporary=self.assets.path(f'probe/{uuid4().hex}.mp4')
-                    temporary.parent.mkdir(parents=True,exist_ok=True)
-                    try:
-                        await safe_download(item['url'],temporary,LIMITS['video'],self.media_transport)
-                        item['duration_seconds']=(await self.probe(temporary,'video'))['duration_seconds']
-                    finally:
-                        temporary.unlink(missing_ok=True)
-        payload=await self.catalog.normalize(request,materials)
+        payload=await self.catalog.normalize(request,materials,key_config['api_key'])
         task_id,created=await self.repository.create_task(user_id,request,request_json,payload,asset_ids,self.settings)
         if created: self.schedule(user_id,task_id)
         return await self.repository.get_task(user_id,task_id,public=True)
@@ -136,10 +126,11 @@ class VideoService:
                 for material in request.get('materials',[]):
                     if material.get('asset_id'):
                         asset=await self.repository.get_asset(material['asset_id'],user_id)
-                        field={'image':'images','video':'videos','audio':'audios'}[material['type']]
-                        for item in payload.get(field,[]):
-                            if item['url'].split('?')[0].endswith('/'+asset['id']):
-                                item['url']=self.assets.signed_url(asset['id'])
+                        field={'image':'image_url','video':'video_url','audio':'audio_url'}[material['type']]
+                        for item in payload.get('content',[]):
+                            nested=item.get(field,{})
+                            if isinstance(nested,dict) and nested.get('url','').split('?')[0].endswith('/'+asset['id']):
+                                nested['url']=self.assets.signed_url(asset['id'])
                 response=await self.provider.create(key,payload)
                 upstream_id=response.get('id') or response.get('task_id')
                 if not isinstance(upstream_id,str) or not upstream_id.strip() or len(upstream_id)>256:
@@ -150,9 +141,6 @@ class VideoService:
                 await self.repository.update_task(task_id,status='running',error_code=None,error_message=None)
                 response=None
             # An already completed upstream result can be saved from durable staging without re-querying.
-            if task['upstream_status']=='completed' and task['results'] and all(self.assets.path(f"staging/{task_id}/{r['id']}.ready").is_file() or r['stored'] for r in task['results']):
-                await self.save_results(user_id,task,{'result_urls':[None]*len(task['results'])},key)
-                return
             if key is None: key=(await self.repository.get_key(user_id,task['api_key_config_id']))['api_key']
             deadline=time.monotonic()+max(0.1,self.settings.video_max_wait)
             while True:
@@ -164,16 +152,22 @@ class VideoService:
                 if type(progress) not in (int,float) or not math.isfinite(progress): progress=None
                 elif progress is not None: progress=min(100,max(0,progress))
                 await self.repository.update_task(task_id,upstream_status=str(status)[:80],progress=progress)
-                if status=='completed':
+                if status=='succeeded':
                     task=await self.repository.get_task(user_id,task_id)
                     await self.save_results(user_id,task,response,key,deadline)
                     return
-                if status in ('failed','cancelled'):
-                    await self.repository.update_task(task_id,status='failed',error_code='video_upstream_failed',error_message='上游视频生成失败或已取消，请核对控制台的错误与账务记录',completed_at=datetime.now(timezone.utc).isoformat())
+                if status in ('failed','cancelled','expired'):
+                    upstream_error=response.get('error')
+                    if isinstance(upstream_error,dict):
+                        detail=upstream_error.get('message') or upstream_error.get('code')
+                    else:
+                        detail=None
+                    message='上游视频任务 '+str(status)+'。'+(' '+str(detail)[:300] if detail else '')
+                    await self.repository.update_task(task_id,status='failed',error_code='video_upstream_failed',error_message=message,completed_at=datetime.now(timezone.utc).isoformat())
                     return
                 if status not in WAIT_STATUSES:
                     raise VideoError('video_status_unknown','上游返回未识别状态，已暂停查询，请排查或稍后恢复',502)
-                delay=max(0.01,self.settings.video_poll_interval)
+                delay=max(10.0,self.settings.video_poll_interval)
                 if time.monotonic()+delay>=deadline:
                     raise VideoError('video_poll_timeout','自动等待已结束，不代表任务失败或退款；可恢复查询',504)
                 await asyncio.sleep(delay)
@@ -191,7 +185,7 @@ class VideoService:
             message=exc.message if isinstance(exc,VideoError) else '视频处理发生错误，请恢复原任务或核对控制台，不要自动重新生成'
             if key: message=message.replace(key,'[redacted]')
             if current['upstream_task_id']:
-                status='storage_failed' if current['upstream_status']=='completed' else 'polling_paused'
+                status='storage_failed' if current['upstream_status'] in ('succeeded','completed') else 'polling_paused'
             else:
                 status='failed' if code=='video_submit_rejected' or current['status']=='queued' else 'submission_unknown'
             await self.repository.update_task(task_id,status=status,error_code=code,error_message=message)
@@ -199,11 +193,13 @@ class VideoService:
 
     async def save_results(self,user_id,task,response,key=None,deadline=None):
         task_id=task['id']
-        await self.repository.update_task(task_id,status='saving',upstream_status='completed',progress=100)
+        await self.repository.update_task(task_id,status='saving',upstream_status='succeeded',progress=100)
         await self.require_pipeline()
-        urls=response.get('result_urls')
-        count=len(urls) if isinstance(urls,list) and urls else 1
-        if count>10: raise VideoError('video_result_count','返回结果数量超过本应用保存上限',502)
+        content=response.get('content') if isinstance(response,dict) else None
+        response_url=content.get('video_url') if isinstance(content,dict) else None
+        if not isinstance(response_url,str) or not response_url.strip():
+            raise VideoError('video_result_not_ready','上游成功响应缺少 content.video_url，保留任务以便稍后恢复',502)
+        count=1
         for position in range(count):
             object_key=f"{self.settings.r2_key_prefix.rstrip('/')}/{user_id}/{task_id}/{uuid4().hex}.mp4"
             result=await self.repository.result_for_position(task_id,position,object_key)
@@ -212,7 +208,7 @@ class VideoService:
             ready.parent.mkdir(parents=True,exist_ok=True)
             if not ready.is_file():
                 if key is None: key=(await self.repository.get_key(user_id,task['api_key_config_id']))['api_key']
-                url=await self.provider.content_url(key,task['upstream_task_id'],deadline) if position==0 else urls[position]
+                url=response_url
                 if not isinstance(url,str): raise VideoError('video_result_not_ready','结果链接暂缺，请重试保存',502)
                 partial=ready.with_suffix('.part')
                 try:
@@ -303,3 +299,4 @@ class VideoService:
         await asyncio.gather(*tasks,return_exceptions=True)
         self.jobs.clear()
         self.maintenance=None
+

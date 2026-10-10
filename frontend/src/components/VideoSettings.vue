@@ -6,8 +6,8 @@ const props = defineProps<{ apiFetch: ApiFetch; apiBase: string }>();
 const emit = defineEmits<{ changed: [] }>();
 const keys = ref<VideoKey[]>([]), activeId = ref<number | null>(null), models = ref<VideoModel[]>([]);
 const editingId = ref<number | null>(null), showingForm = ref(false), busy = ref(false), error = ref(""), message = ref("");
-const alias = ref(""), secret = ref(""), defaultModel = ref("sd-2.0-J2"), deleteTarget = ref<VideoKey | null>(null);
-const options = computed(() => models.value.length ? models.value.map(m => m.id) : ["sd-2.0-J2"]);
+const alias = ref(""), secret = ref(""), defaultModel = ref("seedance-2.0-933-720P（秒）"), deleteTarget = ref<VideoKey | null>(null);
+const options = computed(() => models.value.length ? models.value.map(m => m.id) : ["seedance-2.0-933-720P（秒）"]);
 async function syncModels() {
   if (busy.value) return;
   busy.value = true; error.value = ""; message.value = "";
@@ -26,7 +26,7 @@ async function load() {
     const catalog = await videoJson<{ models: VideoModel[] }>(props.apiFetch, props.apiBase, "/api/videos/models"); models.value = catalog.models;
   } catch (e) { error.value = e instanceof Error ? e.message : "无法加载视频设置"; }
 }
-function edit(key?: VideoKey) { editingId.value = key?.id ?? null; alias.value = key?.alias ?? ""; secret.value = ""; defaultModel.value = key?.model ?? (options.value.includes("sd-2.0-J2") ? "sd-2.0-J2" : options.value[0]); error.value = ""; showingForm.value = true; }
+function edit(key?: VideoKey) { editingId.value = key?.id ?? null; alias.value = key?.alias ?? ""; secret.value = ""; defaultModel.value = key?.model ?? (options.value.includes("seedance-2.0-933-720P（秒）") ? "seedance-2.0-933-720P（秒）" : options.value[0]); error.value = ""; showingForm.value = true; }
 function close() { secret.value = ""; showingForm.value = false; editingId.value = null; }
 async function save() {
   if (busy.value) return;
@@ -58,7 +58,7 @@ onMounted(load);
 <template>
   <section class="settings-section video-settings" aria-labelledby="video-settings-title">
     <div class="settings-heading"><h2 id="video-settings-title">视频接口配置</h2><button type="button" class="secondary-action" data-action="add-video-key" :disabled="busy" @click="edit()">添加视频 Key</button></div>
-    <p>使用独立的视频 API Key，不影响图片配置。默认服务根地址：https://sub.beibeihai.xyz；修改地址由管理员通过环境变量完成。</p>
+    <p>使用独立的视频 API Key，不影响图片配置。默认服务根地址：https://direct.beibeihai.xyz；修改地址由管理员通过环境变量完成。</p>
     <button type="button" class="secondary-action" data-action="sync-video-models" :disabled="busy" @click="syncModels">{{ busy ? '处理中…' : '同步视频模型' }}</button>
     <p>连接测试只查询模型目录，不创建付费视频。追踪中的任务使用的 Key 不可删除或更换，需先完成或明确放弃本地追踪。</p>
     <p v-if="error" role="alert" class="video-settings-error">{{ error }}</p><p v-if="message" role="status">{{ message }}</p>
@@ -79,3 +79,5 @@ onMounted(load);
 <style scoped>
 .video-settings .video-settings-error { color:var(--prompt-snow-danger); }.video-settings p { color:var(--prompt-snow-text-muted); line-height:1.6; font-size:13px; }.video-key-row { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--prompt-snow-border); }.video-key-row small { display:block; margin-top:6px; color:var(--prompt-snow-text-muted); }.video-key-actions { display:flex; gap:8px; flex-wrap:wrap; } select { padding:10px; background:var(--prompt-snow-surface); color:var(--prompt-snow-text); border:1px solid var(--prompt-snow-border-strong); } @media(max-width:700px){.video-key-row {align-items:flex-start;flex-direction:column;}}
 </style>
+
+

@@ -8,7 +8,7 @@ const props = defineProps<{ active: boolean; account: string; projectId: number 
 const emit = defineEmits<{ changed: []; select: [id: number | null]; settings: [] }>();
 const accountId = props.account;
 const models = ref<VideoModel[]>([]), features = ref<VideoFeatures | null>(null), keys = ref<VideoKey[]>([]), activeKeyId = ref<number | null>(null);
-const modelId = ref("sd-2.0-J2"), keyId = ref<number | null>(null), prompt = ref(""), duration = ref(5), resolution = ref("720p"), ratio = ref("16:9");
+const modelId = ref("seedance-2.0-933-720P（秒）"), keyId = ref<number | null>(null), prompt = ref(""), duration = ref(5), resolution = ref("720p"), ratio = ref("16:9");
 const materials = ref<VideoMaterial[]>([]), tasks = ref<VideoTask[]>([]), error = ref(""), note = ref(""), loading = ref(false), busy = ref(false);
 const kind = ref<MaterialType>("image"), sourceURL = ref(""), sourceName = ref(""), pickerOpen = ref(false), imageChoices = ref<Array<{ history_id: number; id: number; url: string; filename: string | null }>>([]);
 const pending = ref<{ fingerprint: string; requestId: string } | null>(null), confirm = ref<{ task: VideoTask; action: string; upstreamId?: string } | null>(null);
@@ -27,7 +27,7 @@ function saveDraft() {
 }
 function hasDraft() { try { return !!localStorage.getItem(draftKey()); } catch { return false; } }
 function restoreDraft() {
-  keyId.value = activeKeyId.value ?? keys.value[0]?.id ?? null; modelId.value = keys.value.find(k => k.id === keyId.value)?.model || "sd-2.0-J2"; prompt.value = ""; materials.value = []; duration.value = 5; resolution.value = "720p"; ratio.value = "16:9"; pending.value = null;
+  keyId.value = activeKeyId.value ?? keys.value[0]?.id ?? null; modelId.value = keys.value.find(k => k.id === keyId.value)?.model || "seedance-2.0-933-720P（秒）"; prompt.value = ""; materials.value = []; duration.value = 5; resolution.value = "720p"; ratio.value = "16:9"; pending.value = null;
   try {
     const raw = localStorage.getItem(draftKey()); if (!raw) return;
     const d = JSON.parse(raw);
@@ -365,3 +365,5 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 @media(max-width:1020px) { .video-workspace { display:flex; flex-direction:column; height:auto; padding:22px; } .video-stage { min-height:490px; } .video-composer { flex-shrink:0; } .video-composer-body { overflow:visible; } .video-parameters { grid-template-columns:repeat(3,minmax(0,1fr)); } .video-parameters .video-key-field,.video-parameters .video-model-field { grid-column:auto; } .video-parameters .video-model-field { grid-column:span 2; } .video-link-form { grid-template-columns:minmax(0,1fr) minmax(0,.7fr) 88px; } .video-url-field,.video-link-form .video-name-field { grid-column:auto; } }
 @media(max-width:600px) { .video-workspace { padding:18px 14px; gap:22px; } .video-heading h2 { font-size:23px; } .video-environment { font-size:10px; } .video-empty { padding:34px 15px; } .video-empty h3 { font-size:25px; } .video-stage { min-height:470px; } .video-stage-footnote>span:last-child { display:none; } .video-composer-heading,.video-composer-body,.video-submit-row { padding-left:17px; padding-right:17px; } .video-parameters .video-key-field,.video-parameters .video-model-field { grid-column:1/-1; } .video-link-form { grid-template-columns:minmax(0,1fr) 88px; } .video-url-field { grid-column:1/-1; } }
 </style>
+
+

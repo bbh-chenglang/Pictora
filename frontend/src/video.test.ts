@@ -18,7 +18,7 @@ const models: VideoModel[] = [
   { ...baseModel, id: "sd-2.0-900-J3", default_duration: 10, durations_by_resolution: { "720p": [10, 15] }, reference_limits: { image: 9, video: null, audio: null } },
   { ...baseModel, id: "seedance-2.5-101010", reference_limits: { image: 10, video: 0, audio: 10 } },
 ];
-const ready: VideoFeatures = { assets_ready: true, storage_configured: true, storage_ready: true, media_tools_ready: true, catalog_source: "mock", api_base_url: "https://sub.beibeihai.xyz", notes: [] };
+const ready: VideoFeatures = { assets_ready: true, storage_configured: true, storage_ready: true, media_tools_ready: true, catalog_source: "mock", api_base_url: "https://direct.beibeihai.xyz", notes: [] };
 const task = (id = 1, overrides: Partial<VideoTask> = {}): VideoTask => ({
   id, project_id: 1, prompt: "video prompt", model: "sd-2.0-J2", status: "queued", duration: 5, resolution: "720p", ratio: "16:9", created_at: "2026-10-06T00:00:00Z",
   request_id: "e4ae7951-8f2c-4781-a2c0-3c8b445d708d", api_key_config_id: 11, upstream_task_id: null, upstream_status: null, progress: null,
@@ -291,7 +291,7 @@ describe("video task and Key controls", () => {
       if (init?.method && init.method !== "GET") return response({}); return fallback(url, init);
     });
     const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
-    expect(wrapper.text()).toContain("默认服务根地址：https://sub.beibeihai.xyz");
+    expect(wrapper.text()).toContain("默认服务根地址：https://direct.beibeihai.xyz");
     await button(wrapper, "非付费连接测试").trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("未生成视频");
     await wrapper.get('[data-action="add-video-key"]').trigger("click");
@@ -428,3 +428,4 @@ describe("video task elapsed timer", () => {
     expect(videoElapsedMs(task(1, { status: "completed" }), now)).toBeNull();
   });
 });
+
