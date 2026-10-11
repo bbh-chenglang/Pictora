@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.schemas.common import GenerationViewSpec
+from app.schemas.error_details import TaskDiagnostics
 
 HistoryKind = Literal["generate", "analyze"]
 HistoryStatus = Literal["pending", "completed", "failed"]
@@ -41,7 +42,7 @@ class HistorySummary(BaseModel):
     created_at: datetime
 
 
-class GenerationBatchSummary(BaseModel):
+class GenerationBatchSummary(TaskDiagnostics):
     id: int
     status: HistoryStatus
     image_count: int
@@ -67,7 +68,7 @@ class GenerationBatchDetail(GenerationBatchSummary):
     images: list[HistoryImageMeta]
 
 
-class GenerationTaskDetail(BaseModel):
+class GenerationTaskDetail(TaskDiagnostics):
     id: int
     history_id: int
     project_id: int

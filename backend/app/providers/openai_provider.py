@@ -48,6 +48,7 @@ class OpenAIProvider(ImageProvider):
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
         secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+        self._diagnostic_secret = secret
         self.model = model
         self.client = (
             client
@@ -116,6 +117,8 @@ class OpenAIProvider(ImageProvider):
             raise ProviderRequestError(
                 status_code=exc.status_code,
                 response_content=exc.response.content,
+                secret=self._diagnostic_secret,
+                request_id=exc.response.headers.get("x-request-id") or exc.response.headers.get("request-id"),
                 content_type=exc.response.headers.get("content-type"),
                 retry_after_seconds=parse_retry_after(
                     exc.response.headers.get("retry-after")
@@ -124,9 +127,9 @@ class OpenAIProvider(ImageProvider):
         except APITimeoutError:
             self._log_generation_failure(request, started_at, "timeout")
             raise ProviderTimeoutError() from None
-        except APIError:
+        except APIError as exc:
             self._log_generation_failure(request, started_at, "api_error")
-            raise ProviderRequestError() from None
+            raise ProviderRequestError(cause=exc, secret=self._diagnostic_secret) from None
         images = normalize_image_results(response)
         if output_format:
             mime_type = f"image/{output_format}"
@@ -206,6 +209,8 @@ class OpenAIProvider(ImageProvider):
             raise ProviderRequestError(
                 status_code=exc.status_code,
                 response_content=exc.response.content,
+                secret=self._diagnostic_secret,
+                request_id=exc.response.headers.get("x-request-id") or exc.response.headers.get("request-id"),
                 content_type=exc.response.headers.get("content-type"),
                 retry_after_seconds=parse_retry_after(
                     exc.response.headers.get("retry-after")
@@ -213,6 +218,6 @@ class OpenAIProvider(ImageProvider):
             ) from None
         except APITimeoutError:
             raise ProviderTimeoutError() from None
-        except APIError:
-            raise ProviderRequestError() from None
+        except APIError as exc:
+            raise ProviderRequestError(cause=exc, secret=self._diagnostic_secret) from None
         return AnalyzeResponse(provider=self.provider_id, model=model, text=normalize_text(response))

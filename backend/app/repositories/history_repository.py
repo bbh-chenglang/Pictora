@@ -354,7 +354,7 @@ class HistoryRepository:
                            SELECT COUNT(*) FROM history_images AS image
                            WHERE image.batch_id = batch.id AND image.role = 'generated'
                        )) AS generated_count, batch.elapsed_ms,
-                       batch.error_code, batch.error_message, batch.created_at,
+                       batch.error_code, batch.error_message, batch.error_details_json, batch.created_at,
                        batch.views_json
                 FROM generation_batches AS batch
                 JOIN history ON history.id = batch.history_id
@@ -446,7 +446,7 @@ class HistoryRepository:
             row = await (await connection.execute(
                 """
                 SELECT task.id, task.user_id, task.history_id, history.project_id,
-                       task.status, task.attempts, task.error_code, task.error_message,
+                       task.status, task.attempts, task.error_code, task.error_message, batch.error_details_json,
                        task.created_at, task.started_at, task.completed_at,
                        batch.id AS batch_id, batch.api_key_config_id, batch.prompt,
                        batch.provider, batch.model, batch.detail, batch.image_count,
@@ -513,7 +513,7 @@ class HistoryRepository:
                 f"""
                 SELECT task.id, task.user_id, task.history_id, history.project_id,
                        task.status, task.attempts,
-                       task.error_code, task.error_message, task.created_at,
+                       task.error_code, task.error_message, batch.error_details_json, task.created_at,
                        task.started_at, task.completed_at,
                        batch.id AS batch_id, batch.api_key_config_id, batch.prompt,
                        batch.provider, batch.model, batch.detail, batch.image_count,
@@ -994,6 +994,7 @@ class HistoryRepository:
         user_id: int | None = None,
         worker_id: str | None = None,
         failure_details: str | None = None,
+        error_details: dict | None = None,
     ) -> bool:
         async with aiosqlite.connect(self.database_path) as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -1061,12 +1062,13 @@ class HistoryRepository:
                 UPDATE generation_batches
                 SET status = ?, elapsed_ms = ?, generated_count = ?,
                     completed_at = CURRENT_TIMESTAMP,
-                    error_code = ?, error_message = ?
+                    error_code = ?, error_message = ?, error_details_json = ?
                 WHERE id = ? AND history_id = ? AND status = 'pending'
                   AND (? IS NULL OR task_id = ?)
                 """,
                 (
                     terminal_status, elapsed_ms, generated_count, error_code, error_message,
+                    json.dumps(error_details, ensure_ascii=False) if partial and error_details else None,
                     batch_id, history_id, task_id, task_id,
                 ),
             )
@@ -1109,6 +1111,7 @@ class HistoryRepository:
         user_id: int | None = None,
         worker_id: str | None = None,
         task_status: str = "failed",
+        error_details: dict | None = None,
     ) -> bool:
         async with aiosqlite.connect(self.database_path) as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -1138,7 +1141,7 @@ class HistoryRepository:
             batch_cursor = await connection.execute(
                 """
                 UPDATE generation_batches
-                SET status = 'failed', error_code = ?, error_message = ?,
+                SET status = 'failed', error_code = ?, error_message = ?, error_details_json = ?,
                     generated_count = (
                         SELECT COUNT(*) FROM history_images
                         WHERE batch_id = ? AND role = 'generated'
@@ -1147,7 +1150,8 @@ class HistoryRepository:
                 WHERE id = ? AND history_id = ? AND status = 'pending'
                   AND (? IS NULL OR task_id = ?)
                 """,
-                (error_code, error_message, batch_id, batch_id, history_id, task_id, task_id),
+                (error_code, error_message, json.dumps(error_details, ensure_ascii=False) if error_details else None,
+                 batch_id, batch_id, history_id, task_id, task_id),
             )
             if batch_cursor.rowcount != 1:
                 await connection.rollback()
@@ -1331,7 +1335,7 @@ class HistoryRepository:
             batch_cursor = await connection.execute(
                 """
                 SELECT batch.id, batch.status, batch.image_count, batch.elapsed_ms,
-                       batch.error_code, batch.error_message,
+                       batch.error_code, batch.error_message, batch.error_details_json,
                        COALESCE(batch.generated_count, COUNT(image.id)) AS generated_count,
                        batch.created_at, batch.views_json
                 FROM generation_batches AS batch

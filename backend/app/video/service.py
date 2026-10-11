@@ -15,6 +15,7 @@ from app.video.media import VideoAssets,LIMITS,probe_media
 from app.video.network import https_url,safe_download
 from app.video.provider import VideoProvider,UnavailableVideoProvider
 from app.video.repository import VideoError,VideoRepository
+from app.error_details import local_failure_details, safe_text
 from app.video.errors import failure_details, failure_summary
 from app.video.storage import R2Storage
 from app.services.r2_image_storage import R2ImageUnavailableError
@@ -115,6 +116,7 @@ class VideoService:
     async def run(self,user_id,task_id):
         task=await self.repository.get_task(user_id,task_id)
         key=None
+        failure_stage='validation'
         try:
             if task['tracking_abandoned']: return
             if not task['upstream_task_id']:
@@ -133,6 +135,7 @@ class VideoService:
                             nested=item.get(field,{})
                             if isinstance(nested,dict) and nested.get('url','').split('?')[0].endswith('/'+asset['id']):
                                 nested['url']=self.assets.signed_url(asset['id'])
+                failure_stage='submission'
                 response=await self.provider.create(key,payload)
                 upstream_id=response.get('id') or response.get('task_id')
                 if not isinstance(upstream_id,str) or not upstream_id.strip() or len(upstream_id)>256:
@@ -146,6 +149,7 @@ class VideoService:
             if key is None: key=(await self.repository.get_key(user_id,task['api_key_config_id']))['api_key']
             deadline=time.monotonic()+max(0.1,self.settings.video_max_wait)
             while True:
+                failure_stage='query'
                 if time.monotonic()>=deadline:
                     raise VideoError('video_poll_timeout','自动等待已结束，上游可能继续执行；请稍后恢复查询',504)
                 if response is None: response=await self.provider.query(key,task['upstream_task_id'],deadline)
@@ -155,6 +159,7 @@ class VideoService:
                 elif progress is not None: progress=min(100,max(0,progress))
                 await self.repository.update_task(task_id,upstream_status=str(status)[:80],progress=progress)
                 if status=='succeeded':
+                    failure_stage='storage'
                     task=await self.repository.get_task(user_id,task_id)
                     await self.save_results(user_id,task,response,key,deadline)
                     return
@@ -185,6 +190,13 @@ class VideoService:
             message=exc.message if isinstance(exc,VideoError) else '视频处理发生错误，请恢复原任务或核对控制台，不要自动重新生成'
             if key: message=message.replace(key,'[redacted]')
             details=exc.details if isinstance(exc,VideoError) else None
+            if not details:
+                details=local_failure_details(getattr(exc,'task_stage',failure_stage),code,message,exception=exc,secret=key,media='video')
+                if not isinstance(exc,VideoError):
+                    details['local_message']=safe_text(str(exc),key) or message
+            if current.get('upstream_task_id'):
+                details['upstream_task_id']=safe_text(current['upstream_task_id'],key)
+            message=safe_text(message,key) or '视频处理失败'
             if current['upstream_task_id']:
                 status='storage_failed' if current['upstream_status'] in ('succeeded','completed') else 'polling_paused'
             else:
@@ -216,6 +228,9 @@ class VideoService:
                     await safe_download(url,partial,self.settings.video_result_max_bytes,self.media_transport)
                     await self.probe(partial,'video')
                     partial.replace(ready)
+                except Exception as exc:
+                    exc.task_stage='download'
+                    raise
                 finally:
                     partial.unlink(missing_ok=True)
             metadata=await self.probe(ready,'video')

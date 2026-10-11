@@ -325,7 +325,7 @@ async def test_database_upgrades_version_19_and_repeated_initialization_preserve
     await repository.store("alice@example.com", user.id, code_hash, ttl_seconds=600, cooldown_seconds=60)
     await initialize_database(path)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 20
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 21
         assert connection.execute("SELECT code_hash FROM password_reset_codes").fetchone()[0] == code_hash
         assert connection.execute("SELECT COUNT(*) FROM projects WHERE user_id = ?", (user.id,)).fetchone()[0] == 1
     assert (await users.get_by_id(user.id)).password_hash == user.password_hash

@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 
 from app.observability import generation_id, log_context
+from app.error_details import local_failure_details, safe_text
 from app.providers.base import ProviderError
 from app.repositories.history_repository import (
     GenerationTaskNotRunnableError,
@@ -196,6 +197,7 @@ class HistoryService:
                 batch_id,
                 error_code="internal_error",
                 error_message="参考图保存失败",
+                error_details=local_failure_details("reference_storage", "internal_error", "参考图保存失败"),
             )
             raise
         task_id = await self.repository.create_generation_task(
@@ -222,6 +224,7 @@ class HistoryService:
         generation_token = generation_id.set(uuid4().hex)
         started_at = perf_counter()
         heartbeat_task: asyncio.Task[None] | None = None
+        failure_stage = "validation"
         logger.info(
             "image_generation step=generation_started duration_ms=0 generation_id=%s provider=%s model=%s "
             "requested_count=%d aspect_ratio=%s requested_resolution=%s history_id=%d",
@@ -270,7 +273,7 @@ class HistoryService:
             persist_lock = asyncio.Lock()
 
             async def persist_generated_image_locked(image: ImageResult) -> None:
-                nonlocal stored_image_count
+                nonlocal stored_image_count, failure_stage
                 batch_position = (
                     image.generation_position
                     if image.generation_position is not None
@@ -280,6 +283,7 @@ class HistoryService:
                     return
                 processed_positions.add(batch_position)
                 materialize_started_at = perf_counter()
+                failure_stage = "download"
                 materialized = await self._materialize_image(image)
                 _log_step(
                     "image_materialize_completed",
@@ -294,6 +298,7 @@ class HistoryService:
                 mime_type, data = materialized
                 extension = mime_type.split("/")[-1].replace("jpeg", "jpg")
                 save_started_at = perf_counter()
+                failure_stage = "storage"
                 image_id = await self.repository.add_image(
                     history_id=history_id,
                     user_id=user_id,
@@ -319,7 +324,12 @@ class HistoryService:
 
             async def persist_generated_image(image: ImageResult) -> None:
                 async with persist_lock:
-                    await persist_generated_image_locked(image)
+                    try:
+                        await persist_generated_image_locked(image)
+                    except Exception as exc:
+                        exc.task_stage = failure_stage
+                        exc.image_position = image.generation_position
+                        raise
 
             async def should_skip_generation_slot(position: int) -> bool:
                 return await self.repository.generation_slot_is_unavailable(
@@ -330,6 +340,7 @@ class HistoryService:
                 )
 
             image_service_started_at = perf_counter()
+            failure_stage = "generation"
             response = (
                 await image_service.generate(
                     request,
@@ -359,6 +370,7 @@ class HistoryService:
             for image in response.images:
                 await persist_generated_image(image)
             complete_started_at = perf_counter()
+            failure_stage = "completion"
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -371,6 +383,7 @@ class HistoryService:
                 user_id=user_id,
                 worker_id=worker_id,
                 failure_details=self._generation_failure_details(response),
+                error_details=self._generation_error_details(response),
             )
             if not completed:
                 raise GenerationTaskNotRunnableError(task_id or history_id)
@@ -421,6 +434,7 @@ class HistoryService:
                 batch_id,
                 error_code=exc.code,
                 error_message=exc.message,
+                error_details=exc.details,
                 task_id=task_id,
                 user_id=user_id,
                 worker_id=worker_id,
@@ -428,7 +442,7 @@ class HistoryService:
             raise
         except Exception as exc:
             diagnostic = f"任务处理失败（{type(exc).__name__}）"
-            detail = " ".join(str(exc).split())[:240]
+            detail = safe_text(" ".join(str(exc).split()), limit=1000)
             if detail:
                 diagnostic = f"{diagnostic}: {detail}"
             logger.exception(
@@ -448,6 +462,10 @@ class HistoryService:
                 batch_id,
                 error_code="internal_error",
                 error_message=diagnostic,
+                error_details={
+                    **local_failure_details(getattr(exc, "task_stage", failure_stage), "internal_error", diagnostic, exception=exc),
+                    "image_position": getattr(exc, "image_position", None),
+                },
                 task_id=task_id,
                 user_id=user_id,
                 worker_id=worker_id,
@@ -458,6 +476,15 @@ class HistoryService:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
             generation_id.reset(generation_token)
+
+    @staticmethod
+    def _generation_error_details(response: GenerateResponse) -> dict | None:
+        failures = [failure.model_dump() for failure in response.failures if failure.error_code != "generation_cancelled"]
+        if not failures:
+            return None
+        first = failures[0]
+        details = first.get("error_details") or local_failure_details("generation", first["error_code"], first["error_message"])
+        return {**details, "failures": failures}
 
     @staticmethod
     def _generation_failure_details(response: GenerateResponse) -> str | None:

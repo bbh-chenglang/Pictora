@@ -95,7 +95,7 @@ app.add_middleware(
 
 @app.exception_handler(VideoError)
 async def video_error_handler(_: Request, exc: VideoError):
-    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
+    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "details": exc.details}})
 
 
 @app.exception_handler(ProviderError)

@@ -1015,7 +1015,14 @@ select option {
 }
 
 .generation-failure-card {
+  height: auto;
+  max-height: none;
+  grid-template-rows: 160px auto auto;
   border-color: rgba(248, 113, 113, .42);
+}
+
+.generation-failure-card .task-error-details {
+  margin: 10px;
 }
 
 .generation-progress-frame {
@@ -2885,7 +2892,7 @@ body.workspace-is-resizing {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-areas:
     "heading heading"
-    "interface preferences"
+    "interface video"
     "community security";
   align-content: start;
   align-items: start;
@@ -2919,20 +2926,16 @@ body.workspace-is-resizing {
   grid-area: interface;
 }
 
+.settings-page > .video-settings {
+  grid-area: video;
+}
+
 .settings-community {
   grid-area: community;
 }
 
 .settings-security {
   grid-area: security;
-}
-
-.settings-preferences {
-  min-width: 0;
-  grid-area: preferences;
-  display: grid;
-  align-content: start;
-  gap: 16px;
 }
 
 .settings-section {
@@ -2976,6 +2979,7 @@ body.workspace-is-resizing {
 
 .settings-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -3012,6 +3016,24 @@ body.workspace-is-resizing {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.topbar-theme {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.topbar-theme-options {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 220px;
+  padding: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-menu);
 }
 
 .background-effect-option {

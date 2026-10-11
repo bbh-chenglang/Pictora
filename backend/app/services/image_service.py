@@ -190,6 +190,7 @@ class ImageService:
                         position=position,
                         error_code=result.code,
                         error_message=result.message,
+                        error_details=result.details,
                     )
                     for position in positions
                 )
@@ -223,6 +224,10 @@ class ImageService:
             )
 
         if not images and first_provider_error is not None:
+            first_provider_error.details = {
+                **first_provider_error.details,
+                "failures": [failure.model_dump() for failure in failures],
+            }
             raise first_provider_error
         return GenerateResponse(
             provider=effective_request.provider,

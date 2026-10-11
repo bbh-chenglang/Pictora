@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import GenerationViewSpec, ImageResult
 from app.schemas.history import ReferenceCategory
+from app.schemas.error_details import TaskDiagnostics
 
 
 GenerationQuality: TypeAlias = Literal[
@@ -67,7 +68,7 @@ class GenerateRequest(BaseModel):
         return self
 
 
-class ImageGenerationFailure(BaseModel):
+class ImageGenerationFailure(TaskDiagnostics):
     position: int = Field(ge=0)
     error_code: str
     error_message: str

@@ -8,6 +8,7 @@ import httpx
 
 from app.video.network import https_url
 from app.video.repository import VideoError
+from app.error_details import local_failure_details
 from app.video.errors import failure_details, failure_summary
 
 TASKS_PATH = "/api/v3/contents/generations/tasks"
@@ -50,8 +51,11 @@ class VideoProvider:
                     if time.monotonic() + delay >= deadline: raise VideoError("video_poll_timeout", "自动等待已结束，请稍后恢复查询；上游任务可能仍在执行", 504)
                     await asyncio.sleep(delay); continue
                 return response
-            except (httpx.RequestError, TimeoutError):
-                if method != "GET" or attempt == 4: raise VideoError("video_network", "视频服务网络异常，请核对原任务，不要重复生成", 502) from None
+            except (httpx.RequestError, TimeoutError) as exc:
+                if method != "GET" or attempt == 4:
+                    raise VideoError("video_network", "视频服务网络异常，请核对原任务，不要重复生成", 502,
+                                     local_failure_details("submission" if method != "GET" else "query", "video_network",
+                                                           str(exc) or type(exc).__name__, exception=exc, secret=key, media="video")) from None
                 delay = max(0.1, self.settings.video_poll_interval) * (2 ** attempt)
                 if time.monotonic() + delay >= deadline: raise VideoError("video_poll_timeout", "等待已结束，请恢复查询，不要重新生成", 504) from None
                 await asyncio.sleep(delay)
@@ -67,7 +71,9 @@ class VideoProvider:
             data = response.json()
             if not isinstance(data, dict): raise ValueError()
             return data
-        except ValueError: raise VideoError("video_response_invalid", "视频服务响应格式无效", 502) from None
+        except ValueError:
+            raise VideoError("video_response_invalid", "视频服务响应格式无效", 502,
+                             local_failure_details(stage, "video_response_invalid", "上游响应不是有效的 JSON 对象", media="video")) from None
 
     @staticmethod
     def error_details(response, key, stage):
@@ -83,7 +89,9 @@ class VideoProvider:
         if 400 <= response.status_code < 500:
             details = self.error_details(response, key, "submission")
             raise VideoError("video_submit_rejected", failure_summary(details), response.status_code, details)
-        if response.status_code >= 300: raise VideoError("video_submission_unknown", "视频提交结果不确定，请核对控制台，不要自动重新生成", 502)
+        if response.status_code >= 300:
+            raise VideoError("video_submission_unknown", "视频提交结果不确定，请核对控制台，不要自动重新生成", 502,
+                             self.error_details(response, key, "submission"))
         return self.json(response, key, "submission")
 
     async def query(self, key, task_id, deadline=None):

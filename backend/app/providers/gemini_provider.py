@@ -94,6 +94,7 @@ class GeminiProvider(ImageProvider):
         client: Any | None = None,
     ) -> None:
         secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+        self._diagnostic_secret = secret
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.client = client or httpx.AsyncClient(
@@ -116,6 +117,8 @@ class GeminiProvider(ImageProvider):
             raise ProviderRequestError(
                 status_code=exc.response.status_code,
                 response_content=exc.response.content,
+                secret=self._diagnostic_secret,
+                request_id=exc.response.headers.get("x-request-id") or exc.response.headers.get("request-id"),
                 content_type=exc.response.headers.get("content-type"),
                 retry_after_seconds=parse_retry_after(
                     exc.response.headers.get("retry-after")
@@ -123,8 +126,8 @@ class GeminiProvider(ImageProvider):
             ) from None
         except httpx.TimeoutException:
             raise ProviderTimeoutError() from None
-        except (httpx.HTTPError, ValueError):
-            raise ProviderRequestError() from None
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ProviderRequestError(cause=exc, secret=self._diagnostic_secret) from None
 
     async def generate_image(
         self,

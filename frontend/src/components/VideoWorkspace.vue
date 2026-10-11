@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TaskErrorDetails from "./TaskErrorDetails.vue";
+import type { TaskErrorDetails as ErrorDetails } from "../errorDetails";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { ArrowUpRight, Check, CircleAlert, Film, ImagePlus, Info, Link2, Play, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles, Upload, X } from "lucide-vue-next";
 import VideoTaskCard from "./VideoTaskCard.vue";
@@ -14,6 +16,8 @@ const kind = ref<MaterialType>("image"), sourceURL = ref(""), sourceName = ref("
 const pending = ref<{ fingerprint: string; requestId: string } | null>(null), confirm = ref<{ task: VideoTask; action: string; upstreamId?: string } | null>(null);
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 let started = false, disposed = false, poll: ReturnType<typeof setTimeout> | undefined, contextVersion = 0, configurationVersion = 0;
+const submitError = ref<{ code?: string; details?: ErrorDetails } | null>(null);
+watch(error, value => { if (!value) submitError.value = null; }, { flush: "sync" });
 const selectedModel = computed(() => models.value.find(m => m.id === modelId.value));
 const durations = computed(() => selectedModel.value?.durations_by_resolution[resolution.value] || []);
 const issues = computed(() => videoValidation(selectedModel.value, duration.value, resolution.value, ratio.value, materials.value));
@@ -165,6 +169,8 @@ async function submit() {
     pending.value = null; saveDraft(); tasks.value = [data.task, ...tasks.value.filter(t => t.id !== data.task.id)]; emit("select", data.task.id); emit("changed"); nextPoll(); note.value = "任务已持久化，每次提交只创建一个视频任务。";
   } catch (e) {
     if (disposed || version !== contextVersion) return;
+    submitError.value = e instanceof VideoApiError ? { code: e.code, details: e.details }
+      : { details: { stage: "submission", local_message: e instanceof Error ? e.message : "请求失败", suggestion: "请先核对原请求是否受理，避免重复生成。" } };
     const rejected = e instanceof VideoApiError && e.status >= 400 && e.status < 500 && e.code !== "video_request_conflict";
     if (rejected) { pending.value = null; saveDraft(); }
     error.value = (e instanceof Error ? e.message : "请求失败") + (rejected ? "。此次请求未受理，可修改后提交。" : "。请点击“核对并解除待确认请求”，核对不会生成新视频。");
@@ -229,6 +235,7 @@ defineExpose({ addHistoryImage, refresh, newDraft });
         <p>公网 HTTPS 素材地址尚未就绪。本地上传、已有图片引用已禁用；存储和媒体工具就绪后仍可使用文生视频和外部 HTTPS 素材。</p>
       </details>
       <p v-if="error" role="alert" class="error-message">{{ error }}</p>
+      <TaskErrorDetails v-if="error && submitError" :details="submitError.details" :error-code="submitError.code" :message="error" :model="modelId" />
       <p v-if="note" role="status" class="video-note">{{ note }}</p>
 
       <div class="video-task-wall" :class="{ 'is-empty': !visibleTasks.length }">

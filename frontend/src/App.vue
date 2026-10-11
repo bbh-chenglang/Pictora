@@ -43,6 +43,8 @@ import PromptPickerPopover, { type PromptPickerEntry } from "./components/Prompt
 import VideoWorkspace from "./components/VideoWorkspace.vue";
 import VideoProjectSidebar from "./components/VideoProjectSidebar.vue";
 import VideoSettings from "./components/VideoSettings.vue";
+import TaskErrorDetails from "./components/TaskErrorDetails.vue";
+import { apiFailureDetails, failureMessage, validationMessage, type TaskErrorDetails as ErrorDetails } from "./errorDetails";
 import { videoStatusLabels, type VideoFeatures } from "./video";
 import pictoraMark from "./assets/pictora-mark.svg";
 
@@ -162,6 +164,7 @@ type HistorySummary = {
   elapsed_ms?: number | null;
   error_code?: string | null;
   error_message?: string | null;
+  error_details?: ErrorDetails | null;
   created_at: string;
 };
 type HistoryImage = {
@@ -184,6 +187,7 @@ type GenerationBatchSummary = {
   elapsed_ms?: number | null;
   error_code?: string | null;
   error_message?: string | null;
+  error_details?: ErrorDetails | null;
   created_at?: string | null;
   deleted_positions?: number[];
   cancelled_positions?: number[];
@@ -217,6 +221,7 @@ type GenerationTaskDetail = {
   resolution?: string | null;
   error_code?: string | null;
   error_message?: string | null;
+  error_details?: ErrorDetails | null;
   created_at?: string;
   deleted_positions?: number[];
   cancelled_positions?: number[];
@@ -317,6 +322,8 @@ type GenerationRun = {
   images: ImageResult[];
   failureCount: number;
   error: string;
+  errorCode?: string | null;
+  errorDetails?: ErrorDetails | null;
   state: "running" | "failed" | "cancelled";
   deletedPositions: Set<number>;
   cancelledPositions: Set<number>;
@@ -326,6 +333,8 @@ type HistoryFailureGroup = {
   batchId: number;
   positions: number[];
   message: string;
+  errorCode?: string | null;
+  errorDetails?: ErrorDetails | null;
   state: "failed" | "cancelled";
   elapsedMs?: number | null;
   views: GenerationViewSpec[];
@@ -519,6 +528,8 @@ const WORKSPACE_COMPOSER_COLLAPSED_KEY = "genimage-workspace-composer-collapsed"
 const WORKSPACE_SELECTION_PREFIX = "genimage-workspace-selection:";
 const DEFAULT_WORKSPACE_RESULT_RATIO = 48;
 const backgroundEffect = ref<BackgroundEffect>(loadBackgroundEffect());
+const themeMenuOpen = ref(false);
+const themeTrigger = ref<HTMLButtonElement | null>(null);
 const workspaceResultRatio = ref(loadWorkspaceResultRatio());
 const workspaceComposerCollapsed = ref(loadWorkspaceComposerCollapsed());
 const workspacePanel = ref<HTMLElement | null>(null);
@@ -717,6 +728,8 @@ function resolveCurrentView(): CurrentView {
 
 function selectBackgroundEffect(effect: BackgroundEffect) {
   backgroundEffect.value = effect;
+  themeMenuOpen.value = false;
+  themeTrigger.value?.focus();
   try {
     window.localStorage.setItem(BACKGROUND_EFFECT_KEY, effect);
   } catch {
@@ -1074,7 +1087,7 @@ function readableError(data: any, fallback: string) {
     admin_required: "需要管理员权限",
   };
   const error = data?.error ?? data?.detail?.error;
-  return messages[error?.code] ?? error?.message ?? fallback;
+  return (error?.code === "provider_request" ? error?.message : messages[error?.code]) ?? error?.message ?? validationMessage(data) ?? fallback;
 }
 
 function apiErrorCode(data: any): string | undefined {
@@ -2730,6 +2743,8 @@ function restoreHistoryFailureGroups(data: HistoryDetail) {
       batchId: batch.id,
       positions,
       message,
+      errorCode: batch.error_code,
+      errorDetails: batch.error_details,
       state: cancelled ? "cancelled" as const : "failed" as const,
       elapsedMs: batch.elapsed_ms,
       views: batch.views ?? [],
@@ -3027,6 +3042,8 @@ async function pollGenerationTask(runId: number) {
               : detail.batches?.find((batch) => batch.id === run.batchId) ?? detail.batches?.at(-1);
             run.deletedPositions = new Set(completedBatch?.deleted_positions ?? []);
             run.cancelledPositions = new Set(completedBatch?.cancelled_positions ?? []);
+            run.errorCode = completedBatch?.error_code;
+            run.errorDetails = completedBatch?.error_details;
             const hasMissingImages = retainMissingGenerationSlots(
               runId,
               completedBatch?.generated_count ?? run.images.length,
@@ -3050,6 +3067,8 @@ async function pollGenerationTask(runId: number) {
               run.images = partialImages;
               appendConversationImages(run.conversationId ?? run.taskId, partialImages);
             }
+            run.errorCode = failedBatch?.error_code;
+            run.errorDetails = failedBatch?.error_details;
             failGenerationRun(
               runId,
               detail.error_message || "生成失败",
@@ -3112,6 +3131,8 @@ async function pollGenerationTask(runId: number) {
               if (exception instanceof DOMException && exception.name === "AbortError") return;
             }
           }
+          run.errorCode = taskData.error_code;
+          run.errorDetails = taskData.error_details;
           failGenerationRun(
             runId,
             message,
@@ -3154,6 +3175,8 @@ async function pollGenerationTask(runId: number) {
             : detail.batches?.find((batch) => batch.id === run.batchId) ?? detail.batches?.at(-1);
           run.deletedPositions = new Set(completedBatch?.deleted_positions ?? []);
           run.cancelledPositions = new Set(completedBatch?.cancelled_positions ?? []);
+          run.errorCode = completedBatch?.error_code;
+          run.errorDetails = completedBatch?.error_details;
           const hasMissingImages = retainMissingGenerationSlots(
             runId,
             completedBatch?.generated_count ?? run.images.length,
@@ -3165,6 +3188,8 @@ async function pollGenerationTask(runId: number) {
             if (activeGenerationRunId.value === runId) activeGenerationRunId.value = null;
           }
         } else {
+          run.errorCode = detail.error_code;
+          run.errorDetails = detail.error_details;
           failGenerationRun(runId, detail.error_message || "生成失败", taskData.history_id);
         }
         await refreshConversationLists();
@@ -3529,6 +3554,11 @@ async function generateImage() {
     const response = await apiFetch(endpoint, requestInit);
     const data = await parseJsonResponse(response);
     if (!response.ok) {
+      const run = generationRuns.get(runId);
+      if (run) {
+        run.errorCode = apiErrorCode(data);
+        run.errorDetails = apiFailureDetails(data, response.status, `生成失败（HTTP ${response.status}）`);
+      }
       throw new Error(readableError(data, `生成失败（HTTP ${response.status}）`));
     }
     if (!data) throw new Error("服务返回了无效响应");
@@ -3796,7 +3826,11 @@ function closeLightbox() {
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
-  if (promptPickerOpen.value) closePromptPicker();
+  if (themeMenuOpen.value) {
+    themeMenuOpen.value = false;
+    themeTrigger.value?.focus();
+  }
+  else if (promptPickerOpen.value) closePromptPicker();
   else if (promptPickerConfirmOpen.value) cancelPromptSelection();
   else if (openParameterMenu.value) closeParameterMenu();
   else if (lightboxUrl.value) closeLightbox();
@@ -3804,6 +3838,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 
 function handleDocumentPointerDown(event: PointerEvent) {
   const target = event.target;
+  if (target instanceof Element && !target.closest(".topbar-theme")) {
+    themeMenuOpen.value = false;
+  }
   if (target instanceof Element && !target.closest(".parameter-toolbar")) {
     closeParameterMenu();
   }
@@ -3921,6 +3958,13 @@ onUnmounted(() => {
           <i></i>{{ apiKeyConfigured ? "API Key 已配置" : "请在设置页面配置 API Key" }}
         </span>
         <span class="user-chip" :title="currentEmail"><UserRound :size="15" /><span>{{ currentUsername }}</span></span>
+        <div class="topbar-theme">
+          <button ref="themeTrigger" type="button" class="secondary-action topbar-command" data-action="theme" title="界面主题" :aria-expanded="themeMenuOpen" aria-controls="topbar-theme-options" @click="themeMenuOpen = !themeMenuOpen"><Grid3X3 v-if="backgroundEffect === 'gravity-grid'" :size="16" /><Snowflake v-else :size="16" />界面主题<ChevronDown :size="14" /></button>
+          <div v-if="themeMenuOpen" id="topbar-theme-options" class="background-effect-options topbar-theme-options" role="group" aria-label="界面主题">
+            <button type="button" class="background-effect-option" :class="{ active: backgroundEffect === 'gravity-grid' }" data-background-effect="gravity-grid" :aria-pressed="backgroundEffect === 'gravity-grid'" @click="selectBackgroundEffect('gravity-grid')"><Grid3X3 :size="19" /><strong>暗黑引力</strong><Check v-if="backgroundEffect === 'gravity-grid'" :size="17" /></button>
+            <button type="button" class="background-effect-option" :class="{ active: backgroundEffect === 'snowfall' }" data-background-effect="snowfall" :aria-pressed="backgroundEffect === 'snowfall'" @click="selectBackgroundEffect('snowfall')"><Snowflake :size="19" /><strong>雾白飘雪</strong><Check v-if="backgroundEffect === 'snowfall'" :size="17" /></button>
+          </div>
+        </div>
         <button v-if="currentView === 'workspace' && mediaMode === 'image'" type="button" class="secondary-action topbar-command" data-action="skills" title="技能" @click="navigateToSkills"><Sparkles :size="16" />技能</button>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="prompts" title="提示词管理" @click="navigateToPrompts"><BookmarkPlus :size="16" />提示词</button>
         <button v-if="currentView === 'workspace'" type="button" class="secondary-action topbar-command" data-action="settings" title="设置" @click="navigateToSettings"><Settings :size="16" />设置</button>
@@ -3932,7 +3976,7 @@ onUnmounted(() => {
     <section v-if="currentView === 'settings'" class="settings-page">
       <header class="settings-page-heading"><span>Pictora</span><h1>设置</h1></header>
       <section class="settings-section settings-interface">
-        <div class="settings-heading"><h1>接口配置</h1><div class="settings-heading-actions"><button type="button" class="secondary-action" data-action="add-api-key" @click="beginAddConfig">添加 API Key</button><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div></div>
+        <div class="settings-heading"><h2>图片接口配置</h2><div class="settings-heading-actions"><button type="button" class="secondary-action" data-action="add-api-key" @click="beginAddConfig">添加 API Key</button><a class="api-key-link" href="https://sub.beibeihai.xyz/home" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" />获取 API Key</a></div></div>
         <p>{{ apiKeyConfigured ? '已有可用配置' : '尚未配置 API Key' }}</p>
         <label v-if="legacySettingsMode">API Key<input v-model="settingsApiKey" data-field="api-key" type="password" autocomplete="off" @blur="saveSettingsApiKey" /></label>
         <div v-else class="api-config-list">
@@ -3975,30 +4019,6 @@ onUnmounted(() => {
       </section>
 
       <VideoSettings :api-fetch="apiFetch" :api-base="API_BASE" @changed="videoWorkspace?.refresh(); loadVideoAvailability()" />
-
-      <div class="settings-preferences">
-        <section class="settings-section settings-background" aria-labelledby="background-effect-title">
-          <h2 id="background-effect-title">界面主题</h2>
-          <div class="background-effect-options" role="group" aria-label="界面主题">
-            <button
-              type="button"
-              class="background-effect-option"
-              :class="{ active: backgroundEffect === 'gravity-grid' }"
-              data-background-effect="gravity-grid"
-              :aria-pressed="backgroundEffect === 'gravity-grid'"
-              @click="selectBackgroundEffect('gravity-grid')"
-            ><Grid3X3 :size="19" /><strong>暗黑引力</strong><Check v-if="backgroundEffect === 'gravity-grid'" :size="17" /></button>
-            <button
-              type="button"
-              class="background-effect-option"
-              :class="{ active: backgroundEffect === 'snowfall' }"
-              data-background-effect="snowfall"
-              :aria-pressed="backgroundEffect === 'snowfall'"
-              @click="selectBackgroundEffect('snowfall')"
-            ><Snowflake :size="19" /><strong>雾白飘雪</strong><Check v-if="backgroundEffect === 'snowfall'" :size="17" /></button>
-          </div>
-        </section>
-      </div>
 
       <section class="settings-section community-section feedback-section settings-community settings-community-feedback">
         <div class="community-copy"><p class="settings-eyebrow">社区交流</p><h2>加入 Pictora 交流群</h2><p>交流使用技巧，反馈问题，获取最新功能信息。</p><dl><div><dt>群名称</dt><dd>小北AI交流群4</dd></div><div><dt>QQ群号</dt><dd>1043879357</dd></div></dl></div>
@@ -4214,8 +4234,9 @@ onUnmounted(() => {
                     <div class="empty-shape is-generating" :style="{ '--generation-fill': `${generationFillPercent(card.run.elapsedMs)}%` }"><Sparkles class="empty-shape-icon" :size="24" /><span class="generation-water" aria-hidden="true"><Sparkles class="empty-shape-icon" :size="24" /></span></div>
                     <p v-if="card.run.error" class="generation-progress-error" role="alert">{{ card.run.error }}</p>
                   </div>
-                  <div v-else class="generation-failure-state" :class="{ 'is-cancelled': card.run.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.run.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="card.run.error">{{ card.run.error }}</p></div>
+                  <div v-else class="generation-failure-state" :class="{ 'is-cancelled': card.run.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.run.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="failureMessage(card.run.errorDetails, card.slotPosition, card.run.error)">{{ failureMessage(card.run.errorDetails, card.slotPosition, card.run.error) }}</p></div>
                 </div>
+                <TaskErrorDetails v-if="card.run.state === 'failed'" :details="card.run.errorDetails" :error-code="card.run.errorCode" :message="card.run.error" :task-id="card.run.taskId" :model="card.run.model" :position="card.slotPosition" />
                 <div class="image-meta generation-progress-meta">
                   <span>{{ cardViewLabel(card) ? `${cardViewLabel(card)} · ${card.run.state === "running" ? "正在生成" : card.run.state === "cancelled" ? "已取消" : "生成失败"}` : card.run.state === "running" ? "正在生成" : card.run.state === "cancelled" ? "已取消" : "生成失败" }}</span>
                   <div class="image-meta-actions">
@@ -4226,7 +4247,8 @@ onUnmounted(() => {
                 </div>
               </template>
               <template v-else>
-                <div class="generation-progress-frame"><div class="generation-failure-state" :class="{ 'is-cancelled': card.group.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.group.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="card.group.message">{{ card.group.message }}</p></div></div>
+                <div class="generation-progress-frame"><div class="generation-failure-state" :class="{ 'is-cancelled': card.group.state === 'cancelled' }"><CircleAlert :size="27" /><strong>{{ card.group.state === "cancelled" ? "生成已取消" : "生成失败" }}</strong><p :title="failureMessage(card.group.errorDetails, card.slotPosition, card.group.message)">{{ failureMessage(card.group.errorDetails, card.slotPosition, card.group.message) }}</p></div></div>
+                <TaskErrorDetails v-if="card.group.state === 'failed'" :details="card.group.errorDetails" :error-code="card.group.errorCode" :message="card.group.message" :task-id="'批次 #' + card.group.batchId" :position="card.slotPosition" />
                 <div class="image-meta generation-progress-meta">
                   <span>{{ cardViewLabel(card) ? `${cardViewLabel(card)} · ${card.group.state === "cancelled" ? "已取消" : "生成失败"}` : card.group.state === "cancelled" ? "已取消" : "生成失败" }}</span>
                   <div class="image-meta-actions">

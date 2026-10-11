@@ -201,7 +201,7 @@
   .studio-shell .brand-mark { width: 30px; height: 30px; }
   .studio-shell .media-mode-switch { margin-left: auto; margin-right: 0; }
   .studio-shell .media-mode-switch button { padding: 5px 11px; min-height: 28px; }
-  .studio-shell .topbar-actions { width: 100%; justify-content: flex-end; }
+  .studio-shell .topbar-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
   .studio-shell .topbar-command { min-height: 31px; font-size: 10px; padding: 6px 9px; }
   .studio-shell .video-studio-grid { display: flex; flex-direction: column; height: auto; overflow: visible; }
   .studio-shell .video-studio-grid>.project-sidebar { height: auto; padding: 13px 14px; border-right: 0; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -273,7 +273,7 @@
   .studio-shell .multi-view-control { grid-column:1/-1; }
   .studio-shell .prompt-row { min-height:220px; }
   .studio-shell .reference-row { grid-column:auto; grid-template-columns:minmax(0,1fr); }
-  .studio-shell .settings-page { height:auto; overflow:visible; grid-template-columns:minmax(0,1fr); grid-template-areas:"heading" "interface" "preferences" "community" "security"; row-gap:14px; }
+  .studio-shell .settings-page { height:auto; overflow:visible; grid-template-columns:minmax(0,1fr); grid-template-areas:"heading" "interface" "video" "community" "security"; row-gap:14px; }
   .studio-shell .settings-section { padding:18px; }
   .studio-shell .settings-heading { flex-wrap:wrap; gap:10px; }
   .studio-shell .profile-form,.studio-shell .security-grid { grid-template-columns:minmax(0,1fr); }

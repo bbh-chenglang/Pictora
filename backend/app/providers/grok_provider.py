@@ -89,6 +89,8 @@ class GrokProvider(CompatibleProvider):
             error = ProviderRequestError(
                 status_code=exc.status_code,
                 response_content=exc.response.content,
+                secret=self._diagnostic_secret,
+                request_id=exc.response.headers.get("x-request-id") or exc.response.headers.get("request-id"),
                 content_type=exc.response.headers.get("content-type"),
                 retry_after_seconds=parse_retry_after(
                     exc.response.headers.get("retry-after")
@@ -105,9 +107,9 @@ class GrokProvider(CompatibleProvider):
         except APITimeoutError:
             self._log_generation_failure(request, started_at, "timeout")
             raise ProviderTimeoutError() from None
-        except APIError:
+        except APIError as exc:
             self._log_generation_failure(request, started_at, "api_error")
-            raise ProviderRequestError() from None
+            raise ProviderRequestError(cause=exc, secret=self._diagnostic_secret) from None
 
         images = normalize_image_results(response)
         logger.info(

@@ -352,9 +352,10 @@ describe("Pictora workspace", () => {
     expect(communityLabels).not.toContain("群号");
     expect(community.find(".community-qr").exists()).toBe(false);
     expect(community.find(".community-feedback-panel").exists()).toBe(true);
-    expect(wrapper.get(".settings-preferences").findAll("h2").map((heading) => heading.text())).toEqual([
-      "界面主题",
-    ]);
+    expect(wrapper.get(".settings-interface h2").text()).toBe("图片接口配置");
+    expect(wrapper.get(".settings-page > .video-settings h2").text()).toBe("视频接口配置");
+    expect(wrapper.get(".topbar [data-action='theme']").text()).toBe("界面主题");
+    expect(wrapper.get(".settings-page").text()).not.toContain("界面主题");
   });
 
   it("switches and remembers the selected background effect", async () => {
@@ -362,10 +363,11 @@ describe("Pictora workspace", () => {
     await flushPromises();
     expect(wrapper.find("canvas.flowing-grid-background").exists()).toBe(true);
 
+    await wrapper.get(".topbar [data-action='theme']").trigger("click");
+    expect(wrapper.get("[data-action='theme']").attributes("aria-expanded")).toBe("true");
     await wrapper.get("[data-action='settings']").trigger("click");
-    const options = wrapper.findAll("[data-background-effect]");
+    const options = wrapper.findAll(".topbar [data-background-effect]");
     expect(options).toHaveLength(2);
-    expect(wrapper.get("#background-effect-title").text()).toBe("界面主题");
     await wrapper.get("[data-background-effect='snowfall']").trigger("click");
 
     expect(wrapper.get("main").classes()).toContain("background-snowfall");
@@ -373,6 +375,8 @@ describe("Pictora workspace", () => {
     expect(wrapper.find("canvas.snowfall-background").exists()).toBe(true);
     expect(wrapper.find("canvas.flowing-grid-background").exists()).toBe(false);
     expect(window.localStorage.getItem("genimage-background-effect")).toBe("snowfall");
+    expect(wrapper.get("[data-action='theme']").attributes("aria-expanded")).toBe("false");
+    await wrapper.get("[data-action='theme']").trigger("click");
     expect(wrapper.get("[data-background-effect='snowfall']").attributes("aria-pressed")).toBe("true");
   });
 
@@ -3323,6 +3327,7 @@ describe("Pictora workspace", () => {
             generated_count: 0,
             error_code: "provider_request",
             error_message: "第一批生成失败",
+            error_details: { stage: "generation", http_status: 422, upstream_code: "invalid_size", parameter: "size", upstream_message: "像素数超限", upstream_request_id: "req-history-101" },
           },
           {
             id: 102,
@@ -3364,6 +3369,10 @@ describe("Pictora workspace", () => {
     expect(wrapper.findAll(".generation-failure-card")).toHaveLength(5);
     expect(wrapper.findAll(".generation-failure-card").map((card) => card.text()).join(" ")).toContain("只返回 1 张");
     expect(wrapper.findAll(".image-card")).toHaveLength(6);
+    const savedDetails = wrapper.findAll(".task-error-details").find((detail) => detail.text().includes("req-history-101"));
+    expect(savedDetails?.text()).toContain("像素数超限");
+    expect(savedDetails?.text()).toContain("size");
+    expect(savedDetails?.text()).toContain("上游生成");
 
     await wrapper.findAll(".generation-failure-card [aria-label='删除图片']")[0].trigger("click");
     await flushPromises();

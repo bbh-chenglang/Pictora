@@ -1,3 +1,4 @@
+import { apiFailureDetails, validationMessage } from "./errorDetails";
 export type MaterialType = "image" | "video" | "audio";
 export type VideoMaterial = { type: MaterialType; name: string; asset_id?: string; url?: string; preview_url?: string; duration_seconds?: number | null };
 export type VideoModel = {
@@ -10,7 +11,7 @@ export type VideoFeatures = { api_ready?: boolean; assets_ready: boolean; storag
 export type VideoKey = { id: number; alias: string; model: string; api_key_configured: boolean };
 export type VideoHistory = { id: number; prompt: string; model: string; status: string; upstream_status?: string | null; duration: number; resolution: string; ratio: string; created_at: string };
 export type VideoResult = { id: number; stored: number; filename: string; byte_size: number | null; duration_seconds: number | null; play_url: string; download_url: string };
-export type VideoErrorDetails = { stage?: string; upstream_code?: string; upstream_message?: string; parameter?: string; upstream_request_id?: string; upstream_task_id?: string; http_status?: number; reason_provided?: boolean; suggestion?: string };
+export type VideoErrorDetails = import("./errorDetails").TaskErrorDetails;
 export type VideoTask = VideoHistory & { started_at?: string | null; completed_at?: string | null; updated_at?: string | null; project_id: number; request_id: string; api_key_config_id: number | null; upstream_task_id: string | null; progress: number | null; tracking_abandoned: number; error_message: string | null; error_code: string | null; error_details?: VideoErrorDetails | null; materials: VideoMaterial[]; results: VideoResult[] };
 export type VideoRequestState = { state: "missing" | "closed" | "accepted"; task: VideoTask | null };
 export type ApiFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -48,7 +49,7 @@ export function videoValidation(model: VideoModel | undefined, duration: number,
   return issues;
 }
 export class VideoApiError extends Error {
-  constructor(message: string, public readonly status: number, public readonly code?: string) {
+  constructor(message: string, public readonly status: number, public readonly code?: string, public readonly details?: VideoErrorDetails) {
     super(message);
     this.name = "VideoApiError";
   }
@@ -58,7 +59,10 @@ export async function videoJson<T>(fetcher: ApiFetch, base: string, route: strin
   // A non-JSON 4xx is still a definitive rejection, whereas an unreadable 202/5xx
   // must remain ambiguous to the caller's persistent idempotency protection.
   const data = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new VideoApiError(data?.error?.message || (response.status === 422 ? "参数校验失败，请检查模型与素材" : "视频请求失败（" + response.status + "）"), response.status, data?.error?.code);
+  if (!response.ok) {
+    const message = data?.error?.message || validationMessage(data) || (response.status === 422 ? "参数校验失败，请检查模型与素材" : "视频请求失败（" + response.status + "）");
+    throw new VideoApiError(message, response.status, data?.error?.code, apiFailureDetails(data, response.status, message));
+  }
   if (data === null && response.status !== 204) throw new Error("视频响应无法读取，请用原请求 UUID 核对任务");
   return data as T;
 }

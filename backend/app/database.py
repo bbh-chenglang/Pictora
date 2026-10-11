@@ -10,7 +10,7 @@ OPENAI_BASE_URL = f"{RELAY_BASE_URL}/v1"
 GEMINI_BASE_URL = f"{RELAY_BASE_URL}/v1beta"
 # Kept for the legacy single-key settings API.
 FIXED_BASE_URL = OPENAI_BASE_URL
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -1086,6 +1086,9 @@ async def initialize_database(path: Path = DATABASE_PATH, **kwargs: object) -> N
         )
         await migrate_video(connection)
         await migrate_project_types(connection)
+        batch_columns = {row[1] for row in await (await connection.execute("PRAGMA table_info(generation_batches)")).fetchall()}
+        if "error_details_json" not in batch_columns:
+            await connection.execute("ALTER TABLE generation_batches ADD COLUMN error_details_json TEXT")
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS password_reset_codes (

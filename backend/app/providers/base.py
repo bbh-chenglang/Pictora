@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
+from app.error_details import failure_details, local_failure_details, safe_text
+
 from app.schemas.analyze import AnalyzeResponse
 from app.schemas.common import ImageResult
 from app.schemas.generate import (
@@ -39,6 +41,7 @@ class ProviderError(Exception):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         self.message = message
+        self.details = local_failure_details("generation", code, message)
         super().__init__(message)
 
 
@@ -65,14 +68,25 @@ class ProviderRequestError(ProviderError):
         response_content: bytes | None = None,
         content_type: str | None = None,
         retry_after_seconds: float | None = None,
+        request_id: str | None = None,
+        secret: str | None = None,
+        cause: Exception | None = None,
     ) -> None:
         message = "Provider request failed"
         if status_code is not None:
             message += f" (HTTP {status_code})"
-        upstream_message = _safe_upstream_error_message(response_content)
+        upstream_message = _safe_upstream_error_message(response_content, secret)
         if upstream_message:
             message += f": {upstream_message}"
         super().__init__("provider_request", message)
+        try:
+            payload = json.loads(response_content) if response_content and len(response_content) <= _MAX_ERROR_BODY_BYTES else {}
+        except (ValueError, UnicodeDecodeError):
+            payload = {}
+        self.details = failure_details(payload, "generation", secret=secret, http_status=status_code, request_id=request_id, media="image")
+        if cause is not None:
+            self.details = local_failure_details("response" if isinstance(cause, ValueError) else "generation", "provider_network",
+                                                 str(cause) or type(cause).__name__, exception=cause, secret=secret)
         self.status_code = status_code
         self.response_content = response_content
         self.content_type = content_type
@@ -133,7 +147,7 @@ def _extract_error_message(payload: Any) -> str | None:
     return None
 
 
-def _safe_upstream_error_message(response_content: bytes | None) -> str | None:
+def _safe_upstream_error_message(response_content: bytes | None, secret: str | None = None) -> str | None:
     if not response_content or len(response_content) > _MAX_ERROR_BODY_BYTES:
         return None
     try:
@@ -143,6 +157,7 @@ def _safe_upstream_error_message(response_content: bytes | None) -> str | None:
     message = _extract_error_message(payload)
     if not message:
         return None
+    message = (safe_text(message, secret, limit=_MAX_ERROR_BODY_BYTES) or "").replace("[redacted]", "[REDACTED]")
     message = " ".join(message.split())
     message = _BEARER_TOKEN.sub("Bearer [REDACTED]", message)
     message = _KNOWN_KEY_PREFIX.sub("[REDACTED]", message)
