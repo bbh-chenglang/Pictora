@@ -162,9 +162,6 @@
 .studio-shell .settings-page-heading h1 { color: var(--text); letter-spacing: -1px; }
 .studio-shell .settings-heading h1,
 .studio-shell .settings-heading h2 { font-size: 18px; font-weight: 600; color: var(--text); }
-.studio-shell .video-key-row { padding: 16px; border: 1px solid var(--line); background: var(--surface-subtle); border-radius: 11px; }
-.studio-shell .video-key-actions .secondary-action,
-.studio-shell .video-key-actions .danger-action { font-size: 11px; padding: 7px 10px; }
 .studio-shell .video-task-card { border-radius: 15px; padding: 19px; border-color: var(--line); box-shadow: 0 6px 20px -17px var(--polish-shadow-color); }
 .studio-shell .video-task-card header>div { font-size: 12px; color: var(--text-soft); }
 .studio-shell .video-task-card header>div>svg { color: var(--blue); }
@@ -236,7 +233,6 @@
 .studio-shell .video-composer label { margin:0; font-size:12px; }
 .studio-shell .video-composer input,.studio-shell .video-composer select,.studio-shell .video-composer textarea { font-weight:400; }
 .studio-shell .video-composer textarea { font-size:13px; }
-.studio-shell .video-heading p,.studio-shell .video-empty>p { font-size:13px; }
 .studio-shell .video-composer .video-prompt-label { margin-top:0; }
 
 /* The prompt fills its card without covering the save and generation controls. */

@@ -9,7 +9,7 @@ const expanded = ref<Record<number, boolean>>({});
 </script>
 <template>
   <aside class="project-sidebar" aria-label="视频项目列表">
-    <div class="sidebar-heading"><div><span>视频工作区</span><h2>项目</h2></div><button class="icon-action" type="button" aria-label="新建项目" @click="emit('create-project')"><Plus :size="17" /></button></div>
+    <div class="sidebar-heading"><h2>项目</h2><button class="icon-action" type="button" aria-label="新建项目" @click="emit('create-project')"><Plus :size="17" /></button></div>
     <div class="project-list"><section v-for="project in projects" :key="project.id" class="project-group" :class="{active: project.id === selectedProjectId}">
       <div class="project-row"><button class="project-select" type="button" @click="emit('select-project', project.id)"><Folder :size="16" /><span>{{ project.name }}</span><small>{{ project.video_history_count || 0 }}</small></button><button class="project-new-conversation" type="button" aria-label="新建视频草稿" @click="emit('new-video', project.id)"><Plus :size="15" /></button><button class="project-toggle" type="button" :aria-expanded="expanded[project.id] ?? project.id === selectedProjectId" aria-label="展开或收起视频历史" @click="expanded[project.id] = !(expanded[project.id] ?? project.id === selectedProjectId)"><ChevronDown v-if="expanded[project.id] ?? project.id === selectedProjectId" :size="15" /><ChevronRight v-else :size="15" /></button></div>
       <div v-if="expanded[project.id] ?? project.id === selectedProjectId" class="project-history">

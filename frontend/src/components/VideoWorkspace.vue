@@ -2,7 +2,7 @@
 import TaskErrorDetails from "./TaskErrorDetails.vue";
 import type { TaskErrorDetails as ErrorDetails } from "../errorDetails";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { ArrowUpRight, Check, CircleAlert, Film, ImagePlus, Info, Link2, Play, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles, Upload, X } from "lucide-vue-next";
+import { ArrowUpRight, Check, CircleAlert, ImagePlus, Info, Link2, Play, RefreshCw, SlidersHorizontal, Sparkles, Upload, X } from "lucide-vue-next";
 import VideoTaskCard from "./VideoTaskCard.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import { activeVideoStatuses, VideoApiError, jsonBody, materialIssue, materialLabels, videoJson, videoValidation, type ApiFetch, type MaterialType, type VideoFeatures, type VideoKey, type VideoMaterial, type VideoModel, type VideoTask, type VideoRequestState } from "../video";
@@ -166,7 +166,7 @@ async function submit() {
   try {
     const data = await videoJson<{ task: VideoTask }>(props.apiFetch, props.apiBase, "/api/videos/tasks", jsonBody({ ...body, request_id: pending.value.requestId }));
     if (disposed || version !== contextVersion) return;
-    pending.value = null; saveDraft(); tasks.value = [data.task, ...tasks.value.filter(t => t.id !== data.task.id)]; emit("select", data.task.id); emit("changed"); nextPoll(); note.value = "任务已持久化，每次提交只创建一个视频任务。";
+    pending.value = null; saveDraft(); tasks.value = [data.task, ...tasks.value.filter(t => t.id !== data.task.id)]; emit("select", data.task.id); emit("changed"); nextPoll(); note.value = "";
   } catch (e) {
     if (disposed || version !== contextVersion) return;
     submitError.value = e instanceof VideoApiError ? { code: e.code, details: e.details }
@@ -211,22 +211,13 @@ defineExpose({ addHistoryImage, refresh, newDraft });
   <section class="video-workspace" aria-label="视频生成工作台">
     <div class="video-stage">
       <header class="video-heading">
-        <div>
-          <span class="result-kicker"><Film :size="14" />MOTION STUDIO</span>
-          <h2>视频工作台<span class="video-heading-dot">.</span></h2>
-          <p>让每一个想法，都有自己的镜头。</p>
-        </div>
+        <h2>视频工作台</h2>
         <div class="video-heading-actions">
           <button class="secondary-action video-refresh" type="button" :disabled="loading" @click="refresh(true)"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
           <button v-if="selectedTaskId" class="secondary-action" type="button" @click="emit('select', null)">全部任务</button>
         </div>
       </header>
 
-      <div class="video-environment" v-if="features">
-        <span class="video-environment-state" :class="{ ready: features.storage_ready && features.media_tools_ready && features.api_ready !== false }"><i aria-hidden="true"></i>{{ features.storage_ready && features.media_tools_ready && features.api_ready !== false ? '创作环境就绪' : '创作环境未就绪' }}</span>
-        <span><ShieldCheck :size="13" />私有保存</span>
-        <span>每次生成 1 个视频</span>
-      </div>
       <div v-if="!features?.storage_ready && !loading" class="video-readiness warning" role="status"><CircleAlert :size="17" /><div><strong>视频存储尚未就绪</strong><p>R2 私有存储未配置或连接检查未通过，已禁用视频提交，避免扣费后无法保存。请联系管理员。</p></div></div>
       <div v-if="features?.api_ready === false" class="video-readiness warning" role="status"><CircleAlert :size="17" /><div><strong>视频服务地址需要配置</strong><p>请管理员设置可信的 HTTPS 根地址（不要添加 /v1）。图片功能不受影响。</p></div></div>
       <div v-if="features && !features.media_tools_ready" class="video-readiness warning" role="status"><CircleAlert :size="17" /><div><strong>媒体校验工具尚未就绪</strong><p>服务器缺少 ffprobe，暂不能提交或校验视频素材。</p></div></div>
@@ -243,21 +234,17 @@ defineExpose({ addHistoryImage, refresh, newDraft });
         <div v-if="!visibleTasks.length" class="video-empty">
           <div class="video-empty-art" aria-hidden="true">
             <div class="video-art-frame frame-back"></div>
-            <div class="video-art-frame frame-front"><span class="video-art-label">PICTORA / MOTION</span><div class="video-art-orbit"></div><span class="video-art-play"><Play :size="24" fill="currentColor" /></span><div class="video-art-timeline"><i></i><i></i><i></i><i></i><i></i><span>00:05</span></div></div>
+            <div class="video-art-frame frame-front"><div class="video-art-orbit"></div><span class="video-art-play"><Play :size="24" fill="currentColor" /></span><div class="video-art-timeline"><i></i><i></i><i></i><i></i><i></i></div></div>
             <span class="video-art-spark"><Sparkles :size="17" /></span>
           </div>
-          <span class="video-empty-kicker">YOUR NEXT STORY STARTS HERE</span>
-          <h3>{{ loading ? '正在准备你的工作台…' : '让灵感，开始流动。' }}</h3>
-          <p>描述一个画面、一段动作，或一种氛围。<br />接下来的镜头，交给 Pictora。</p>
-          <button class="video-start-writing" type="button" @click="promptInput?.focus()">写下第一个镜头<ArrowUpRight :size="16" /></button>
-          <div class="video-empty-tags"><span><Film :size="13" />文生视频</span><span v-if="allowedKinds.includes('image')"><ImagePlus :size="13" />图片参考</span><span v-if="allowedKinds.includes('video') || allowedKinds.includes('audio')"><Sparkles :size="13" />多模态创作</span></div>
+          <h3>{{ loading ? '加载中…' : '暂无视频任务' }}</h3>
+          <button class="video-start-writing" type="button" @click="promptInput?.focus()">填写提示词<ArrowUpRight :size="16" /></button>
         </div>
       </div>
-      <div class="video-stage-footnote"><span>从一帧想象，到一段故事。</span><span>PICTORA STUDIO</span></div>
     </div>
 
     <form class="video-composer" @submit.prevent="submit">
-      <header class="video-composer-heading"><span class="video-composer-icon"><SlidersHorizontal :size="18" /></span><div><h3>创作设置</h3><p>为你的下一段故事设定镜头</p></div></header>
+      <header class="video-composer-heading"><span class="video-composer-icon"><SlidersHorizontal :size="18" /></span><h3>创作设置</h3></header>
       <div class="video-composer-body">
         <div v-if="pending" class="video-pending">
           <p>上次提交的结果尚未确认。核对后会找回已有任务，或解除旧请求；当前草稿会保留。</p>
@@ -284,7 +271,7 @@ defineExpose({ addHistoryImage, refresh, newDraft });
         <ul v-if="issues.length && models.length" class="video-validation"><li v-for="issue in issues" :key="issue">{{ issue }}</li></ul>
         <details class="video-upload-guidelines"><summary>素材限制与使用说明</summary><p>首尾帧控制暂未开放。应用上传限制：图片 10 MB、MP4 100 MB、MP3/WAV 20 MB，不代表上游支持保证。素材重命名后请同步检查提示词中的 @引用。</p></details>
       </div>
-      <footer class="video-submit-row"><button class="primary-action" data-action="generate-video" type="submit" :disabled="busy || (pending ? !projectId : !canSubmit)"><Sparkles :size="16" />{{ busy ? '处理中…' : pending ? '核对上次提交（不生成）' : '生成视频' }}<ArrowUpRight v-if="!busy && !pending" :size="17" /></button><p><ShieldCheck :size="12" />生成结果保存至 R2 私有存储</p></footer>
+      <footer class="video-submit-row"><button class="primary-action" data-action="generate-video" type="submit" :disabled="busy || (pending ? !projectId : !canSubmit)"><Sparkles :size="16" />{{ busy ? '处理中…' : pending ? '核对上次提交（不生成）' : '生成视频' }}<ArrowUpRight v-if="!busy && !pending" :size="17" /></button></footer>
     </form>
     <div v-if="pickerOpen" class="video-picker-layer" role="dialog" aria-modal="true" aria-label="选择已有图片" @click.self="pickerOpen = false"><section><header><h3>已有生成图片（当前项目最近 20 条）</h3><button class="icon-action" type="button" aria-label="关闭图片选择" @click="pickerOpen = false"><X :size="20" /></button></header><div class="video-image-picker"><button v-for="image in imageChoices" :key="image.id" type="button" :disabled="busy" @click="addHistoryImage(image.history_id,image.id)"><img :src="apiBase + image.url" :alt="image.filename || '生成图片'" /></button></div><p v-if="!imageChoices.length">暂无可选图片。</p></section></div>
     <ConfirmDialog :open="confirm !== null" :title="confirm?.action === 'abandon' ? '放弃本地追踪' : confirm?.action === 'bind' ? '接管上游任务' : '删除视频记录'" :message="confirm?.action === 'abandon' ? '放弃仅停止本站查询，不会取消上游任务，也不会触发退款。确定放弃吗？' : confirm?.action === 'bind' ? '将使用原视频 Key 查询此上游 ID，验证通过后继续查询或保存；不创建新视频。确定接管吗？' : '将删除视频记录及无人引用的素材，R2 对象进入可重试的持久化清理队列。无法恢复。'" :confirm-label="confirm?.action === 'abandon' ? '确认放弃本地追踪' : confirm?.action === 'bind' ? '验证并接管' : '确认删除'" :busy="busy" @confirm="confirm && runAction(confirm.task,confirm.action,confirm.upstreamId)" @cancel="confirm = null" />
@@ -293,16 +280,10 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 <style scoped>
 .video-workspace { display:grid; grid-template-columns:minmax(0,1fr) 396px; gap:24px; height:100%; min-height:0; padding:28px; color:var(--text); }
 .video-stage { display:flex; flex-direction:column; gap:16px; min-height:0; min-width:0; }
-.video-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
-.video-heading h2 { margin:8px 0 7px; font-size:27px; font-weight:700; letter-spacing:-.9px; }
-.video-heading-dot { color:var(--blue); }
-.video-heading p { margin:0; font-size:12px; line-height:1.7; color:var(--muted); }
-.video-heading-actions { display:flex; gap:8px; padding-top:4px; flex-wrap:wrap; justify-content:flex-end; }
+.video-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.video-heading h2 { margin:0; font-size:27px; font-weight:700; letter-spacing:-.9px; }
+.video-heading-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .video-refresh { font-size:12px; }
-.video-environment { display:flex; align-items:center; flex-wrap:wrap; gap:10px 18px; color:var(--muted); font-size:11px; }
-.video-environment>span { display:inline-flex; align-items:center; gap:5px; }
-.video-environment-state i { width:6px; height:6px; border-radius:50%; background:var(--amber); }
-.video-environment-state.ready i { background:var(--green); box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 10%,transparent); }
 .video-readiness { margin:0; padding:13px 15px; border:1px solid var(--line); border-radius:12px; font-size:12px; line-height:1.7; }
 .video-readiness.warning { display:flex; gap:10px; align-items:flex-start; background:color-mix(in srgb,var(--amber) 7%,var(--surface)); }
 .video-readiness.warning>svg { flex-shrink:0; margin-top:2px; color:var(--amber); }
@@ -317,33 +298,24 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 .video-task-wall { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr)); align-content:start; gap:18px; min-height:0; overflow:auto; flex:1; padding:2px; }
 .video-task-wall.is-empty { display:flex; align-items:center; justify-content:center; border:1px dashed var(--line-strong); border-radius:20px; background:color-mix(in srgb,var(--surface) 65%,transparent); }
 .video-empty { display:flex; flex-direction:column; align-items:center; text-align:center; padding:35px 20px; width:100%; }
-.video-empty-kicker { color:var(--muted-dim); font-size:9px; letter-spacing:2px; margin-top:25px; }
 .video-empty h3 { color:var(--text); margin:13px 0 12px; font-size:clamp(22px,2vw,30px); line-height:1.5; letter-spacing:-1px; font-weight:600; }
-.video-empty>p { margin:0; color:var(--muted); font-size:12px; line-height:1.95; }
 .video-start-writing { display:inline-flex; align-items:center; gap:7px; color:var(--blue); background:none; border:0; padding:11px 9px; margin-top:12px; font-size:12px; cursor:pointer; }
 .video-start-writing:hover { color:var(--blue-hover); }
-.video-empty-tags { display:flex; justify-content:center; flex-wrap:wrap; gap:7px; margin-top:24px; }
-.video-empty-tags span { display:flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:6px; padding:7px 9px; font-size:10px; color:var(--muted); background:var(--surface); }
 .video-empty-art { position:relative; width:238px; height:153px; margin:0 auto; }
 .video-art-frame { position:absolute; width:204px; height:132px; border:1px solid var(--line-strong); border-radius:14px; }
 .frame-back { top:0; left:6px; transform:rotate(-9deg); background:var(--surface-subtle); }
 .frame-front { left:21px; top:13px; overflow:hidden; background:var(--surface); box-shadow:0 16px 30px -16px var(--polish-shadow-color); transform:rotate(4deg); }
-.video-art-label { position:absolute; left:14px; top:13px; font-size:7px; letter-spacing:1px; color:var(--muted-dim); }
 .video-art-play { position:absolute; inset:34px auto auto 78px; display:grid; place-items:center; width:47px; height:47px; color:var(--blue); background:var(--blue-soft); border:1px solid color-mix(in srgb,var(--blue) 18%,transparent); border-radius:14px; }
 .video-art-play svg { margin-left:3px; }
 .video-art-orbit { position:absolute; width:136px; height:136px; top:4px; left:33px; border:1px solid var(--line); border-radius:50%; }
 .video-art-timeline { position:absolute; bottom:13px; left:14px; right:14px; display:flex; align-items:center; gap:4px; height:13px; }
 .video-art-timeline i { height:3px; background:var(--line-strong); border-radius:2px; flex:1; }
 .video-art-timeline i:nth-child(-n+2) { background:var(--blue); opacity:.55; }
-.video-art-timeline span { padding-left:6px; color:var(--muted-dim); font-size:7px; }
 .video-art-spark { position:absolute; right:0; top:1px; display:grid; place-items:center; width:32px; height:32px; background:var(--surface); color:var(--blue); border:1px solid var(--line); border-radius:10px; transform:rotate(10deg); }
-.video-stage-footnote { display:flex; justify-content:space-between; gap:10px; padding:0 2px; font-size:10px; color:var(--muted-dim); }
-.video-stage-footnote>span:last-child { letter-spacing:1.3px; font-size:8px; }
 .video-composer { display:flex; flex-direction:column; min-height:0; border:1px solid var(--line); border-radius:18px; background:var(--surface); box-shadow:0 10px 30px -20px var(--polish-shadow-color); overflow:hidden; }
 .video-composer-heading { display:flex; gap:11px; align-items:center; padding:19px 21px; border-bottom:1px solid var(--line); }
 .video-composer-icon { width:36px; height:36px; display:grid; place-items:center; border-radius:11px; background:var(--blue-soft); color:var(--blue); }
-.video-composer-heading h3 { font-size:14px; margin:0 0 4px; font-weight:600; }
-.video-composer-heading p { font-size:10px; color:var(--muted); margin:0; }
+.video-composer-heading h3 { font-size:14px; margin:0; font-weight:600; }
 .video-composer-body { padding:21px; overflow:auto; flex:1; min-height:0; }
 .video-pending { display:grid; gap:10px; margin-bottom:16px; padding:12px; border:1px solid var(--line); border-radius:9px; }
 .video-pending p { margin:0; color:var(--text-soft); font-size:11px; line-height:1.6; }
@@ -395,7 +367,6 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 .video-submit-row .primary-action { width:100%; min-height:43px; justify-content:center; gap:8px; font-size:13px; }
 .video-submit-row .primary-action>svg:last-child { margin-left:auto; }
 .video-submit-row .primary-action>svg:first-child { margin-right:auto; }
-.video-submit-row p { display:flex; align-items:center; justify-content:center; gap:5px; margin:10px 0 0; font-size:9px; color:var(--muted-dim); }
 .video-picker-layer { position:fixed; inset:0; z-index:900; background:var(--prompt-snow-overlay); display:grid; place-items:center; padding:20px; backdrop-filter:blur(6px); }
 .video-picker-layer>section { width:min(800px,100%); max-height:80vh; overflow:auto; background:var(--surface); padding:24px; border:1px solid var(--line); border-radius:18px; box-shadow:var(--shadow-menu); }
 .video-picker-layer header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px; }
@@ -405,9 +376,9 @@ defineExpose({ addHistoryImage, refresh, newDraft });
 .video-image-picker button { border:1px solid var(--line); border-radius:10px; padding:0; background:none; overflow:hidden; cursor:pointer; }
 .video-image-picker button:hover { border-color:var(--blue); }
 @media(min-width:1600px) { .video-workspace { grid-template-columns:minmax(0,1fr) 428px; padding:34px; gap:32px; } }
-@media(max-width:1200px) { .video-workspace { grid-template-columns:minmax(0,1fr) 352px; padding:22px; gap:18px; } .video-heading h2 { font-size:24px; } .video-environment { gap:10px; } }
+@media(max-width:1200px) { .video-workspace { grid-template-columns:minmax(0,1fr) 352px; padding:22px; gap:18px; } .video-heading h2 { font-size:24px; } }
 @media(max-width:1020px) { .video-workspace { display:flex; flex-direction:column; height:auto; padding:22px; } .video-stage { min-height:490px; } .video-composer { flex-shrink:0; } .video-composer-body { overflow:visible; } .video-parameters { grid-template-columns:repeat(3,minmax(0,1fr)); } .video-parameters .video-key-field,.video-parameters .video-model-field { grid-column:auto; } .video-parameters .video-model-field { grid-column:span 2; } .video-link-form { grid-template-columns:minmax(0,1fr) minmax(0,.7fr) 88px; } .video-url-field,.video-link-form .video-name-field { grid-column:auto; } }
-@media(max-width:600px) { .video-workspace { padding:18px 14px; gap:22px; } .video-heading h2 { font-size:23px; } .video-environment { font-size:10px; } .video-empty { padding:34px 15px; } .video-empty h3 { font-size:25px; } .video-stage { min-height:470px; } .video-stage-footnote>span:last-child { display:none; } .video-composer-heading,.video-composer-body,.video-submit-row { padding-left:17px; padding-right:17px; } .video-parameters .video-key-field,.video-parameters .video-model-field { grid-column:1/-1; } .video-link-form { grid-template-columns:minmax(0,1fr) 88px; } .video-url-field { grid-column:1/-1; } }
+@media(max-width:600px) { .video-workspace { padding:18px 14px; gap:22px; } .video-heading h2 { font-size:23px; } .video-empty { padding:34px 15px; } .video-empty h3 { font-size:25px; } .video-stage { min-height:470px; } .video-composer-heading,.video-composer-body,.video-submit-row { padding-left:17px; padding-right:17px; } .video-parameters .video-key-field,.video-parameters .video-model-field { grid-column:1/-1; } .video-link-form { grid-template-columns:minmax(0,1fr) 88px; } .video-url-field { grid-column:1/-1; } }
 </style>
 
 

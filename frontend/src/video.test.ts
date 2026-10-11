@@ -205,7 +205,7 @@ describe("independent video workspace", () => {
     expect(JSON.parse(String(creates[0][1]?.body))).toMatchObject({ project_id: 1, model: "sd-2.0-J2", duration: 5, resolution: "720p", materials: [] });
     expect(JSON.parse(String(creates[0][1]?.body)).request_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(api.mock.calls.some(([url]) => String(url).includes("generation-tasks") || String(url).endsWith("/api/generate"))).toBe(false);
-    expect(wrapper.text()).toContain("任务已持久化");
+    expect(wrapper.get('[data-video-task="1"] .video-task-prompt').text()).toBe("pan slowly");
   });
   it("applies the selected video's Key default model only when explicitly selected", async () => {
     const { wrapper, api } = await workspace(); const fallback = api.getMockImplementation()!;
@@ -419,15 +419,14 @@ describe("video task and Key controls", () => {
     expect(wrapper.get("video").attributes("src")).toContain("/play?v=0"); expect(wrapper.get("a").attributes("href")).toContain("/download");
     await button(wrapper, "刷新播放链接").trigger("click"); expect(wrapper.get("video").attributes("src")).toContain("v=1"); expect(wrapper.emitted("action")).toBeUndefined();
   });
-  it("routes Key CRUD/select and free connection test separately from image settings", async () => {
+  it("routes Key CRUD and free connection test separately from image settings", async () => {
     const { api } = server(); const fallback = api.getMockImplementation()!;
     api.mockImplementation(async (url, init) => {
       if (String(url).endsWith("/test")) return response({ message: "连接正常（未生成视频）", models: [baseModel.id] });
       if (init?.method && init.method !== "GET") return response({}); return fallback(url, init);
     });
     const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
-    expect(wrapper.text()).toContain("默认服务根地址：https://direct.beibeihai.xyz");
-    await button(wrapper, "非付费连接测试").trigger("click"); await flushPromises();
+    await button(wrapper, "测试").trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("未生成视频");
     await wrapper.get('[data-action="add-video-key"]').trigger("click");
     await wrapper.get("form input[maxlength='80']").setValue("new Key"); await wrapper.get('form input[type="password"]').setValue("secret-new");
@@ -448,9 +447,9 @@ describe("video task and Key controls", () => {
       return fallback(url, init);
     });
     const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
+    await wrapper.get('[data-action="add-video-key"]').trigger("click");
     await wrapper.get('[data-action="sync-video-models"]').trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("已同步 1 个视频模型");
-    await wrapper.get('[data-action="add-video-key"]').trigger("click");
     expect(wrapper.get<HTMLSelectElement>("form select").element.value).toBe(discovered.id);
     await wrapper.get("form input[maxlength='80']").setValue("Synced Key");
     await wrapper.get('form input[type="password"]').setValue("secret-new");
@@ -463,6 +462,7 @@ describe("video task and Key controls", () => {
     api.mockImplementation(async (url, init) => String(url).endsWith("/api/videos/models?refresh=true")
       ? response({ models, features: { ...ready, catalog_source: "cached_live_catalog" } }) : fallback(url, init));
     const wrapper = keep(mount(VideoSettings, { props: { apiFetch: api, apiBase: "" } })); await flushPromises();
+    await button(wrapper, "编辑").trigger("click");
     await wrapper.get('[data-action="sync-video-models"]').trigger("click"); await flushPromises();
     expect(wrapper.text()).toContain("上游目录暂不可用，保留已有模型目录");
     expect(api.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
