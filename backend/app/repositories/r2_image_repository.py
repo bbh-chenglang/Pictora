@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS r2_image_uploads (
 );
 CREATE INDEX IF NOT EXISTS idx_r2_image_uploads_due
     ON r2_image_uploads(status, next_attempt_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_r2_image_uploads_destination_order
+    ON r2_image_uploads(endpoint, bucket, next_attempt_at, created_at, id);
 """
 
 
@@ -74,9 +76,8 @@ class R2ImageRepository:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.execute("BEGIN IMMEDIATE")
             row = await (await db.execute(
-                """SELECT job.*, image.data
-                   FROM r2_image_uploads AS job
-                   LEFT JOIN history_images AS image ON image.id = job.image_id
+                """SELECT job.*
+                   FROM r2_image_uploads AS job INDEXED BY idx_r2_image_uploads_destination_order
                    WHERE job.endpoint = ? AND job.bucket = ?
                      AND job.status != 'deleted' AND job.next_attempt_at <= ?
                      AND (
@@ -91,6 +92,12 @@ class R2ImageRepository:
                 await db.rollback()
                 return None
             job = dict(row)
+            # Fetch only the claimed original, never sort pending image BLOBs
+            # while holding the database write lock.
+            image = await (await db.execute(
+                "SELECT data FROM history_images WHERE id = ?", (job['image_id'],),
+            )).fetchone()
+            job['data'] = image[0] if image is not None else None
             job['lease_id'] = uuid4().hex
             job['attempts'] += 1
             await db.execute(
@@ -102,7 +109,7 @@ class R2ImageRepository:
             return job
 
     async def complete(self, job: dict, *, deleted: bool = False) -> None:
-        async with aiosqlite.connect(self.database_path) as db:
+        async with aiosqlite.connect(self.database_path, timeout=15) as db:
             await db.execute("BEGIN IMMEDIATE")
             # A deletion while uploading detaches image_id. Queue cleanup instead
             # of publishing an object whose original record no longer exists.
@@ -170,7 +177,7 @@ class R2ImageRepository:
 
     async def retry(self, job: dict, error_code: str) -> None:
         delay = min(3600, 5 * 2 ** min(job['attempts'], 10))
-        async with aiosqlite.connect(self.database_path) as db:
+        async with aiosqlite.connect(self.database_path, timeout=15) as db:
             await db.execute(
                 """UPDATE r2_image_uploads SET status = 'retry', next_attempt_at = ?,
                    lease_id = NULL, lease_until = 0, last_error_code = ?

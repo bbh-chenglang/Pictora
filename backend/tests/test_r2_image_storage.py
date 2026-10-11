@@ -189,6 +189,22 @@ async def test_two_workers_cannot_claim_the_same_job(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parallel_workers_complete_backlog_without_duplicate_uploads(tmp_path):
+    db = tmp_path/'test.db'
+    history, hid, repo, storage, s3 = await setup(db)
+    image_ids = [await add(history, hid) for _ in range(16)]
+    async def drain():
+        while await storage.run_once():
+            pass
+    await asyncio.gather(*(drain() for _ in range(8)))
+    assert len(s3.puts) == len(image_ids)
+    assert len({p['Key'] for p in s3.puts}) == len(image_ids)
+    assert all(row['status'] == 'ready' for row in await jobs(db))
+    for image_id in image_ids:
+        assert (await history.get_image(1, hid, image_id)).data == b''
+
+
+@pytest.mark.asyncio
 async def test_stale_lease_is_recovered_and_old_owner_cannot_complete(tmp_path):
     db = tmp_path/'test.db'
     history, hid, repo, storage, _ = await setup(db)
@@ -391,6 +407,15 @@ async def test_migration_command_is_resumable_and_preserves_record_counts(tmp_pa
     monkeypatch.setattr(migration, 'DATABASE_PATH', db)
     monkeypatch.setattr(migration, 'Settings', r2_settings)
     monkeypatch.setattr(migration, 'R2ImageStorage', lambda *args: storage)
+    original_run_once = storage.run_once
+    calls = 0
+    async def transient_lock():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise aiosqlite.OperationalError('database is locked')
+        return await original_run_once()
+    monkeypatch.setattr(storage, 'run_once', transient_lock)
     assert await migration.migrate(10) == 0
     assert (await history.get_image(1, hid, image_id)).data == b''
     assert (await history.get_image(1, hid, reference)).data == PNG

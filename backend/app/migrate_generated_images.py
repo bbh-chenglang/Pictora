@@ -76,7 +76,14 @@ async def migrate(max_wait):
         if now >= deadline:
             print('migration_wait_timeout; queued jobs remain durable and resumable', flush=True)
             return 2
-        if not await storage.run_once():
+        try:
+            processed = await storage.run_once()
+        except aiosqlite.OperationalError:
+            # A transient write lock must not abort an otherwise durable migration.
+            print('database_busy; retrying persisted jobs', flush=True)
+            await asyncio.sleep(2)
+            continue
+        if not processed:
             last_report = 0.0
             await asyncio.sleep(2)
 
