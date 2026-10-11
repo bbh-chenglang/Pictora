@@ -1,10 +1,11 @@
 # Pictora generated-image R2 storage
 
-R2 is opt-in and archives only newly inserted `generated` images. Existing images
-and `reference` images are not queued or migrated. The local SQLite BLOB is retained
-as a fallback. R2 uploads and SHA-256 readback verification run outside the generation
-request. Stable object keys, persisted leases and bounded retries survive restarts.
-No model generation is retried by the storage worker.
+R2 is opt-in and stores newly inserted `generated` images. The local SQLite BLOB
+is temporary: the worker uploads the original, downloads it for size and SHA-256
+verification, then atomically marks the object ready and clears the local original.
+Failed uploads or failed verification retain local bytes for retry. Stable object
+keys, persisted leases and bounded retries survive restarts. No model generation
+is retried by the storage worker. Reference images remain local.
 
 Create a root-private `.env.r2` beside `compose.yaml` (never commit it):
 
@@ -22,10 +23,11 @@ preserving APP_VERSION and all existing environment values. Drain active generat
 tasks first. The startup migration adds an outbox table; it does not modify historical
 image BLOBs. Preserve the data volume and an image/source rollback snapshot.
 
-The existing authenticated history-image route checks ownership before any R2 read.
-It prefers verified R2 objects and falls back to local data on missing objects or
-storage errors. No bucket/public-domain access change is required. Thumbnails and
-reference-image editing retain their existing local behavior.
+The authenticated history-image route checks ownership before any R2 read. Local
+data remains readable while an upload is pending. Once the local original is cleared,
+R2 errors return HTTP 503 with Retry-After rather than an empty image. Cached local
+thumbnails remain available; missing thumbnails and image-to-video references can
+read originals from R2. No bucket/public-domain access change is required.
 
 Deleting a new image detaches its outbox via ON DELETE SET NULL. The worker then
 removes only its recorded R2 object; records for existing historical images are absent.
@@ -36,9 +38,30 @@ Inspect status without reading images/prompts/credentials:
 SELECT status, COUNT(*) FROM r2_image_uploads GROUP BY status;
 ```
 
-Disable by setting R2_ENABLED=false and recreating backend. All local images remain
-readable; pending uploads remain persisted for a later re-enable. Do not remove the
-original image BLOBs without a separate, explicitly requested retention migration.
+Disabling R2 pauses uploads and makes remote-only originals unavailable. Keep the
+configured bucket and credentials accessible after migrating. Restoring old code
+alone does not restore cleared originals; use a compatible reader or restore the
+database backup with appropriate handling of newer data.
+
+## Explicit historical migration
+
+Startup does not scan historical images. After an authorized database backup, run
+inside the backend container:
+
+```sh
+python -m app.migrate_generated_images
+```
+
+The command queues existing generated images one at a time, preserves existing
+object keys, and reverifies previously archived originals before clearing their
+local bytes. It is resumable and uses the same leased jobs as the background worker.
+References, users, projects, history records, and thumbnails are preserved. Progress
+reports include remaining local originals and bytes. No paid model calls are made.
+
+SQLite reuses freed pages but does not automatically shrink its file. To reclaim
+disk space immediately, drain active tasks and stop the backend before running
+SQLite VACUUM, then restart and verify the backend and web proxy. Keep only the
+latest verified deployment backup according to the administrator's retention policy.
 
 ## Coexistence with video storage
 
@@ -51,5 +74,5 @@ its configured identity.
 Image storage continues using `R2_ENDPOINT`, `R2_BUCKET`, and `R2_PREFIX`.
 Video storage uses `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, and `R2_KEY_PREFIX`.
 They may use the same private bucket with different prefixes. Set both sets of
-destination fields when enabling both features. No historical-image backfill,
-public bucket, or lifecycle-policy change is performed during this deployment.
+destination fields when enabling both features. Historical backfill is explicitly
+invoked; bucket access and lifecycle policies are managed separately.

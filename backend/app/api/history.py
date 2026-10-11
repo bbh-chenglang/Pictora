@@ -4,7 +4,7 @@ from starlette.concurrency import run_in_threadpool
 from app.dependencies import get_current_user, get_history_repository, get_r2_image_storage
 from app.image_thumbnails import ThumbnailGenerationError, create_webp_thumbnail
 from app.repositories.history_repository import HistoryRepository
-from app.services.r2_image_storage import R2ImageStorage
+from app.services.r2_image_storage import R2ImageStorage, R2ImageUnavailableError
 from app.schemas.history import GenerationBatchDetail, HistoryDetail, HistoryImageEditSnapshot, HistorySummary
 from app.schemas.auth import StoredSessionUser
 
@@ -35,6 +35,17 @@ def _etag_matches(if_none_match: str | None, etag: str) -> bool:
         candidate == "*" or candidate.removeprefix("W/") == normalized_etag
         for candidate in (value.strip() for value in if_none_match.split(","))
     )
+
+
+async def _read_original(storage: R2ImageStorage, image) -> bytes:
+    try:
+        return await storage.read_or_fallback(image.id, image.data)
+    except R2ImageUnavailableError:
+        raise HTTPException(
+            503,
+            {"error": {"code": "image_storage_unavailable", "message": "图片存储暂不可用，请稍后重试"}},
+            headers={"Retry-After": "5"},
+        ) from None
 
 
 @router.get("", response_model=list[HistorySummary])
@@ -104,7 +115,7 @@ async def read_history_image(
     headers = _history_image_headers(history_id, image_id)
     if _etag_matches(request.headers.get("if-none-match"), headers["ETag"]):
         return Response(status_code=304, headers=headers)
-    data = await storage.read_or_fallback(image.id, image.data)
+    data = await _read_original(storage, image)
     return Response(
         content=data,
         media_type=image.mime_type,
@@ -119,6 +130,7 @@ async def read_history_image_thumbnail(
     request: Request,
     user: StoredSessionUser = Depends(get_current_user),
     repository: HistoryRepository = Depends(get_history_repository),
+    storage: R2ImageStorage = Depends(get_r2_image_storage),
 ) -> Response:
     thumbnail = await repository.get_image_thumbnail(user.id, history_id, image_id)
     if thumbnail is None:
@@ -134,7 +146,8 @@ async def read_history_image_thumbnail(
                 },
             )
         try:
-            generated = await run_in_threadpool(create_webp_thumbnail, image.data)
+            data = await _read_original(storage, image)
+            generated = await run_in_threadpool(create_webp_thumbnail, data)
         except ThumbnailGenerationError as exc:
             raise HTTPException(
                 422,

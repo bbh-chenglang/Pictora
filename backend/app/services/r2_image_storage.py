@@ -1,4 +1,4 @@
-"""Private R2 archival with verification, retries and local read fallback."""
+"""Private R2 storage; local originals are temporary until verified upload."""
 import asyncio
 import hashlib
 import logging
@@ -11,6 +11,10 @@ from app.repositories.r2_image_repository import R2ImageDestination, R2ImageRepo
 
 logger = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 100 * 1024 * 1024
+
+
+class R2ImageUnavailableError(Exception):
+    """The original exists only in R2, which is currently unavailable."""
 
 
 def destination_from_settings(settings: Settings) -> R2ImageDestination | None:
@@ -146,16 +150,23 @@ class R2ImageStorage:
                 await asyncio.gather(self._task, return_exceptions=True)
 
     async def read_or_fallback(self, image_id: int, local_data: bytes) -> bytes:
-        if self.destination is None or time.monotonic() < self._read_backoff_until:
+        if local_data and (self.destination is None or time.monotonic() < self._read_backoff_until):
             return local_data
+        if self.destination is None:
+            raise R2ImageUnavailableError('Remote image storage is disabled')
         try:
             job = await self.repository.ready_for_image(image_id, self.destination)
             if job is None:
-                return local_data
+                if local_data:
+                    return local_data
+                raise R2ImageUnavailableError('Remote image storage record is unavailable')
             data = await asyncio.to_thread(self._read_verified, job)
             logger.info('r2_image_read image_id=%s bytes=%s', image_id, len(data))
             return data
         except Exception as exc:
             self._read_backoff_until = time.monotonic() + 30
-            logger.warning('r2_image_read_local_fallback image_id=%s error_code=%s', image_id, safe_error_code(exc))
-            return local_data
+            event = 'r2_image_read_local_fallback' if local_data else 'r2_image_read_unavailable'
+            logger.warning('%s image_id=%s error_code=%s', event, image_id, safe_error_code(exc))
+            if local_data:
+                return local_data
+            raise R2ImageUnavailableError('Remote image is temporarily unavailable') from None

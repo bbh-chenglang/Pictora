@@ -17,6 +17,7 @@ from app.video.provider import VideoProvider,UnavailableVideoProvider
 from app.video.repository import VideoError,VideoRepository
 from app.video.errors import failure_details, failure_summary
 from app.video.storage import R2Storage
+from app.services.r2_image_storage import R2ImageUnavailableError
 from app.video.schemas import TRACKED_STATUSES
 
 logger=logging.getLogger(__name__)
@@ -255,12 +256,22 @@ class VideoService:
         await self.repository.update_task(task_id,status='abandoned',tracking_abandoned=1,error_code='video_tracking_abandoned',error_message='已放弃本地追踪；不会取消上游任务或触发退款')
         return await self.repository.get_task(user_id,task_id,public=True)
 
-    async def history_image(self,user_id,history_repository,history_id,image_id,name=''):
+    async def history_image(self,user_id,history_repository,history_id,image_id,name='',*,image_storage=None):
         if not self.assets.ready: raise VideoError('video_assets_unconfigured','已有图片引用需要公网 HTTPS 素材配置',503)
         image=await history_repository.get_image(user_id,history_id,image_id)
         if image is None: raise VideoError('video_image_not_found','图片不存在',404)
-        upload=UploadFile(filename=image.filename or 'reference.png',file=io.BytesIO(image.data))
-        return await self.assets.ingest(user_id,'image',upload,name)
+        data=image.data
+        if image_storage is not None:
+            try:
+                data=await image_storage.read_or_fallback(image.id,data)
+            except R2ImageUnavailableError:
+                raise VideoError('image_storage_unavailable','图片存储暂不可用，请稍后重试',503) from None
+        if not data: raise VideoError('image_storage_unavailable','图片存储暂不可用，请稍后重试',503)
+        upload=UploadFile(filename=image.filename or 'reference.png',file=io.BytesIO(data))
+        try:
+            return await self.assets.ingest(user_id,'image',upload,name)
+        finally:
+            await upload.close()
 
     async def recover(self):
         rows=await self.repository.rows("SELECT * FROM video_tasks WHERE status IN ('queued','submitting','running','saving') AND tracking_abandoned=0")

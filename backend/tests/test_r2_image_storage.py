@@ -18,7 +18,7 @@ from app.repositories.history_repository import HistoryRepository
 from app.repositories.r2_image_repository import R2ImageRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import StoredSessionUser
-from app.services.r2_image_storage import R2ImageStorage, destination_from_settings, safe_error_code
+from app.services.r2_image_storage import R2ImageStorage, R2ImageUnavailableError, destination_from_settings, safe_error_code
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j3ioAAAAASUVORK5CYII=')
 
@@ -104,7 +104,9 @@ async def test_only_future_generated_images_are_queued(tmp_path):
     assert (await jobs(db))[0]['status'] == 'ready'
     assert await history.get_image(1, hid, old)
     assert await history.get_image(1, hid, reference)
-    assert (await history.get_image(1, hid, new)).data == PNG
+    assert (await history.get_image(1, hid, new)).data == b''
+    assert (await history.get_image(1, hid, old)).data == PNG
+    assert (await history.get_image(1, hid, reference)).data == PNG
 
 
 @pytest.mark.asyncio
@@ -140,17 +142,18 @@ async def test_upload_failure_retains_local_and_retries_same_key_after_restart(t
     await restarted.run_once()
     assert (await jobs(db))[0]['status'] == 'ready'
     assert {p['Key'] for p in s3.puts} == {original['object_key']}
-    assert (await history.get_image(1, hid, image_id)).data == PNG
+    assert (await history.get_image(1, hid, image_id)).data == b''
 
 
 @pytest.mark.asyncio
 async def test_readback_corruption_does_not_mark_ready(tmp_path):
     db = tmp_path/'test.db'
     history, hid, _, storage, s3 = await setup(db)
-    await add(history, hid)
+    image_id = await add(history, hid)
     s3.corrupt_read = True
     await storage.run_once()
     assert (await jobs(db))[0]['status'] == 'retry'
+    assert (await history.get_image(1, hid, image_id)).data == PNG
 
 
 @pytest.mark.asyncio
@@ -196,6 +199,68 @@ async def test_stale_lease_is_recovered_and_old_owner_cannot_complete(tmp_path):
     assert newer and newer['lease_id'] != old['lease_id']
     await repo.complete(old)
     assert (await jobs(db))[0]['lease_id'] == newer['lease_id']
+    assert (await history.get_image(1, hid, newer['image_id'])).data == PNG
+
+
+@pytest.mark.asyncio
+async def test_explicit_migration_preserves_references_and_reuses_archived_key(tmp_path):
+    db = tmp_path/'test.db'
+    history, hid, repo, storage, s3 = await setup(db)
+    local_history = HistoryRepository(db)
+    old = await add(local_history, hid)
+    reference = await add(local_history, hid, 'reference')
+    archived = await add(history, hid)
+    await storage.run_once()
+    archived_job = (await jobs(db))[0]
+    # Simulate the previous deployment, which retained verified local BLOBs.
+    async with aiosqlite.connect(db) as con:
+        await con.execute('UPDATE history_images SET data=? WHERE id=?', (PNG, archived))
+        await con.commit()
+    assert await repo.enqueue_existing_image(storage.destination, old)
+    assert await repo.enqueue_existing_image(storage.destination, archived)
+    assert not await repo.enqueue_existing_image(storage.destination, reference)
+    while await storage.run_once():
+        pass
+    assert (await history.get_image(1, hid, old)).data == b''
+    assert (await history.get_image(1, hid, archived)).data == b''
+    assert (await history.get_image(1, hid, reference)).data == PNG
+    assert await storage.read_or_fallback(old, b'') == PNG
+    assert await storage.read_or_fallback(archived, b'') == PNG
+    assert {r['object_key'] for r in await jobs(db) if r['image_id'] == archived} == {archived_job['object_key']}
+    assert not await repo.enqueue_existing_image(storage.destination, old)
+    assert not await storage.run_once()
+
+
+@pytest.mark.asyncio
+async def test_remote_only_read_failure_never_returns_empty_image(tmp_path):
+    db = tmp_path/'test.db'
+    history, hid, _, storage, s3 = await setup(db)
+    image_id = await add(history, hid)
+    await storage.run_once()
+    s3.fail_get = True
+    with pytest.raises(R2ImageUnavailableError):
+        await storage.read_or_fallback(image_id, b'')
+    s3.fail_get = False
+    assert await storage.read_or_fallback(image_id, b'') == PNG
+    disabled = R2ImageStorage(R2ImageRepository(db), r2_settings(r2_enabled=False), client=s3)
+    with pytest.raises(R2ImageUnavailableError):
+        await disabled.read_or_fallback(image_id, b'')
+
+
+@pytest.mark.asyncio
+async def test_storage_completion_rolls_back_if_local_original_changed(tmp_path):
+    db = tmp_path/'test.db'
+    history, hid, repo, storage, s3 = await setup(db)
+    image_id = await add(history, hid)
+    job = await repo.claim(storage.destination)
+    await asyncio.to_thread(storage._upload_verified, job)
+    async with aiosqlite.connect(db) as con:
+        await con.execute('UPDATE history_images SET data=? WHERE id=?', (b'changed', image_id))
+        await con.commit()
+    with pytest.raises(ValueError):
+        await repo.complete(job)
+    assert (await jobs(db))[0]['status'] == 'uploading'
+    assert (await history.get_image(1, hid, image_id)).data == b'changed'
 
 
 @pytest.mark.asyncio
@@ -253,6 +318,86 @@ async def test_authenticated_route_reads_r2_but_other_user_and_304_do_not(tmp_pa
         assert response2.status_code == 304 and len(s3.gets) == count + 1
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_remote_only_thumbnail_and_storage_outage_routes(tmp_path):
+    from PIL import Image
+    encoded = io.BytesIO()
+    Image.new('RGB', (32, 24), 'blue').save(encoded, format='PNG')
+    data = encoded.getvalue()
+    db = tmp_path/'test.db'
+    history, hid, _, storage, s3 = await setup(db)
+    image_id = await add(history, hid, data=data)
+    await storage.run_once()
+    app.dependency_overrides[get_history_repository] = lambda: history
+    app.dependency_overrides[get_r2_image_storage] = lambda: storage
+    app.dependency_overrides[get_current_user] = lambda: StoredSessionUser(id=1, username='alice', api_key='', model='fixture')
+    try:
+        client = TestClient(app)
+        path = f'/api/history/{hid}/images/{image_id}'
+        thumbnail = client.get(path+'/thumbnail')
+        assert thumbnail.status_code == 200
+        assert thumbnail.headers['content-type'] == 'image/webp'
+        assert (await history.get_image(1, hid, image_id)).data == b''
+        s3.fail_get = True
+        unavailable = client.get(path)
+        assert unavailable.status_code == 503
+        assert unavailable.json()['error']['code'] == 'image_storage_unavailable'
+        assert unavailable.headers['retry-after'] == '5'
+        assert client.get(path+'/thumbnail').status_code == 200
+        s3.fail_get = False
+        assert client.get(path).content == data
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_video_reference_from_remote_only_image_preserves_ownership(tmp_path):
+    from PIL import Image
+    from app.video.repository import VideoRepository, VideoError
+    from app.video.service import VideoService
+    encoded = io.BytesIO()
+    Image.new('RGB', (32, 24), 'blue').save(encoded, format='PNG')
+    data = encoded.getvalue()
+    db = tmp_path/'test.db'
+    history, hid, _, storage, s3 = await setup(db)
+    image_id = await add(history, hid, data=data)
+    await storage.run_once()
+    settings = r2_settings(video_public_base_url='https://assets.example.test',
+                           video_asset_signing_secret=SecretStr('x'*32))
+    service = VideoService(VideoRepository(db), settings)
+    asset = await service.history_image(1, history, hid, image_id, image_storage=storage)
+    assert service.assets.path(asset['relative_path']).read_bytes() == data
+    count = len(s3.gets)
+    with pytest.raises(VideoError) as forbidden:
+        await service.history_image(2, history, hid, image_id, image_storage=storage)
+    assert forbidden.value.status == 404
+    assert len(s3.gets) == count
+    s3.fail_get = True
+    with pytest.raises(VideoError) as outage:
+        await service.history_image(1, history, hid, image_id, image_storage=storage)
+    assert outage.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_migration_command_is_resumable_and_preserves_record_counts(tmp_path, monkeypatch):
+    from app import migrate_generated_images as migration
+    db = tmp_path/'test.db'
+    history, hid, _, storage, s3 = await setup(db)
+    historical = HistoryRepository(db)
+    image_id = await add(historical, hid)
+    reference = await add(historical, hid, 'reference')
+    monkeypatch.setattr(migration, 'DATABASE_PATH', db)
+    monkeypatch.setattr(migration, 'Settings', r2_settings)
+    monkeypatch.setattr(migration, 'R2ImageStorage', lambda *args: storage)
+    assert await migration.migrate(10) == 0
+    assert (await history.get_image(1, hid, image_id)).data == b''
+    assert (await history.get_image(1, hid, reference)).data == PNG
+    uploads = len(s3.puts)
+    assert await migration.migrate(10) == 0
+    assert len(s3.puts) == uploads
+    assert (await migration.summary(db))['generated'] == 1
 
 
 @pytest.mark.asyncio

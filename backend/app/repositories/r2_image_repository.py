@@ -1,4 +1,4 @@
-"""Durable outbox for *new generated* images. Never scans historical images."""
+"""Durable generated-image storage with an explicit historical migration."""
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -103,18 +103,70 @@ class R2ImageRepository:
 
     async def complete(self, job: dict, *, deleted: bool = False) -> None:
         async with aiosqlite.connect(self.database_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             # A deletion while uploading detaches image_id. Queue cleanup instead
             # of publishing an object whose original record no longer exists.
-            await db.execute(
+            cursor = await db.execute(
                 """UPDATE r2_image_uploads
                    SET status = CASE WHEN ? THEN 'deleted'
                                      WHEN image_id IS NULL THEN 'retry' ELSE 'ready' END,
                        next_attempt_at = 0, lease_id = NULL, lease_until = 0,
                        last_error_code = NULL, verified_at = CURRENT_TIMESTAMP
-                   WHERE id = ? AND lease_id = ?""",
+                   WHERE id = ? AND lease_id = ?
+                   RETURNING image_id, status""",
                 (deleted, job['id'], job['lease_id']),
             )
+            completed = await cursor.fetchone()
+            await cursor.close()
+            if completed is not None and completed[1] == 'ready':
+                # The caller has uploaded and read back the exact bytes. Publish
+                # the remote location and remove the temporary BLOB atomically.
+                cleared = await db.execute(
+                    """UPDATE history_images SET data = X''
+                       WHERE id = ? AND role = 'generated' AND data = ?""",
+                    (completed[0], job['data']),
+                )
+                if cleared.rowcount != 1:
+                    raise ValueError('local image changed before storage completion')
             await db.commit()
+
+    async def enqueue_existing_image(self, destination: R2ImageDestination, image_id: int) -> bool:
+        """Explicitly migrate one local generated image; preserve existing keys."""
+        async with aiosqlite.connect(self.database_path, timeout=15) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            image = await (await db.execute(
+                "SELECT mime_type, data FROM history_images WHERE id = ? AND role = 'generated'",
+                (image_id,),
+            )).fetchone()
+            if image is None or not image['data']:
+                await db.rollback()
+                return False
+            existing = await (await db.execute(
+                "SELECT * FROM r2_image_uploads WHERE image_id = ?", (image_id,),
+            )).fetchone()
+            if existing is None:
+                await enqueue_new_image(db, destination, image_id=image_id,
+                                        mime_type=image['mime_type'], data=image['data'])
+            else:
+                if (existing['endpoint'], existing['bucket']) != (destination.endpoint, destination.bucket):
+                    raise ValueError('image belongs to a different storage destination')
+                if existing['status'] != 'ready':
+                    await db.rollback()
+                    return False
+                if (existing['size_bytes'] != len(image['data'])
+                        or existing['sha256'] != hashlib.sha256(image['data']).hexdigest()):
+                    raise ValueError('local image does not match its storage record')
+                # Reverify previously archived images through the same upload
+                # pipeline before deleting their local copies.
+                await db.execute(
+                    """UPDATE r2_image_uploads SET status = 'pending', next_attempt_at = 0,
+                       lease_id = NULL, lease_until = 0, last_error_code = NULL WHERE id = ?""",
+                    (existing['id'],),
+                )
+            await db.commit()
+            return True
 
     async def retry(self, job: dict, error_code: str) -> None:
         delay = min(3600, 5 * 2 ** min(job['attempts'], 10))

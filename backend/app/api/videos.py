@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from starlette.requests import Request
 
-from app.dependencies import get_current_user, get_history_repository, get_video_service
+from app.dependencies import get_current_user, get_history_repository, get_video_service, get_r2_image_storage
 from app.schemas.auth import StoredSessionUser
 from app.video.repository import VideoError
 from app.video.schemas import (
@@ -90,8 +90,8 @@ async def upload_asset(type: Literal["image", "video", "audio"] = Query(...), fi
 
 
 @router.post("/assets/from-history", status_code=201)
-async def history_asset(body: HistoryImageSource, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service), history=Depends(get_history_repository)):
-    return public_asset(await service.history_image(user.id, history, body.history_id, body.image_id, body.name))
+async def history_asset(body: HistoryImageSource, user: StoredSessionUser = Depends(get_current_user), service: VideoService = Depends(get_video_service), history=Depends(get_history_repository), image_storage=Depends(get_r2_image_storage)):
+    return public_asset(await service.history_image(user.id, history, body.history_id, body.image_id, body.name, image_storage=image_storage))
 
 
 @router.get("/assets/public/{asset_id}")
